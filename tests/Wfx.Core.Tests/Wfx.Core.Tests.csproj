@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup><ProjectReference Include="../../src/Wfx.Core/Wfx.Core.csproj" /></ItemGroup>
+</Project>

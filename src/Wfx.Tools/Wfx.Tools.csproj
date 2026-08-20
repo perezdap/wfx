@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Wfx.Core/Wfx.Core.csproj" />
+    <ProjectReference Include="../Wfx.PowerShell/Wfx.PowerShell.csproj" />
+  </ItemGroup>
+</Project>
