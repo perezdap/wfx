@@ -228,7 +228,7 @@ public static class WfxConfiguration
 
     private static ApprovalMode? GetApproval(JsonElement root, string name) =>
         root.TryGetProperty(name, out var value)
-            ? ParseApproval(value.GetString()) ?? throw new InvalidOperationException("Configuration approval must be always, workspace, or never.")
+            ? ParseApproval(value.GetString())
             : null;
 
     private static ApprovalMode? ParseApproval(string? value) => value?.ToLowerInvariant() switch
@@ -237,7 +237,7 @@ public static class WfxConfiguration
         "always" => ApprovalMode.Always,
         "workspace" => ApprovalMode.Workspace,
         "never" => ApprovalMode.Never,
-        _ => null
+        _ => throw new InvalidOperationException("Approval must be always, workspace, or never.")
     };
 
     private static int? ParseEnvironmentInteger(IReadOnlyDictionary<string, string?>? environment, string name)

@@ -2,10 +2,10 @@
 
 | Risk | Milestone 1 treatment | Follow-up |
 | --- | --- | --- |
-| PowerShell cannot be classified perfectly from text | Conservative allowlist; unknown scripts are `SystemChange`; known root/disk operations are `Dangerous` | Use the PowerShell parser AST plus command metadata and an OS sandbox |
+| PowerShell cannot be classified perfectly from text | Conservative allowlist plus aliases; rooted/`..`/`$`/`&` scripts are `SystemChange` (never auto-approved `ReadOnly`); unknown scripts are `SystemChange`; root/disk operations including `rm`/`ri` are `Dangerous` | Use the PowerShell parser AST plus command metadata and an OS sandbox |
 | Path check/operation race (TOCTOU) | Normalize and resolve links immediately before each operation; recursive tools avoid reparse points | Add handle-based Windows final-path validation and adversarial junction race tests |
-| OpenAI-compatible endpoints vary | Small explicit Chat Completions SSE adapter with malformed-response errors | Add endpoint capability profiles and recorded conformance fixtures |
-| Tool output can exhaust context | Individual read/search limits and bounded result counts | Add a central byte/token budget and spill large output to artifacts |
+| OpenAI-compatible endpoints vary | Small explicit Chat Completions SSE adapter; `stream_options` only for OpenAI/OpenRouter | Add endpoint capability profiles and recorded conformance fixtures |
+| Tool output can exhaust context | Individual read/search limits, bounded result counts, and 1 MiB process stdout/stderr capture | Add a central byte/token budget and spill large output to artifacts |
 | Patch format coverage | Exact-context unified-diff hunks for existing text files | Add create/delete/rename, newline metadata, and fuzz/property tests |
 | Native AOT packages/toolchain vary by runner | AOT analyzers enabled and CI publishes on native x64/ARM64 Windows runners | Track size/startup/memory trends and pin known-good toolchains |
 | Console prompt is not a security boundary | Host-owned approval service and noninteractive denial | Add signed/opaque approval requests for remote/ACP hosts |

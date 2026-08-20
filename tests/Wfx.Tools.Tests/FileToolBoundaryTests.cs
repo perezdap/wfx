@@ -37,4 +37,20 @@ public sealed class FileToolBoundaryTests
         Assert.True(result.Success);
         Assert.Contains("src/a.cs:2:needle here", result.Output);
     }
+
+    [Fact]
+    public async Task WriteFileCreatesNestedDirectoriesInsideWorkspace()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var workspace = new TemporaryDirectory();
+        var tool = new WriteFileTool(new WorkspacePathPolicy(workspace.Path));
+        using var arguments = JsonDocument.Parse("""
+            { "path": "nested/dir/file.txt", "content": "ok", "create_directories": true }
+            """);
+
+        var result = await tool.ExecuteAsync(arguments.RootElement, new ToolContext(workspace.Path), cancellationToken);
+
+        Assert.True(result.Success, result.Error);
+        Assert.Equal("ok", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "nested", "dir", "file.txt"), cancellationToken));
+    }
 }

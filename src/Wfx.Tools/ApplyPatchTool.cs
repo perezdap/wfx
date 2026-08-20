@@ -58,6 +58,7 @@ public sealed class ApplyPatchTool : WorkspaceTool, ITool
         }
 
         var output = string.Join(newline, updated) + (hadTrailingNewline ? newline : string.Empty);
+        path = Paths.Resolve(path, mustExist: true);
         await File.WriteAllTextAsync(path, output, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
         return ToolResult.Ok($"Applied patch to {Relative(Paths.Root, path)}.");
     }

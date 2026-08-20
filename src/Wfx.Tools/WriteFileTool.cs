@@ -38,9 +38,9 @@ public sealed class WriteFileTool : WorkspaceTool, ITool
             }
 
             Directory.CreateDirectory(directory);
-            Paths.Resolve(directory, mustExist: true);
         }
 
+        path = Paths.Resolve(path);
         await File.WriteAllTextAsync(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), cancellationToken)
             .ConfigureAwait(false);
         return ToolResult.Ok($"Wrote {content.Length} characters to {Relative(Paths.Root, path)}.");

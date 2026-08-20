@@ -8,11 +8,50 @@ namespace Wfx.Tools;
 
 public sealed class PowerShellTool : WorkspaceTool, ITool
 {
-    private static readonly Regex Dangerous = Pattern("""(Remove-Item\s+(?:['"])?(?:[A-Z]:\\|\\\\)[^\r\n]*-Recurse|Clear-Disk|Format-Volume|Remove-Partition|Stop-Computer|Restart-Computer|bcdedit|diskpart)""");
-    private static readonly Regex SystemChange = Pattern(@"\b(winget\s+(install|uninstall|upgrade)|choco\s+(install|uninstall|upgrade)|Set-Service|New-Service|Remove-Service|Set-ExecutionPolicy|Enable-WindowsOptionalFeature|Disable-WindowsOptionalFeature|Register-ScheduledTask|Unregister-ScheduledTask|reg(?:\.exe)?\s+(add|delete)|msiexec(?:\.exe)?\s+/(i|x)|dism(?:\.exe)?)\b");
-    private static readonly Regex WorkspaceWrite = Pattern(@"\b(Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Copy-Item|Rename-Item|Set-ItemProperty|New-ItemProperty|Remove-ItemProperty)\b");
+    private static readonly Regex Dangerous = Pattern("""
+        (
+            (?:Remove-Item|rm|ri|del|erase|rd|rmdir)\s+(?:['"])?(?:[A-Z]:\\|\\\\)[^\r\n]*-Recurse
+            | Clear-Disk | Format-Volume | Remove-Partition | Stop-Computer | Restart-Computer | bcdedit | diskpart
+        )
+        """);
+    private static readonly Regex SystemChange = Pattern(@"\b(
+        winget\s+(install|uninstall|upgrade)
+        | choco\s+(install|uninstall|upgrade)
+        | Set-Service | New-Service | Remove-Service
+        | Set-ExecutionPolicy
+        | Enable-WindowsOptionalFeature | Disable-WindowsOptionalFeature
+        | Register-ScheduledTask | Unregister-ScheduledTask
+        | reg(?:\.exe)?\s+(add|delete)
+        | msiexec(?:\.exe)?\s+/(i|x)
+        | dism(?:\.exe)?
+        | Invoke-Expression | iex
+        | Invoke-Command | icm
+        | Start-Process | saps
+    )\b");
+    private static readonly Regex WorkspaceWrite = Pattern(@"\b(
+        Set-Content | sc | Add-Content | ac | Out-File
+        | New-Item | ni
+        | Remove-Item | rm | ri | del | erase | rd | rmdir
+        | Move-Item | mi | move
+        | Copy-Item | cpi | copy | cp
+        | Rename-Item | rni | ren
+        | Set-ItemProperty | New-ItemProperty | Remove-ItemProperty
+    )\b");
     private static readonly Regex TestCommand = Pattern(@"\b(dotnet\s+(test|build|restore|format)|Invoke-Pester|msbuild(?:\.exe)?|vstest\.console(?:\.exe)?)\b");
-    private static readonly Regex ReadOnlyScript = Pattern(@"^(?:\s*(?:Get-[\w-]+|Test-[\w-]+|Select-[\w-]+|Where-Object|Sort-Object|Measure-Object|Format-[\w-]+|Convert(?:To|From)-[\w-]+|Resolve-Path|git\s+(?:status|diff|log)|dotnet\s+--info)(?:\s+[^;|&]*)?\s*[;|]?)+$");
+    private static readonly Regex UntrustedPowerShell = Pattern("""
+        [A-Za-z]:
+        | \\\\
+        | \.\.
+        | \$
+        | `
+        | &
+        """);
+    private static readonly Regex ReadOnlyScript = Pattern(@"^(?:\s*(?:
+        Get-[\w-]+ | gc | cat | type | gi | gci | ls | dir | gl | pwd
+        | Test-[\w-]+ | Select-[\w-]+ | Where-Object | Sort-Object | Measure-Object
+        | Format-[\w-]+ | Convert(?:To|From)-[\w-]+ | Resolve-Path
+        | git\s+(?:status|diff|log) | dotnet\s+--info
+    )(?:\s+[^;|&]*)?\s*[;|]?)+$");
 
     private readonly IPowerShellRunner _runner;
 
@@ -72,6 +111,7 @@ public sealed class PowerShellTool : WorkspaceTool, ITool
         {
             ["exit_code"] = result.ExitCode.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["timed_out"] = result.TimedOut.ToString(),
+            ["truncated"] = result.Truncated.ToString(),
             ["duration_ms"] = result.Duration.TotalMilliseconds.ToString("F0", System.Globalization.CultureInfo.InvariantCulture)
         };
         return result.ExitCode == 0 && !result.TimedOut
@@ -87,6 +127,11 @@ public sealed class PowerShellTool : WorkspaceTool, ITool
         }
 
         if (SystemChange.IsMatch(script))
+        {
+            return ApprovalLevel.SystemChange;
+        }
+
+        if (UntrustedPowerShell.IsMatch(script))
         {
             return ApprovalLevel.SystemChange;
         }

@@ -55,4 +55,17 @@ public sealed class ConfigurationTests
         Assert.Equal("openrouter", result.Provider);
         Assert.Equal("anthropic/example", result.Model);
     }
+
+    [Fact]
+    public void Load_RejectsInvalidApprovalFromEnvironment()
+    {
+        using var workspace = new TemporaryDirectory();
+
+        var exception = Assert.Throws<InvalidOperationException>(() => WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?> { ["WFX_APPROVAL"] = "sometimes" },
+            userProfile: Path.Combine(workspace.Path, "missing-profile")));
+
+        Assert.Contains("always, workspace, or never", exception.Message);
+    }
 }

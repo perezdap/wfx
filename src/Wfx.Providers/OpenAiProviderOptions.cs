@@ -9,6 +9,8 @@ public sealed record OpenAiProviderOptions
     public IReadOnlyDictionary<string, string> Headers { get; init; } = new Dictionary<string, string>();
 
     public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(5);
+
+    public bool IncludeStreamOptions { get; init; }
 }
 
 public sealed class ProviderProtocolException : Exception

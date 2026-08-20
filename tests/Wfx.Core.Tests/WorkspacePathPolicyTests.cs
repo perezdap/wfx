@@ -42,7 +42,7 @@ public sealed class WorkspacePathPolicyTests
     }
 
     [Fact]
-    public void Resolve_RejectsDirectoryLinkOutsideWorkspace_WhenLinksAreAvailable()
+    public void Resolve_RejectsDirectoryLinkOutsideWorkspace()
     {
         using var workspace = new TemporaryDirectory();
         using var outside = new TemporaryDirectory();
@@ -53,10 +53,26 @@ public sealed class WorkspacePathPolicyTests
         }
         catch (Exception exception) when (exception is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
         {
-            return;
+            Assert.Skip($"Unable to create a directory symbolic link: {exception.Message}");
         }
 
         var policy = new WorkspacePathPolicy(workspace.Path);
         Assert.Throws<UnauthorizedAccessException>(() => policy.Resolve(Path.Combine(link, "file.txt")));
+    }
+
+    [Fact]
+    public void Resolve_RejectsWindowsDeviceAndDriveRelativePaths()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("Windows device and drive-relative paths.");
+        }
+
+        using var temporary = new TemporaryDirectory();
+        var policy = new WorkspacePathPolicy(temporary.Path);
+
+        Assert.Throws<UnauthorizedAccessException>(() => policy.Resolve(@"\\?\C:\Windows\win.ini"));
+        Assert.Throws<UnauthorizedAccessException>(() => policy.Resolve(@"\\.\C:\Windows\win.ini"));
+        Assert.Throws<UnauthorizedAccessException>(() => policy.Resolve(@"C:file.txt"));
     }
 }

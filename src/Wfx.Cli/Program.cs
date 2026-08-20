@@ -141,7 +141,9 @@ internal static class Program
             BaseUri = settings.BaseUri,
             ApiKey = settings.ApiKey,
             Headers = settings.Headers,
-            Timeout = settings.Timeout
+            Timeout = settings.Timeout,
+            IncludeStreamOptions = settings.Provider.Equals("openai", StringComparison.OrdinalIgnoreCase)
+                || settings.Provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase)
         });
         var tools = BuiltInTools.Create(workspace.Root);
         var context = new CompositeContextProvider([

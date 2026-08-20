@@ -49,7 +49,6 @@ public sealed class AgentInstructionsContextProvider : IContextProvider
     {
         var result = new List<string>();
         var current = new DirectoryInfo(_workspaceRoot);
-        var working = new DirectoryInfo(_workingDirectory);
         var relative = Path.GetRelativePath(_workspaceRoot, _workingDirectory);
 
         AddIfPresent(current.FullName, result);

@@ -32,6 +32,26 @@ public sealed class OpenAiCompatibleProviderTests
         Assert.Equal(4, completed.Usage!.InputTokens);
         Assert.Contains("\"stream\":true", handler.RequestBody);
         Assert.Contains("\"name\":\"sample\"", handler.RequestBody);
+        Assert.DoesNotContain("stream_options", handler.RequestBody);
+    }
+
+    [Fact]
+    public async Task IncludesStreamOptionsWhenRequested()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, """
+            data: {"choices":[{"delta":{"content":"ok"}}]}
+
+            data: [DONE]
+
+            """, "text/event-stream");
+        var provider = CreateProvider(handler, includeStreamOptions: true);
+
+        await CollectAsync(provider.StreamAsync(
+            new ModelRequest("test-model", [new ModelMessage(ModelRole.User, "hi")], []),
+            TestContext.Current.CancellationToken));
+
+        Assert.Contains("stream_options", handler.RequestBody);
+        Assert.Contains("include_usage", handler.RequestBody);
     }
 
     [Fact]
@@ -86,12 +106,16 @@ public sealed class OpenAiCompatibleProviderTests
         Assert.Contains("[REDACTED]", exception.Message);
     }
 
-    private static OpenAiCompatibleProvider CreateProvider(StubHandler handler, string? apiKey = null) =>
+    private static OpenAiCompatibleProvider CreateProvider(
+        StubHandler handler,
+        string? apiKey = null,
+        bool includeStreamOptions = false) =>
         new(new HttpClient(handler), new OpenAiProviderOptions
         {
             BaseUri = new Uri("https://example.test/v1"),
             ApiKey = apiKey,
-            Timeout = TimeSpan.FromSeconds(10)
+            Timeout = TimeSpan.FromSeconds(10),
+            IncludeStreamOptions = includeStreamOptions
         });
 
     private static async Task<List<ModelStreamEvent>> CollectAsync(IAsyncEnumerable<ModelStreamEvent> source)

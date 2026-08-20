@@ -16,7 +16,8 @@ public sealed record ProcessExecutionResult(
     string StandardError,
     int ExitCode,
     bool TimedOut,
-    TimeSpan Duration);
+    TimeSpan Duration,
+    bool Truncated = false);
 
 public interface IProcessExecutor
 {
@@ -27,6 +28,8 @@ public interface IProcessExecutor
 
 public sealed class ProcessExecutor : IProcessExecutor
 {
+    internal const int MaxCapturedCharacters = 1_048_576;
+
     public async Task<ProcessExecutionResult> ExecuteAsync(
         ProcessCommand command,
         CancellationToken cancellationToken = default)
@@ -70,14 +73,10 @@ public sealed class ProcessExecutor : IProcessExecutor
             throw new InvalidOperationException($"Failed to start process '{command.FileName}'.");
         }
 
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-
-        if (command.StandardInput is not null)
-        {
-            await process.StandardInput.WriteAsync(command.StandardInput.AsMemory(), cancellationToken).ConfigureAwait(false);
-            process.StandardInput.Close();
-        }
+        // Do not bind pipe reads to the caller token: killing the process closes the
+        // pipes, and we always drain before disposing so Ctrl+C cannot race dispose.
+        var stdoutTask = ReadBoundedAsync(process.StandardOutput, CancellationToken.None);
+        var stderrTask = ReadBoundedAsync(process.StandardError, CancellationToken.None);
 
         using var timeoutSource = command.Timeout is { } timeout
             ? new CancellationTokenSource(timeout)
@@ -87,31 +86,96 @@ public sealed class ProcessExecutor : IProcessExecutor
             timeoutSource.Token);
 
         var timedOut = false;
+        var canceled = false;
         try
         {
+            if (command.StandardInput is not null)
+            {
+                await process.StandardInput.WriteAsync(command.StandardInput.AsMemory(), linkedSource.Token)
+                    .ConfigureAwait(false);
+                process.StandardInput.Close();
+            }
+
             await process.WaitForExitAsync(linkedSource.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeoutSource.IsCancellationRequested)
         {
             timedOut = true;
             TryKill(process);
-            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+            await WaitForExitQuietAsync(process).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
+            canceled = true;
             TryKill(process);
-            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-            throw;
+            await WaitForExitQuietAsync(process).ConfigureAwait(false);
         }
 
         var stdout = await stdoutTask.ConfigureAwait(false);
         var stderr = await stderrTask.ConfigureAwait(false);
+        if (canceled)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+
         return new ProcessExecutionResult(
-            stdout,
-            stderr,
+            stdout.Text,
+            stderr.Text,
             timedOut ? -1 : process.ExitCode,
             timedOut,
-            Stopwatch.GetElapsedTime(started));
+            Stopwatch.GetElapsedTime(started),
+            stdout.Truncated || stderr.Truncated);
+    }
+
+    private static async Task<(string Text, bool Truncated)> ReadBoundedAsync(
+        StreamReader reader,
+        CancellationToken cancellationToken)
+    {
+        var builder = new StringBuilder();
+        var buffer = new char[16 * 1024];
+        var truncated = false;
+        while (true)
+        {
+            var read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                break;
+            }
+
+            if (truncated)
+            {
+                continue;
+            }
+
+            var remaining = MaxCapturedCharacters - builder.Length;
+            if (read <= remaining)
+            {
+                builder.Append(buffer, 0, read);
+            }
+            else
+            {
+                if (remaining > 0)
+                {
+                    builder.Append(buffer, 0, remaining);
+                }
+
+                truncated = true;
+            }
+        }
+
+        return (builder.ToString(), truncated);
+    }
+
+    private static async Task WaitForExitQuietAsync(Process process)
+    {
+        try
+        {
+            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException)
+        {
+            // The process is already gone.
+        }
     }
 
     private static void TryKill(Process process)
@@ -123,7 +187,7 @@ public sealed class ProcessExecutor : IProcessExecutor
                 process.Kill(entireProcessTree: true);
             }
         }
-        catch (InvalidOperationException)
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             // The process exited between the check and Kill.
         }

@@ -126,9 +126,13 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
             writer.WriteStartObject();
             writer.WriteString("model", request.Model);
             writer.WriteBoolean("stream", true);
-            writer.WriteStartObject("stream_options");
-            writer.WriteBoolean("include_usage", true);
-            writer.WriteEndObject();
+            if (_options.IncludeStreamOptions)
+            {
+                writer.WriteStartObject("stream_options");
+                writer.WriteBoolean("include_usage", true);
+                writer.WriteEndObject();
+            }
+
             writer.WriteStartArray("messages");
             foreach (var message in request.Messages)
             {

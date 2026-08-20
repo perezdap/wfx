@@ -26,7 +26,7 @@ public sealed class GitTool : WorkspaceTool, ITool
                     ["type"] = "string",
                     ["enum"] = new JsonArray("status", "diff", "diff_staged", "log")
                 }, true),
-                ("max_count", ToolJson.IntegerSchema("Maximum log entries for log." , 1, 100), false)
+                ("max_count", ToolJson.IntegerSchema("Maximum log entries for log.", 1, 100), false)
             ]));
     }
 
@@ -44,7 +44,7 @@ public sealed class GitTool : WorkspaceTool, ITool
         CancellationToken cancellationToken = default)
     {
         var operation = ValidateOperation(arguments);
-        IReadOnlyList<string> gitArguments = operation switch
+        IReadOnlyList<string> operationArguments = operation switch
         {
             "status" => ["status", "--short", "--branch"],
             "diff" => ["diff", "--no-ext-diff"],
@@ -55,7 +55,7 @@ public sealed class GitTool : WorkspaceTool, ITool
 
         var executable = OperatingSystem.IsWindows() ? "git.exe" : "git";
         var result = await _processExecutor.ExecuteAsync(
-            new ProcessCommand(executable, gitArguments, Paths.Root, Timeout: TimeSpan.FromSeconds(30)),
+            new ProcessCommand(executable, BoundGitArguments(operationArguments), Paths.Root, Timeout: TimeSpan.FromSeconds(30)),
             cancellationToken).ConfigureAwait(false);
 
         var output = result.StandardOutput;
@@ -67,6 +67,21 @@ public sealed class GitTool : WorkspaceTool, ITool
         return result.ExitCode == 0
             ? ToolResult.Ok(output.TrimEnd())
             : ToolResult.Fail($"git {operation} failed with exit code {result.ExitCode}.", output.TrimEnd());
+    }
+
+    internal static IReadOnlyList<string> BoundGitArguments(IReadOnlyList<string> operationArguments)
+    {
+        var hooksPath = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
+        var arguments = new List<string>
+        {
+            "--no-pager",
+            "-c",
+            $"core.hooksPath={hooksPath}",
+            "-c",
+            "core.fsmonitor="
+        };
+        arguments.AddRange(operationArguments);
+        return arguments;
     }
 
     private static string ValidateOperation(JsonElement arguments)

@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="../../src/Wfx.Core/Wfx.Core.csproj" />
+    <ProjectReference Include="../../src/Wfx.PowerShell/Wfx.PowerShell.csproj" />
     <ProjectReference Include="../../src/Wfx.Tools/Wfx.Tools.csproj" />
   </ItemGroup>
 </Project>
