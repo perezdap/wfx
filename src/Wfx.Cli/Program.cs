@@ -214,6 +214,7 @@ internal static class Program
     private static int PrintModels(WfxSettings settings, WorkspaceInfo workspace)
     {
         Console.WriteLine($"Provider: {settings.Provider}");
+        Console.WriteLine($"Protocol: {settings.Protocol}");
         if (settings.Profile is not null)
         {
             Console.WriteLine($"Profile: {settings.Profile}");
@@ -259,7 +260,8 @@ internal static class Program
             Options:
               --model <model>               Model ID; openrouter/<id> selects OpenRouter
               --profile <name>              Named profile from user/project configuration
-              --provider <name>             openai, openrouter, local, or a custom name
+              --protocol <name>             chat_completions, responses, or anthropic_messages (reserved)
+              --provider <name>             openai, openrouter, anthropic, local, or a custom name
               --base-url <url>              OpenAI-compatible API base URL
               --approval <mode>             always, workspace, or never
               --timeout <seconds>           Provider timeout (1-3600)

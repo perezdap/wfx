@@ -76,11 +76,38 @@ The shorthand below selects OpenRouter and passes the remaining identifier as th
 wfx --model openrouter/anthropic/claude-sonnet-4.6
 ```
 
-Supported environment variables are `WFX_PROVIDER`, `WFX_PROFILE`, `WFX_BASE_URL`, `WFX_API_KEY`, `WFX_MODEL`, `WFX_TIMEOUT_SECONDS`, `WFX_MAX_ITERATIONS`, and `WFX_APPROVAL`. `OPENAI_API_KEY` and `OPENROUTER_API_KEY` are provider-specific credential fallbacks.
+Supported environment variables are `WFX_PROVIDER`, `WFX_PROTOCOL`, `WFX_PROFILE`, `WFX_BASE_URL`, `WFX_API_KEY`, `WFX_MODEL`, `WFX_TIMEOUT_SECONDS`, `WFX_MAX_ITERATIONS`, and `WFX_APPROVAL`. `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, and `ANTHROPIC_API_KEY` are provider-specific credential fallbacks.
+
+### Protocol
+
+`protocol` selects the wire format spoken to the model endpoint. It is settable in config files, via `WFX_PROTOCOL`, and via `--protocol`. The default is `chat_completions`, so existing configurations behave identically.
+
+| Protocol | Status | Default endpoint | Credential fallback |
+| --- | --- | --- | --- |
+| `chat_completions` | implemented (default) | provider preset | provider preset |
+| `responses` | transport in a later release | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `anthropic_messages` | reserved | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
+
+`anthropic_messages` fails with an explicit "not implemented yet" error. Unknown protocol values fail with a clear error naming the valid values.
+
+Provider remains orthogonal to protocol. The `anthropic` provider preset targets Anthropic's OpenAI-compatible endpoint (`https://api.anthropic.com/v1`) with `ANTHROPIC_API_KEY`:
+
+```powershell
+wfx run --provider anthropic --model claude-sonnet-4-6 "Summarize this repo."
+```
+
+Or in config:
+
+```json
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-6"
+}
+```
 
 ### Profiles
 
-A profile is a named settings layer stored under `profiles` in a config file. Profile entries accept the same keys as top-level configuration (`provider`, `base_url`, `api_key`, `model`, `headers`, `timeout_seconds`, `max_iterations`, `approval`):
+A profile is a named settings layer stored under `profiles` in a config file. Profile entries accept the same keys as top-level configuration (`provider`, `protocol`, `base_url`, `api_key`, `model`, `headers`, `timeout_seconds`, `max_iterations`, `approval`):
 
 ```json
 {

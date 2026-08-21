@@ -17,11 +17,11 @@ _Avoid_: endpoint, connection, preset, environment
 ### Model endpoints
 
 **Provider**:
-A preset name (`openai`, `openrouter`, `local`, or a custom name) that supplies a default base URL and a credential environment-variable convention. Orthogonal to protocol.
+A preset name (`openai`, `openrouter`, `anthropic`, `local`, or a custom name) that supplies a default base URL and a credential environment-variable convention. Orthogonal to protocol.
 _Avoid_: backend, endpoint, service
 
 **Protocol**: 
-The wire format spoken to a model endpoint. Not yet a configuration option — the only implemented transport today is `chat_completions`; a `protocol` key with `responses` and a reserved `anthropic_messages` value is planned (issues #8 and #9). 
+The wire format spoken to a model endpoint. Settable in every settings layer as `protocol`, `WFX_PROTOCOL`, or `--protocol`. Values: `chat_completions` (default), `responses`, and the reserved `anthropic_messages` (errors with "not implemented yet"). Protocol-specific defaults supply base URL and credential environment-variable conventions; provider remains orthogonal preset sugar.
 _Avoid_: endpoint type, API style, transport
 
 **Model**:

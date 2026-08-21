@@ -24,6 +24,7 @@ internal sealed record CliArguments(
         var command = CliCommand.Interactive;
         var promptParts = new List<string>();
         string? provider = null;
+        string? protocol = null;
         string? baseUrl = null;
         string? model = null;
         string? profile = null;
@@ -56,6 +57,9 @@ internal sealed record CliArguments(
                     break;
                 case "--provider":
                     provider = RequireValue(args, ref index, argument);
+                    break;
+                case "--protocol":
+                    protocol = RequireValue(args, ref index, argument);
                     break;
                 case "--base-url":
                     baseUrl = RequireValue(args, ref index, argument);
@@ -123,6 +127,7 @@ internal sealed record CliArguments(
             new WfxSettingsLayer
             {
                 Provider = provider,
+                Protocol = protocol,
                 BaseUrl = baseUrl,
                 Model = model,
                 Profile = profile,
