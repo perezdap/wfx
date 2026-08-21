@@ -85,6 +85,30 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
+    public void Load_WarnsWhenProjectBaseUrlSuppressesUserApiKeyAlone()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(profile.Path, ".wfx"));
+        Directory.CreateDirectory(Path.Combine(workspace.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(profile.Path, ".wfx", "config.json"), """
+            { "api_key": "user-secret" }
+            """);
+        File.WriteAllText(Path.Combine(workspace.Path, ".wfx", "config.json"), """
+            { "base_url": "https://gateway.example/v1" }
+            """);
+
+        var result = WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: profile.Path);
+
+        Assert.Null(result.ApiKey);
+        Assert.Single(result.Warnings);
+        Assert.Contains("suppressed", result.Warnings[0]);
+    }
+
+    [Fact]
     public void Load_ProjectBaseUrlAcceptsExplicitCliCredentials()
     {
         using var workspace = new TemporaryDirectory();

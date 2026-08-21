@@ -51,9 +51,11 @@ jobs:
           $stdout = Join-Path $env:RUNNER_TEMP "wfx-stdout.txt"
           $stderr = Join-Path $env:RUNNER_TEMP "wfx-stderr.txt"
           $process = Start-Process $exe -ArgumentList "--help" -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-          $process.WaitForExit()
-          $process.Refresh()
           $peak = $process.PeakWorkingSet64
+          while (-not $process.WaitForExit(10)) {
+            $process.Refresh()
+            $peak = [Math]::Max($peak, $process.PeakWorkingSet64)
+          }
           "### ${{ matrix.rid }}" >> $env:GITHUB_STEP_SUMMARY
           "- Binary size: $([Math]::Round($size / 1MB, 2)) MiB" >> $env:GITHUB_STEP_SUMMARY
           "- Warm startup: $([Math]::Round($elapsed.TotalMilliseconds, 1)) ms" >> $env:GITHUB_STEP_SUMMARY

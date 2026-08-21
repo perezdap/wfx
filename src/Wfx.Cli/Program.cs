@@ -186,15 +186,18 @@ internal static class Program
         cancellationToken.ThrowIfCancellationRequested();
         Console.Error.Write($"Approve {request.ToolName} [{request.Level}]? [y/N] ");
         var readLine = Task.Run(Console.ReadLine, CancellationToken.None);
+        using var promptCompleted = new CancellationTokenSource();
+        using var waitCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, promptCompleted.Token);
         var completed = await Task.WhenAny(
             readLine,
-            Task.Delay(Timeout.Infinite, cancellationToken)).ConfigureAwait(false);
+            Task.Delay(Timeout.Infinite, waitCancellation.Token)).ConfigureAwait(false);
         if (completed != readLine)
         {
             Console.Error.WriteLine();
             cancellationToken.ThrowIfCancellationRequested();
         }
 
+        promptCompleted.Cancel();
         var answer = await readLine.ConfigureAwait(false);
         return answer is not null && answer.Equals("y", StringComparison.OrdinalIgnoreCase);
     }

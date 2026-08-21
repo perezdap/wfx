@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Wfx.Core;
+using Wfx.PowerShell;
 using Wfx.Tools;
 
 namespace Wfx.Tools.Tests;
@@ -15,6 +16,38 @@ public sealed class FileToolBoundaryTests
         using var arguments = JsonDocument.Parse("""
             { "path": "../outside.txt", "content": "no" }
             """);
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await tool.ExecuteAsync(arguments.RootElement, new ToolContext(workspace.Path), cancellationToken));
+    }
+
+    [Theory]
+    [InlineData("read_file")]
+    [InlineData("list_directory")]
+    [InlineData("apply_patch")]
+    [InlineData("powershell")]
+    public async Task ToolsCannotEscapeWorkspace(string toolName)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var workspace = new TemporaryDirectory();
+        var paths = new WorkspacePathPolicy(workspace.Path);
+        ITool tool = toolName switch
+        {
+            "read_file" => new ReadFileTool(paths),
+            "list_directory" => new ListDirectoryTool(paths),
+            "apply_patch" => new ApplyPatchTool(paths),
+            "powershell" => new PowerShellTool(paths, new UnexpectedPowerShellRunner()),
+            _ => throw new ArgumentOutOfRangeException(nameof(toolName))
+        };
+        var argumentsJson = toolName switch
+        {
+            "read_file" => """{ "path": "../outside.txt" }""",
+            "list_directory" => """{ "path": ".." }""",
+            "apply_patch" => """{ "path": "../outside.txt", "patch": "@@ -1 +1 @@\n-a\n+b" }""",
+            "powershell" => """{ "script": "Get-ChildItem", "working_directory": ".." }""",
+            _ => throw new ArgumentOutOfRangeException(nameof(toolName))
+        };
+        using var arguments = JsonDocument.Parse(argumentsJson);
 
         await Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
             await tool.ExecuteAsync(arguments.RootElement, new ToolContext(workspace.Path), cancellationToken));
@@ -95,5 +128,13 @@ public sealed class FileToolBoundaryTests
 
         Assert.True(result.Success, result.Error);
         Assert.Equal("ok", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "nested", "dir", "file.txt"), cancellationToken));
+    }
+
+    private sealed class UnexpectedPowerShellRunner : IPowerShellRunner
+    {
+        public Task<ProcessExecutionResult> ExecuteAsync(
+            PowerShellRequest request,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("PowerShell runner should not be called for an escaping working directory.");
     }
 }

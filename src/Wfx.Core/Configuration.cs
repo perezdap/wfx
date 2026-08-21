@@ -46,9 +46,11 @@ public static class WfxConfiguration
         userProfile ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var userConfig = Path.Combine(userProfile, ".wfx", "config.json");
         var projectConfig = Path.Combine(Path.GetFullPath(workspaceRoot), ".wfx", "config.json");
+        WfxSettingsLayer? userLayer = null;
         if (File.Exists(userConfig))
         {
-            layers.Add(ReadFile(userConfig));
+            userLayer = ReadFile(userConfig);
+            layers.Add(userLayer);
         }
 
         WfxSettingsLayer? projectLayer = null;
@@ -93,11 +95,12 @@ public static class WfxConfiguration
         var warnings = new List<string>();
         if (projectControlsBaseUrl)
         {
-            var suppressedCredential = !string.IsNullOrWhiteSpace(environmentLayer.ApiKey) ||
+            var suppressedCredential = !string.IsNullOrWhiteSpace(userLayer?.ApiKey) ||
+                !string.IsNullOrWhiteSpace(environmentLayer.ApiKey) ||
                 !string.IsNullOrWhiteSpace(GetEnvironment(environment, provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase)
                     ? "OPENROUTER_API_KEY"
                     : "OPENAI_API_KEY"));
-            var suppressedHeaders = merged.Headers is not null &&
+            var suppressedHeaders = (userLayer?.Headers is not null || environmentLayer.Headers is not null) &&
                 projectLayer?.Headers is null &&
                 cli?.Headers is null;
             if (suppressedCredential || suppressedHeaders)
