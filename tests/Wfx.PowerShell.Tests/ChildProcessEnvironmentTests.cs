@@ -65,4 +65,34 @@ public sealed class ChildProcessEnvironmentTests
         Assert.Equal("opt-in", environment["WFX_API_KEY"]);
         Assert.False(environment.ContainsKey("VENICE_API_KEY"));
     }
+
+    [Fact]
+    public void ApplySetsPagerDefaultsToCat()
+    {
+        var environment = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["GIT_PAGER"] = "less",
+            ["PAGER"] = "more"
+        };
+
+        ChildProcessEnvironment.Apply(environment);
+
+        Assert.Equal("cat", environment["GIT_PAGER"]);
+        Assert.Equal("cat", environment["PAGER"]);
+    }
+
+    [Fact]
+    public void ApplyLetsOverlayWinOverPagerDefaults()
+    {
+        var environment = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+        ChildProcessEnvironment.Apply(environment, new Dictionary<string, string?>
+        {
+            ["GIT_PAGER"] = "custom-git-pager",
+            ["PAGER"] = "custom-pager"
+        });
+
+        Assert.Equal("custom-git-pager", environment["GIT_PAGER"]);
+        Assert.Equal("custom-pager", environment["PAGER"]);
+    }
 }
