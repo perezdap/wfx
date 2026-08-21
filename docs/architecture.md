@@ -58,7 +58,7 @@ Provider capability discovery is intentionally deferred. A later `ModelCapabilit
 
 ## Configuration
 
-Configuration layers are parsed independently and merged in documented order. The effective settings object is immutable. Secrets may be read from configuration for compatibility, but environment variables are recommended and normal CLI output only reports whether credentials exist.
+Configuration layers are parsed independently and merged in documented order. The effective settings object is immutable. Secrets may be read from configuration for compatibility, but environment variables are recommended and normal CLI output only reports whether credentials exist. As a trust-boundary exception to ordinary precedence, a workspace-level `base_url` does not inherit user or environment credentials/custom headers; hosts receive a warning when those values are suppressed.
 
 ## Future seams
 

@@ -29,7 +29,10 @@ public sealed record WfxSettings(
     IReadOnlyDictionary<string, string> Headers,
     TimeSpan Timeout,
     int MaxIterations,
-    ApprovalMode Approval);
+    ApprovalMode Approval)
+{
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
 
 public static class WfxConfiguration
 {
@@ -87,6 +90,22 @@ public static class WfxConfiguration
             ? cli?.Headers ?? projectLayer?.Headers ?? new Dictionary<string, string>()
             : merged.Headers ?? new Dictionary<string, string>();
 
+        var warnings = new List<string>();
+        if (projectControlsBaseUrl)
+        {
+            var suppressedCredential = !string.IsNullOrWhiteSpace(environmentLayer.ApiKey) ||
+                !string.IsNullOrWhiteSpace(GetEnvironment(environment, provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase)
+                    ? "OPENROUTER_API_KEY"
+                    : "OPENAI_API_KEY"));
+            var suppressedHeaders = merged.Headers is not null &&
+                projectLayer?.Headers is null &&
+                cli?.Headers is null;
+            if (suppressedCredential || suppressedHeaders)
+            {
+                warnings.Add("Project base_url suppressed user or environment credentials. Configure the endpoint at user/environment/CLI scope, or set credentials in project/CLI scope to use them with this endpoint.");
+            }
+        }
+
         return new WfxSettings(
             provider,
             baseUri,
@@ -95,7 +114,10 @@ public static class WfxConfiguration
             headers,
             TimeSpan.FromSeconds(Math.Clamp(merged.TimeoutSeconds ?? 300, 1, 3600)),
             Math.Clamp(merged.MaxIterations ?? 24, 1, 100),
-            merged.Approval ?? ApprovalMode.Always);
+            merged.Approval ?? ApprovalMode.Always)
+        {
+            Warnings = warnings
+        };
     }
 
     public static WfxSettingsLayer ParseModelShorthand(string value)

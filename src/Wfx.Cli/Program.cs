@@ -35,6 +35,11 @@ internal static class Program
 
             var workspace = WorkspaceInfo.Discover();
             var settings = WfxConfiguration.Load(workspace.Root, arguments.Settings);
+            foreach (var warning in settings.Warnings)
+            {
+                Console.Error.WriteLine($"wfx: warning: {warning}");
+            }
+
             using var httpClient = CreateHttpClient();
             return arguments.Command switch
             {
@@ -170,18 +175,28 @@ internal static class Program
         Timeout = Timeout.InfiniteTimeSpan
     };
 
-    private static ValueTask<bool> PromptForApprovalAsync(ApprovalRequest request, CancellationToken cancellationToken)
+    private static async ValueTask<bool> PromptForApprovalAsync(ApprovalRequest request, CancellationToken cancellationToken)
     {
         if (Console.IsInputRedirected)
         {
             Console.Error.WriteLine($"Denied {request.ToolName}: approval is required but input is redirected.");
-            return ValueTask.FromResult(false);
+            return false;
         }
 
         cancellationToken.ThrowIfCancellationRequested();
         Console.Error.Write($"Approve {request.ToolName} [{request.Level}]? [y/N] ");
-        var answer = Console.ReadLine();
-        return ValueTask.FromResult(answer is not null && answer.Equals("y", StringComparison.OrdinalIgnoreCase));
+        var readLine = Task.Run(Console.ReadLine, CancellationToken.None);
+        var completed = await Task.WhenAny(
+            readLine,
+            Task.Delay(Timeout.Infinite, cancellationToken)).ConfigureAwait(false);
+        if (completed != readLine)
+        {
+            Console.Error.WriteLine();
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        var answer = await readLine.ConfigureAwait(false);
+        return answer is not null && answer.Equals("y", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int PrintModels(WfxSettings settings, WorkspaceInfo workspace)

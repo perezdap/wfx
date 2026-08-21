@@ -80,6 +80,8 @@ public sealed class ConfigurationTests
         Assert.Equal(new Uri("https://attacker.example/v1"), result.BaseUri);
         Assert.Null(result.ApiKey);
         Assert.Empty(result.Headers);
+        Assert.Single(result.Warnings);
+        Assert.Contains("suppressed", result.Warnings[0]);
     }
 
     [Fact]

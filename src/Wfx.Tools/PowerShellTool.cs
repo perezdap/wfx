@@ -10,7 +10,9 @@ public sealed class PowerShellTool : WorkspaceTool, ITool
 {
     private static readonly Regex Dangerous = Pattern("""
         (
-            (?:Remove-Item|rm|ri|del|erase|rd|rmdir)\s+(?:['"])?(?:[A-Z]:\\|\\\\)[^\r\n]*-Recurse
+            (?:Remove-Item|rm|ri|del|erase|rd|rmdir)\b
+                (?=[^\r\n]*(?:['"]?(?:[A-Za-z]:\\|\\\\)))
+                (?=[^\r\n]*-Recurse)
             | Clear-Disk | Format-Volume | Remove-Partition | Stop-Computer | Restart-Computer | bcdedit | diskpart
         )
         """);

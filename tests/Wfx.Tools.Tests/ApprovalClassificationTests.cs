@@ -14,6 +14,8 @@ public sealed class ApprovalClassificationTests
     [InlineData("winget install Git.Git", ApprovalLevel.SystemChange)]
     [InlineData("Remove-Item C:\\ -Recurse -Force", ApprovalLevel.Dangerous)]
     [InlineData("rm C:\\ -Recurse -Force", ApprovalLevel.Dangerous)]
+    [InlineData("Remove-Item -Recurse -Force C:\\", ApprovalLevel.Dangerous)]
+    [InlineData("rm -Force \\\\server\\share -Recurse", ApprovalLevel.Dangerous)]
     [InlineData("& ./unknown.exe", ApprovalLevel.SystemChange)]
     [InlineData("Get-Content C:\\Windows\\win.ini", ApprovalLevel.SystemChange)]
     [InlineData("gc C:\\Users\\me\\secrets.json", ApprovalLevel.SystemChange)]

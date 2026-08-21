@@ -106,14 +106,35 @@ public sealed class OpenAiCompatibleProviderTests
         Assert.Contains("[REDACTED]", exception.Message);
     }
 
+    [Fact]
+    public async Task RedactsCustomHeaderValuesFromEndpointErrors()
+    {
+        const string secret = "header-secret-value";
+        var handler = new StubHandler(HttpStatusCode.Unauthorized, $"credential {secret}", "application/json");
+        var provider = CreateProvider(handler, headers: new Dictionary<string, string>
+        {
+            ["x-api-key"] = secret
+        });
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(async () =>
+            await CollectAsync(provider.StreamAsync(
+                new ModelRequest("model", [new ModelMessage(ModelRole.User, "x")], []),
+                TestContext.Current.CancellationToken)));
+
+        Assert.DoesNotContain(secret, exception.Message);
+        Assert.Contains("[REDACTED]", exception.Message);
+    }
+
     private static OpenAiCompatibleProvider CreateProvider(
         StubHandler handler,
         string? apiKey = null,
-        bool includeStreamOptions = false) =>
+        bool includeStreamOptions = false,
+        IReadOnlyDictionary<string, string>? headers = null) =>
         new(new HttpClient(handler), new OpenAiProviderOptions
         {
             BaseUri = new Uri("https://example.test/v1"),
             ApiKey = apiKey,
+            Headers = headers ?? new Dictionary<string, string>(),
             Timeout = TimeSpan.FromSeconds(10),
             IncludeStreamOptions = includeStreamOptions
         });

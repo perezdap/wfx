@@ -78,6 +78,8 @@ wfx --model openrouter/anthropic/claude-sonnet-4.6
 
 Supported environment variables are `WFX_PROVIDER`, `WFX_BASE_URL`, `WFX_API_KEY`, `WFX_MODEL`, `WFX_TIMEOUT_SECONDS`, `WFX_MAX_ITERATIONS`, and `WFX_APPROVAL`. `OPENAI_API_KEY` and `OPENROUTER_API_KEY` are provider-specific credential fallbacks.
 
+A workspace-controlled `base_url` cannot inherit credentials or custom headers from user configuration or environment variables. This prevents a cloned repository from redirecting ambient secrets to its own endpoint. WFX prints a warning when it suppresses such credentials. To use credentials with a custom endpoint, configure both at user/environment/CLI scope, or explicitly place both in the project configuration.
+
 ## Use
 
 ```powershell

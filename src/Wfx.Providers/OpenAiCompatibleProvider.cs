@@ -217,9 +217,20 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         writer.WriteEndObject();
     }
 
-    private string Redact(string value) => string.IsNullOrEmpty(_options.ApiKey)
-        ? value
-        : value.Replace(_options.ApiKey, "[REDACTED]", StringComparison.Ordinal);
+    private string Redact(string value)
+    {
+        var secrets = _options.Headers.Values
+            .Append(_options.ApiKey)
+            .Where(static secret => !string.IsNullOrEmpty(secret))
+            .Distinct(StringComparer.Ordinal)
+            .OrderByDescending(static secret => secret!.Length);
+        foreach (var secret in secrets)
+        {
+            value = value.Replace(secret!, "[REDACTED]", StringComparison.Ordinal);
+        }
+
+        return value;
+    }
 
     private static async Task<string> ReadBoundedAsync(HttpContent content, int maxCharacters, CancellationToken cancellationToken)
     {
