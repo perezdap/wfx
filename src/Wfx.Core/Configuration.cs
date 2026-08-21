@@ -50,10 +50,15 @@ public static class WfxConfiguration
     {
         var layers = new List<WfxSettingsLayer> { Defaults };
         userProfile ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var userConfig = Path.Combine(userProfile, ".wfx", "config.json");
+        var userConfig = Path.GetFullPath(Path.Combine(userProfile, ".wfx", "config.json"));
         var projectConfig = Path.Combine(Path.GetFullPath(workspaceRoot), ".wfx", "config.json");
+        // From the profile root, the user and project config are the same file.
+        // Loading it once (as the project layer) yields an identical merge and
+        // avoids a spurious credential-suppression warning for a file that
+        // suppresses nothing.
+        var sameConfigFile = string.Equals(userConfig, projectConfig, StringComparison.OrdinalIgnoreCase);
         WfxSettingsLayer? userLayer = null;
-        if (File.Exists(userConfig))
+        if (!sameConfigFile && File.Exists(userConfig))
         {
             userLayer = ReadFile(userConfig);
         }

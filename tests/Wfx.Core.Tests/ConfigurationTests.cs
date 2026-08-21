@@ -132,6 +132,81 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
+    public void Load_SameFileUserAndProjectConfigDoesNotWarnAboutSuppression()
+    {
+        // Running wfx from the profile root makes the user config and the project
+        // config the same file; nothing is suppressed and no warning should fire.
+        using var root = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(root.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(root.Path, ".wfx", "config.json"), """
+            { "base_url": "https://gateway.example/v1", "api_key": "file-secret", "model": "m" }
+            """);
+
+        var result = WfxConfiguration.Load(
+            root.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: root.Path);
+
+        Assert.Equal("file-secret", result.ApiKey);
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
+    public void Load_SameFileUserAndProjectConfigThroughProfileExpansion()
+    {
+        using var root = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(root.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(root.Path, ".wfx", "config.json"), """
+            { "profile": "cloud", "profiles": { "cloud": { "base_url": "https://gateway.example/v1", "api_key": "profile-secret", "model": "m" } } }
+            """);
+
+        var result = WfxConfiguration.Load(
+            root.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: root.Path);
+
+        Assert.Equal("profile-secret", result.ApiKey);
+        Assert.Equal("m", result.Model);
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
+    public void Load_SameFileDetectedAcrossWindowsPathCasing()
+    {
+        using var root = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(root.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(root.Path, ".wfx", "config.json"), """
+            { "base_url": "https://gateway.example/v1", "api_key": "file-secret", "model": "m" }
+            """);
+
+        // Flip the case of every letter deterministically so the test truly
+        // exercises case-insensitive comparison even on lowercase temp roots.
+        var result = WfxConfiguration.Load(
+            root.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: FlipCasing(root.Path));
+
+        Assert.Equal("file-secret", result.ApiKey);
+        Assert.Empty(result.Warnings);
+    }
+
+    private static string FlipCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+            }
+        }
+
+        return new string(chars);
+    }
+
+    [Fact]
     public void Load_RejectsInvalidApprovalFromEnvironment()
     {
         using var workspace = new TemporaryDirectory();
