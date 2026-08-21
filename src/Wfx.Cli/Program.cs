@@ -206,7 +206,9 @@ internal static class Program
 
     private static async ValueTask<bool> PromptForApprovalAsync(ApprovalRequest request, CancellationToken cancellationToken)
     {
-        var call = ToolCallSummary.Describe(request.ToolName, request.ArgumentsJson, ApprovalSummaryLength);
+        var call = ConsoleText.ForConsole(
+            ToolCallSummary.Describe(request.ToolName, request.ArgumentsJson, ApprovalSummaryLength),
+            _unicodeConsole);
         if (Console.IsInputRedirected)
         {
             Console.Error.WriteLine($"Denied {call}: approval is required but input is redirected.");

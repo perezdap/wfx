@@ -15,9 +15,9 @@ public sealed class ToolCallSummaryTests
     [Fact]
     public void CollapsesMultiLineCommandsOntoOneLine()
     {
-        var summary = ToolCallSummary.Describe("powershell", "{\"command\":\"curl.exe -s \\n  https://example.invalid\"}");
+        var summary = ToolCallSummary.Describe("powershell", "{\"script\":\"curl.exe -s \\n  https://example.invalid\"}");
 
-        Assert.Equal("powershell(command: curl.exe -s https://example.invalid)", summary);
+        Assert.Equal("powershell(script: curl.exe -s https://example.invalid)", summary);
     }
 
     [Fact]
@@ -47,16 +47,16 @@ public sealed class ToolCallSummaryTests
     [Fact]
     public void ShowsRawArgumentsWhenJsonIsInvalid()
     {
-        var summary = ToolCallSummary.Describe("powershell", "{\"command\":");
+        var summary = ToolCallSummary.Describe("powershell", "{\"script\":");
 
-        Assert.Equal("powershell({\"command\":)", summary);
+        Assert.Equal("powershell({\"script\":)", summary);
     }
 
     [Fact]
     public void TruncatesLongArgumentsToTheRequestedLength()
     {
-        var command = new string('a', 500);
-        var summary = ToolCallSummary.Describe("powershell", $"{{\"command\":\"{command}\"}}", 40);
+        var script = new string('a', 500);
+        var summary = ToolCallSummary.Describe("powershell", $"{{\"script\":\"{script}\"}}", 40);
 
         Assert.Equal(40 + 1, summary.Length - "powershell()".Length);
         Assert.EndsWith("…)", summary, StringComparison.Ordinal);

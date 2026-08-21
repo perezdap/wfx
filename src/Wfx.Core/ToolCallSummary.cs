@@ -25,7 +25,7 @@ public static class ToolCallSummary
     public static string DescribeText(string? text, int maxLength = DefaultMaxArgumentLength) =>
         Truncate(Collapse(text), maxLength);
 
-    public static string DescribeArguments(string? argumentsJson, int maxArgumentLength = DefaultMaxArgumentLength)
+    private static string DescribeArguments(string? argumentsJson, int maxArgumentLength)
     {
         if (string.IsNullOrWhiteSpace(argumentsJson))
         {
@@ -39,14 +39,14 @@ public static class ToolCallSummary
         }
         catch (JsonException)
         {
-            return Truncate(Collapse(argumentsJson), maxArgumentLength);
+            return DescribeText(argumentsJson, maxArgumentLength);
         }
 
         using (document)
         {
             if (document.RootElement.ValueKind != JsonValueKind.Object)
             {
-                return Truncate(Collapse(argumentsJson), maxArgumentLength);
+                return DescribeText(argumentsJson, maxArgumentLength);
             }
 
             var maxValueLength = Math.Max(MinValueLength, maxArgumentLength * 3 / 4);
@@ -77,7 +77,7 @@ public static class ToolCallSummary
 
     private static string? DescribeValue(JsonElement value, int maxValueLength) => value.ValueKind switch
     {
-        JsonValueKind.String => NonEmpty(Truncate(Collapse(value.GetString()), maxValueLength)),
+        JsonValueKind.String => NonEmpty(DescribeText(value.GetString(), maxValueLength)),
         JsonValueKind.Number => value.GetRawText(),
         JsonValueKind.True => "true",
         JsonValueKind.False => "false",

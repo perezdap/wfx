@@ -4,7 +4,7 @@ namespace Wfx.Cli;
 
 internal sealed class ConsoleAgentObserver(bool verbose, bool debug, bool unicode = true) : IAgentObserver
 {
-    private readonly string _marker = unicode ? "●" : "*";
+    private readonly string _marker = unicode ? ConsoleText.Marker : ConsoleText.AsciiMarker;
 
     public ValueTask OnModelTextAsync(string text, CancellationToken cancellationToken)
     {
@@ -19,7 +19,7 @@ internal sealed class ConsoleAgentObserver(bool verbose, bool debug, bool unicod
         CancellationToken cancellationToken)
     {
         var call = ToolCallSummary.Describe(name, argumentsJson);
-        Console.Error.WriteLine($"{_marker} {call}{(verbose ? $" [{level}]" : string.Empty)}");
+        WriteLine($"{_marker} {call}{(verbose ? $" [{level}]" : string.Empty)}");
         return ValueTask.CompletedTask;
     }
 
@@ -29,8 +29,8 @@ internal sealed class ConsoleAgentObserver(bool verbose, bool debug, bool unicod
         string reason,
         CancellationToken cancellationToken)
     {
-        Console.Error.WriteLine($"{_marker} {ToolCallSummary.Describe(name, argumentsJson)}");
-        Console.Error.WriteLine($"  skipped: {ToolCallSummary.DescribeText(reason)}");
+        WriteLine($"{_marker} {ToolCallSummary.Describe(name, argumentsJson)}");
+        WriteLine($"  skipped: {ToolCallSummary.DescribeText(reason)}");
         return ValueTask.CompletedTask;
     }
 
@@ -42,19 +42,23 @@ internal sealed class ConsoleAgentObserver(bool verbose, bool debug, bool unicod
     {
         if (verbose)
         {
-            Console.Error.WriteLine($"  {(result.Success ? "completed" : "failed")} in {duration.TotalMilliseconds:F0} ms");
+            WriteLine($"  {(result.Success ? "completed" : "failed")} in {duration.TotalMilliseconds:F0} ms");
         }
         else if (!result.Success)
         {
-            Console.Error.WriteLine($"  failed: {ToolCallSummary.DescribeText(result.Error ?? "unknown error")}");
+            WriteLine($"  failed: {ToolCallSummary.DescribeText(result.Error ?? "unknown error")}");
         }
 
         if (debug && !string.IsNullOrWhiteSpace(result.Output))
         {
-            var output = result.Output.Length > 2_000 ? result.Output[..2_000] + "…" : result.Output;
-            Console.Error.WriteLine(output);
+            var output = result.Output.Length > 2_000
+                ? result.Output[..2_000] + ConsoleText.Ellipsis
+                : result.Output;
+            WriteLine(output);
         }
 
         return ValueTask.CompletedTask;
     }
+
+    private void WriteLine(string line) => Console.Error.WriteLine(ConsoleText.ForConsole(line, unicode));
 }
