@@ -30,6 +30,13 @@ public sealed class ApprovalClassificationTests
     [InlineData("Get-Content (python evil.py)", ApprovalLevel.SystemChange)]
     [InlineData("Get-ChildItem | Where-Object { python evil.py }", ApprovalLevel.SystemChange)]
     [InlineData("Get-Content a.txt\nSelect-Object -First 1", ApprovalLevel.ReadOnly)]
+    [InlineData("Get-ChildItem Env:", ApprovalLevel.SystemChange)]
+    [InlineData("Get-ChildItem Env:WFX_API_KEY", ApprovalLevel.SystemChange)]
+    [InlineData("Get-Item Env:FOO", ApprovalLevel.SystemChange)]
+    [InlineData("Get-Content env:WFX_API_KEY", ApprovalLevel.SystemChange)]
+    [InlineData("gci env:", ApprovalLevel.SystemChange)]
+    [InlineData("ls Env:\\", ApprovalLevel.SystemChange)]
+    [InlineData("$env:WFX_API_KEY", ApprovalLevel.SystemChange)]
     public void ClassifiesPowerShellConservatively(string script, ApprovalLevel expected)
     {
         Assert.Equal(expected, PowerShellTool.ClassifyScript(script));

@@ -50,6 +50,9 @@ public sealed class PowerShellTool : WorkspaceTool, ITool
         | [(){}]
         """);
 
+    // Env: provider reads leak process environment and must never auto-approve as ReadOnly.
+    private static readonly Regex EnvironmentProvider = Pattern(@"\bEnv:");
+
     // Output redirection (>, >>, 2>) writes to the file system; PowerShell has no
     // '>' comparison operator, so any '>' is treated as a write.
     private static readonly Regex Redirection = Pattern(@">");
@@ -77,13 +80,23 @@ public sealed class PowerShellTool : WorkspaceTool, ITool
             ToolJson.ObjectSchema([
                 ("script", ToolJson.StringSchema("PowerShell script to execute."), true),
                 ("working_directory", ToolJson.StringSchema("Workspace directory in which to run."), false),
-                ("timeout_seconds", ToolJson.IntegerSchema("Timeout in seconds.", 1, 1_800), false)
+                ("timeout_seconds", ToolJson.IntegerSchema("Timeout in seconds.", 1, 1_800), false),
+                ("inherit_environment", ToolJson.StringArraySchema("Parent environment variable names to restore in the child process. Secret-bearing variables (*_API_KEY, *_TOKEN, *_SECRET, plus WFX_API_KEY, OPENAI_API_KEY, and OPENROUTER_API_KEY) are omitted by default."), false)
             ]));
     }
 
     public ToolDefinition Definition { get; }
 
-    public ApprovalLevel Classify(JsonElement arguments) => ClassifyScript(ToolJson.RequiredString(arguments, "script"));
+    public ApprovalLevel Classify(JsonElement arguments)
+    {
+        var scriptLevel = ClassifyScript(ToolJson.RequiredString(arguments, "script"));
+        if (ToolJson.Strings(arguments, "inherit_environment").Count == 0)
+        {
+            return scriptLevel;
+        }
+
+        return scriptLevel >= ApprovalLevel.SystemChange ? scriptLevel : ApprovalLevel.SystemChange;
+    }
 
     public async ValueTask<ToolResult> ExecuteAsync(
         JsonElement arguments,
@@ -101,7 +114,7 @@ public sealed class PowerShellTool : WorkspaceTool, ITool
 
         var timeout = TimeSpan.FromSeconds(ToolJson.Integer(arguments, "timeout_seconds", 120, 1, 1_800));
         var result = await _runner.ExecuteAsync(
-            new PowerShellRequest(script, workingDirectory, Timeout: timeout),
+            new PowerShellRequest(script, workingDirectory, ResolveInheritedEnvironment(arguments), timeout),
             cancellationToken).ConfigureAwait(false);
         var combined = new StringBuilder();
         if (!string.IsNullOrWhiteSpace(result.StandardOutput))
@@ -144,7 +157,7 @@ public sealed class PowerShellTool : WorkspaceTool, ITool
             return ApprovalLevel.SystemChange;
         }
 
-        if (UntrustedPowerShell.IsMatch(script))
+        if (UntrustedPowerShell.IsMatch(script) || EnvironmentProvider.IsMatch(script))
         {
             return ApprovalLevel.SystemChange;
         }
@@ -158,6 +171,30 @@ public sealed class PowerShellTool : WorkspaceTool, ITool
         return statements.Length > 0 && statements.All(statement => ReadOnlyStatement.IsMatch(statement))
             ? ApprovalLevel.ReadOnly
             : ApprovalLevel.SystemChange;
+    }
+
+    private static IReadOnlyDictionary<string, string?>? ResolveInheritedEnvironment(JsonElement arguments)
+    {
+        var names = ToolJson.Strings(arguments, "inherit_environment");
+        if (names.Count == 0)
+        {
+            return null;
+        }
+
+        Dictionary<string, string?>? environment = null;
+        foreach (var name in names)
+        {
+            var value = Environment.GetEnvironmentVariable(name);
+            if (value is null)
+            {
+                continue;
+            }
+
+            environment ??= new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            environment[name] = value;
+        }
+
+        return environment;
     }
 
     private static Regex Pattern(string expression) => new(

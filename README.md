@@ -10,7 +10,7 @@ WFX is a small, embeddable, Windows-first AI coding-agent runtime. It is designe
 - Streaming OpenAI-compatible Chat Completions transport
 - OpenAI, OpenRouter, LM Studio, Ollama-compatible, and custom endpoints
 - Structured `read_file`, `write_file`, `apply_patch`, `list_directory`, `search_files`, `search_text`, `powershell`, and `git` tools
-- Dedicated PowerShell execution with `pwsh.exe` preference, Windows PowerShell fallback, cancellation, timeout, environment, stdout, stderr, and exit codes
+- Dedicated PowerShell execution with `pwsh.exe` preference, Windows PowerShell fallback, cancellation, timeout, environment, stdout, stderr, and exit codes. Child processes omit secret-bearing variables by default.
 - Link-aware workspace boundary checks and conservative approvals
 - Root-to-working-directory `AGENTS.md` discovery
 - Layered JSON and environment configuration with named profiles
@@ -148,7 +148,7 @@ wfx --help
 | `workspace` | allow | allow | prompt | prompt |
 | `never` | allow | deny | deny | deny |
 
-PowerShell is classified conservatively. Known inspection commands are read-only, build/test commands are workspace writes, known system-management commands are system changes, destructive disk/root operations are dangerous, and unrecognized scripts default to system change.
+PowerShell is classified conservatively. Known inspection commands are read-only, build/test commands are workspace writes, known system-management commands are system changes, destructive disk/root operations are dangerous, and unrecognized scripts default to system change. `Env:` provider reads and `$env:` access are system changes, never read-only.
 
 ## Architecture
 
@@ -163,6 +163,7 @@ WFX takes inspiration from the small, native, model-agnostic philosophy of [Verc
 - Git tool operations are restricted to `status`, `diff`, staged diff, and bounded `log`.
 - The CLI never commits or pushes.
 - API keys are not printed and are redacted if an endpoint echoes one in an error.
+- Child processes omit secret-bearing environment variables by default: names matching `*_API_KEY`, `*_TOKEN`, or `*_SECRET`, plus `WFX_API_KEY`, `OPENAI_API_KEY`, and `OPENROUTER_API_KEY`. The `powershell` tool can restore specific parent variables with `inherit_environment`, which is classified as at least a system change. Scrubbed values are never logged.
 - `--approval never` means deny mutations rather than silently execute them.
 
 See [risks.md](docs/risks.md) for remaining limitations.
