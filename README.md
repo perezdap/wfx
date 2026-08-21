@@ -76,7 +76,36 @@ The shorthand below selects OpenRouter and passes the remaining identifier as th
 wfx --model openrouter/anthropic/claude-sonnet-4.6
 ```
 
-Supported environment variables are `WFX_PROVIDER`, `WFX_BASE_URL`, `WFX_API_KEY`, `WFX_MODEL`, `WFX_TIMEOUT_SECONDS`, `WFX_MAX_ITERATIONS`, and `WFX_APPROVAL`. `OPENAI_API_KEY` and `OPENROUTER_API_KEY` are provider-specific credential fallbacks.
+Supported environment variables are `WFX_PROVIDER`, `WFX_PROFILE`, `WFX_BASE_URL`, `WFX_API_KEY`, `WFX_MODEL`, `WFX_TIMEOUT_SECONDS`, `WFX_MAX_ITERATIONS`, and `WFX_APPROVAL`. `OPENAI_API_KEY` and `OPENROUTER_API_KEY` are provider-specific credential fallbacks.
+
+### Profiles
+
+A profile is a named settings layer stored under `profiles` in a config file. Profile entries accept the same keys as top-level configuration (`provider`, `base_url`, `api_key`, `model`, `headers`, `timeout_seconds`, `max_iterations`, `approval`):
+
+```json
+{
+  "profiles": {
+    "fast": {
+      "provider": "openai",
+      "model": "gpt-5-mini"
+    },
+    "reasoning": {
+      "provider": "openrouter",
+      "model": "anthropic/claude-sonnet-4.6",
+      "max_iterations": 40
+    }
+  }
+}
+```
+
+Select a profile per invocation with `--profile <name>`, set a session default with `WFX_PROFILE`, or set a file default with a top-level `"profile"` key. Precedence is `--profile` > `WFX_PROFILE` > `"profile"` key, and the project file's default overrides the user file's. Profiles with the same name in both files merge key-by-key with the project winning; environment variables and CLI flags still override profile values. Selecting an undefined profile fails and lists every available profile.
+
+```powershell
+wfx --profile fast
+wfx run --profile reasoning "Analyze the agent loop for cancellation bugs."
+```
+
+WFX echoes the active profile and model at startup.
 
 A workspace-controlled `base_url` cannot inherit credentials or custom headers from user configuration or environment variables. This prevents a cloned repository from redirecting ambient secrets to its own endpoint. WFX prints a warning when it suppresses such credentials. To use credentials with a custom endpoint, configure both at user/environment/CLI scope, or explicitly place both in the project configuration.
 
