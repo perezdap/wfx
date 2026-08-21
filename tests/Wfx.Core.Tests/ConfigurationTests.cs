@@ -179,13 +179,31 @@ public sealed class ConfigurationTests
             { "base_url": "https://gateway.example/v1", "api_key": "file-secret", "model": "m" }
             """);
 
+        // Flip the case of every letter deterministically so the test truly
+        // exercises case-insensitive comparison even on lowercase temp roots.
         var result = WfxConfiguration.Load(
             root.Path,
             environment: new Dictionary<string, string?>(),
-            userProfile: root.Path.ToLowerInvariant());
+            userProfile: FlipCasing(root.Path));
 
         Assert.Equal("file-secret", result.ApiKey);
         Assert.Empty(result.Warnings);
+    }
+
+    private static string FlipCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+            }
+        }
+
+        return new string(chars);
     }
 
     [Fact]
