@@ -6,6 +6,8 @@ public sealed record WfxSettingsLayer
 {
     public string? Provider { get; init; }
 
+    public string? Protocol { get; init; }
+
     public string? BaseUrl { get; init; }
 
     public string? ApiKey { get; init; }
@@ -27,6 +29,7 @@ public sealed record WfxSettingsLayer
 
 public sealed record WfxSettings(
     string Provider,
+    string Protocol,
     Uri BaseUri,
     string? ApiKey,
     string Model,
@@ -42,6 +45,10 @@ public sealed record WfxSettings(
 
 public static class WfxConfiguration
 {
+    private const string DefaultProtocol = "chat_completions";
+
+    private static readonly string[] KnownProtocols = [DefaultProtocol, "responses", "anthropic_messages"];
+
     public static WfxSettings Load(
         string workspaceRoot,
         WfxSettingsLayer? cli = null,
@@ -94,7 +101,11 @@ public static class WfxConfiguration
 
         var merged = Merge(layers);
         var provider = merged.Provider ?? "openai";
-        var baseUrl = merged.BaseUrl ?? ProviderDefaultBaseUrl(provider);
+        var protocol = ResolveProtocol(merged.Protocol);
+        ValidateProtocol(protocol);
+        var credentialEnvironmentVariable = CredentialEnvironmentVariable(provider);
+        var baseUrl = merged.BaseUrl ?? TryProviderDefaultBaseUrl(provider) ?? ProtocolDefaultBaseUrl(protocol)
+            ?? throw new InvalidOperationException($"Provider '{provider}' requires an explicit base_url.");
         if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri) || baseUri.Scheme is not ("http" or "https"))
         {
             throw new InvalidOperationException("The configured base_url must be an absolute HTTP or HTTPS URL.");
@@ -108,9 +119,7 @@ public static class WfxConfiguration
             : merged.ApiKey;
         if (string.IsNullOrWhiteSpace(apiKey) && !projectControlsBaseUrl)
         {
-            apiKey = GetEnvironment(environment, provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase)
-                ? "OPENROUTER_API_KEY"
-                : "OPENAI_API_KEY");
+            apiKey = GetEnvironment(environment, credentialEnvironmentVariable);
         }
 
         var headers = projectControlsBaseUrl
@@ -122,9 +131,7 @@ public static class WfxConfiguration
         {
             var suppressedCredential = !string.IsNullOrWhiteSpace(userLayer?.ApiKey) ||
                 !string.IsNullOrWhiteSpace(environmentLayer.ApiKey) ||
-                !string.IsNullOrWhiteSpace(GetEnvironment(environment, provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase)
-                    ? "OPENROUTER_API_KEY"
-                    : "OPENAI_API_KEY"));
+                !string.IsNullOrWhiteSpace(GetEnvironment(environment, credentialEnvironmentVariable));
             var suppressedHeaders = (userLayer?.Headers is not null || environmentLayer.Headers is not null) &&
                 projectLayer?.Headers is null &&
                 cli?.Headers is null;
@@ -136,6 +143,7 @@ public static class WfxConfiguration
 
         return new WfxSettings(
             provider,
+            protocol,
             baseUri,
             string.IsNullOrWhiteSpace(apiKey) ? null : apiKey,
             merged.Model ?? string.Empty,
@@ -247,6 +255,7 @@ public static class WfxConfiguration
         return new WfxSettingsLayer
         {
             Provider = GetString(root, "provider"),
+            Protocol = GetString(root, "protocol"),
             BaseUrl = GetString(root, "base_url"),
             ApiKey = GetString(root, "api_key"),
             Model = GetString(root, "model"),
@@ -268,6 +277,7 @@ public static class WfxConfiguration
     private static WfxSettingsLayer FromEnvironment(IReadOnlyDictionary<string, string?>? environment) => new()
     {
         Provider = GetEnvironment(environment, "WFX_PROVIDER"),
+        Protocol = GetEnvironment(environment, "WFX_PROTOCOL"),
         BaseUrl = GetEnvironment(environment, "WFX_BASE_URL"),
         ApiKey = GetEnvironment(environment, "WFX_API_KEY"),
         Model = GetEnvironment(environment, "WFX_MODEL"),
@@ -339,6 +349,7 @@ public static class WfxConfiguration
             result = new WfxSettingsLayer
             {
                 Provider = layer.Provider ?? result.Provider,
+                Protocol = layer.Protocol ?? result.Protocol,
                 BaseUrl = layer.BaseUrl ?? result.BaseUrl,
                 ApiKey = layer.ApiKey ?? result.ApiKey,
                 Model = layer.Model ?? result.Model,
@@ -352,13 +363,45 @@ public static class WfxConfiguration
         return result;
     }
 
-    private static string ProviderDefaultBaseUrl(string provider) => provider.ToLowerInvariant() switch
+    private static string ResolveProtocol(string? protocol) =>
+        string.IsNullOrWhiteSpace(protocol) ? DefaultProtocol : protocol;
+
+    private static void ValidateProtocol(string protocol)
+    {
+        if (protocol.Equals("anthropic_messages", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Protocol 'anthropic_messages' is not implemented yet.");
+        }
+
+        if (!KnownProtocols.Any(known => known.Equals(protocol, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException(
+                $"Protocol '{protocol}' is not supported. Valid values are: {string.Join(", ", KnownProtocols)}.");
+        }
+    }
+
+    private static string? TryProviderDefaultBaseUrl(string provider) => provider.ToLowerInvariant() switch
     {
         "openai" => "https://api.openai.com/v1",
         "openrouter" => "https://openrouter.ai/api/v1",
         "local" => "http://localhost:1234/v1",
-        _ => throw new InvalidOperationException($"Provider '{provider}' requires an explicit base_url.")
+        "anthropic" => "https://api.anthropic.com/v1",
+        _ => null
     };
+
+    private static string? ProtocolDefaultBaseUrl(string protocol) => protocol.ToLowerInvariant() switch
+    {
+        "responses" => "https://api.openai.com/v1",
+        _ => null
+    };
+
+    private static string CredentialEnvironmentVariable(string provider) =>
+        provider.ToLowerInvariant() switch
+        {
+            "openrouter" => "OPENROUTER_API_KEY",
+            "anthropic" => "ANTHROPIC_API_KEY",
+            _ => "OPENAI_API_KEY"
+        };
 
     private static string? GetString(JsonElement root, string name)
     {
