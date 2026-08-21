@@ -168,3 +168,7 @@ WFX takes inspiration from the small, native, model-agnostic philosophy of [Verc
 - `--approval never` means deny mutations rather than silently execute them.
 
 See [risks.md](docs/risks.md) for remaining limitations.
+
+## License
+
+WFX is licensed under the [MIT License](LICENSE).
