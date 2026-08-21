@@ -26,6 +26,7 @@ internal sealed record CliArguments(
         string? provider = null;
         string? baseUrl = null;
         string? model = null;
+        string? profile = null;
         int? timeout = null;
         int? maxIterations = null;
         ApprovalMode? approval = null;
@@ -58,6 +59,9 @@ internal sealed record CliArguments(
                     break;
                 case "--base-url":
                     baseUrl = RequireValue(args, ref index, argument);
+                    break;
+                case "--profile":
+                    profile = RequireValue(args, ref index, argument);
                     break;
                 case "--model":
                     var parsedModel = WfxConfiguration.ParseModelShorthand(RequireValue(args, ref index, argument));
@@ -121,6 +125,7 @@ internal sealed record CliArguments(
                 Provider = provider,
                 BaseUrl = baseUrl,
                 Model = model,
+                Profile = profile,
                 TimeoutSeconds = timeout,
                 MaxIterations = maxIterations,
                 Approval = approval

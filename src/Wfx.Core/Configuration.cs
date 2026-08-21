@@ -19,6 +19,10 @@ public sealed record WfxSettingsLayer
     public int? MaxIterations { get; init; }
 
     public ApprovalMode? Approval { get; init; }
+
+    public string? Profile { get; init; }
+
+    public IReadOnlyDictionary<string, WfxSettingsLayer>? Profiles { get; init; }
 }
 
 public sealed record WfxSettings(
@@ -32,6 +36,8 @@ public sealed record WfxSettings(
     ApprovalMode Approval)
 {
     public IReadOnlyList<string> Warnings { get; init; } = [];
+
+    public string? Profile { get; init; }
 }
 
 public static class WfxConfiguration
@@ -50,17 +56,31 @@ public static class WfxConfiguration
         if (File.Exists(userConfig))
         {
             userLayer = ReadFile(userConfig);
-            layers.Add(userLayer);
         }
 
         WfxSettingsLayer? projectLayer = null;
         if (File.Exists(projectConfig))
         {
             projectLayer = ReadFile(projectConfig);
-            layers.Add(projectLayer);
         }
 
         var environmentLayer = FromEnvironment(environment);
+        var profile = cli?.Profile ?? environmentLayer.Profile ?? projectLayer?.Profile ?? userLayer?.Profile;
+        if (profile is not null)
+        {
+            (userLayer, projectLayer) = ExpandProfile(profile, userLayer, projectLayer);
+        }
+
+        if (userLayer is not null)
+        {
+            layers.Add(userLayer);
+        }
+
+        if (projectLayer is not null)
+        {
+            layers.Add(projectLayer);
+        }
+
         layers.Add(environmentLayer);
         if (cli is not null)
         {
@@ -119,7 +139,8 @@ public static class WfxConfiguration
             Math.Clamp(merged.MaxIterations ?? 24, 1, 100),
             merged.Approval ?? ApprovalMode.Always)
         {
-            Warnings = warnings
+            Warnings = warnings,
+            Profile = profile
         };
     }
 
@@ -152,6 +173,52 @@ public static class WfxConfiguration
             throw new InvalidOperationException($"Configuration file must contain a JSON object: {path}");
         }
 
+        IReadOnlyDictionary<string, WfxSettingsLayer>? profiles = null;
+        if (root.TryGetProperty("profiles", out var profilesElement))
+        {
+            profiles = ParseProfiles(profilesElement, path);
+        }
+
+        var layer = ParseLayer(root, path);
+        return layer with { Profile = GetString(root, "profile"), Profiles = profiles };
+    }
+
+    private static Dictionary<string, WfxSettingsLayer> ParseProfiles(JsonElement profilesElement, string path)
+    {
+        if (profilesElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidOperationException($"Configuration profiles must be an object: {path}");
+        }
+
+        var profiles = new Dictionary<string, WfxSettingsLayer>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in profilesElement.EnumerateObject())
+        {
+            if (property.Value.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidOperationException($"Configuration profile '{property.Name}' must be an object: {path}");
+            }
+
+            if (property.Value.TryGetProperty("profile", out _))
+            {
+                throw new InvalidOperationException($"Configuration profile '{property.Name}' cannot contain a 'profile' key: {path}");
+            }
+
+            if (property.Value.TryGetProperty("profiles", out _))
+            {
+                throw new InvalidOperationException($"Configuration profile '{property.Name}' cannot contain a nested 'profiles' map: {path}");
+            }
+
+            if (!profiles.TryAdd(property.Name, ParseLayer(property.Value, path)))
+            {
+                throw new InvalidOperationException($"Configuration defines a duplicate profile '{property.Name}': {path}");
+            }
+        }
+
+        return profiles;
+    }
+
+    private static WfxSettingsLayer ParseLayer(JsonElement root, string path)
+    {
         Dictionary<string, string>? headers = null;
         if (root.TryGetProperty("headers", out var headerElement))
         {
@@ -201,8 +268,63 @@ public static class WfxConfiguration
         Model = GetEnvironment(environment, "WFX_MODEL"),
         TimeoutSeconds = ParseEnvironmentInteger(environment, "WFX_TIMEOUT_SECONDS"),
         MaxIterations = ParseEnvironmentInteger(environment, "WFX_MAX_ITERATIONS"),
-        Approval = ParseApproval(GetEnvironment(environment, "WFX_APPROVAL"))
+        Approval = ParseApproval(GetEnvironment(environment, "WFX_APPROVAL")),
+        Profile = GetEnvironment(environment, "WFX_PROFILE")
     };
+
+    private static (WfxSettingsLayer? User, WfxSettingsLayer? Project) ExpandProfile(
+        string name,
+        WfxSettingsLayer? userLayer,
+        WfxSettingsLayer? projectLayer)
+    {
+        var userProfile = GetProfile(userLayer, name);
+        var projectProfile = GetProfile(projectLayer, name);
+        if (userProfile is null && projectProfile is null)
+        {
+            throw UndefinedProfile(name, userLayer, projectLayer);
+        }
+
+        return (ExpandInPlace(userLayer, userProfile), ExpandInPlace(projectLayer, projectProfile));
+    }
+
+    private static WfxSettingsLayer? GetProfile(WfxSettingsLayer? layer, string name) =>
+        layer?.Profiles is not null && layer.Profiles.TryGetValue(name, out var profile)
+            ? profile
+            : null;
+
+    private static WfxSettingsLayer? ExpandInPlace(WfxSettingsLayer? layer, WfxSettingsLayer? profile)
+    {
+        if (layer is null)
+        {
+            return null;
+        }
+
+        var baseLayer = layer with { Profiles = null };
+        return profile is null ? baseLayer : Merge([baseLayer, profile]);
+    }
+
+    private static InvalidOperationException UndefinedProfile(
+        string name,
+        WfxSettingsLayer? userLayer,
+        WfxSettingsLayer? projectLayer)
+    {
+        var userProfiles = ProfileNames(userLayer);
+        var projectProfiles = ProfileNames(projectLayer);
+        if (userProfiles.Count == 0 && projectProfiles.Count == 0)
+        {
+            return new InvalidOperationException(
+                $"Profile '{name}' is not defined; no profiles exist in the user or project configuration files.");
+        }
+
+        return new InvalidOperationException(
+            $"Profile '{name}' is not defined. Available profiles — user: {FormatProfileNames(userProfiles)}; project: {FormatProfileNames(projectProfiles)}.");
+    }
+
+    private static IReadOnlyList<string> ProfileNames(WfxSettingsLayer? layer) =>
+        layer?.Profiles?.Keys.ToArray() ?? [];
+
+    private static string FormatProfileNames(IReadOnlyList<string> names) =>
+        names.Count == 0 ? "(none)" : string.Join(", ", names);
 
     private static WfxSettingsLayer Merge(IEnumerable<WfxSettingsLayer> layers)
     {

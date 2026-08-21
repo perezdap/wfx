@@ -71,6 +71,10 @@ internal static class Program
         CancellationToken cancellationToken)
     {
         EnsureRunnable(settings);
+        Console.Error.WriteLine(settings.Profile is null
+            ? $"wfx: {settings.Provider}/{settings.Model}"
+            : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
+
         var agent = CreateAgent(settings, workspace, arguments, httpClient);
         var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
         if (!result.FinalResponse.EndsWith('\n'))
@@ -96,6 +100,11 @@ internal static class Program
         EnsureRunnable(settings);
         Console.WriteLine("WFX");
         Console.WriteLine();
+        if (settings.Profile is not null)
+        {
+            Console.WriteLine($"Profile: {settings.Profile}");
+        }
+
         Console.WriteLine($"Model: {settings.Provider}/{settings.Model}");
         Console.WriteLine($"Workspace: {workspace.Root}");
         Console.WriteLine();
@@ -205,6 +214,11 @@ internal static class Program
     private static int PrintModels(WfxSettings settings, WorkspaceInfo workspace)
     {
         Console.WriteLine($"Provider: {settings.Provider}");
+        if (settings.Profile is not null)
+        {
+            Console.WriteLine($"Profile: {settings.Profile}");
+        }
+
         Console.WriteLine($"Model: {(string.IsNullOrEmpty(settings.Model) ? "(not configured)" : settings.Model)}");
         Console.WriteLine($"Base URL: {settings.BaseUri}");
         Console.WriteLine($"Credentials: {(settings.ApiKey is null ? "not configured" : "configured")}");
@@ -244,6 +258,7 @@ internal static class Program
 
             Options:
               --model <model>               Model ID; openrouter/<id> selects OpenRouter
+              --profile <name>              Named profile from user/project configuration
               --provider <name>             openai, openrouter, local, or a custom name
               --base-url <url>              OpenAI-compatible API base URL
               --approval <mode>             always, workspace, or never
