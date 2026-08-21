@@ -59,4 +59,88 @@ public sealed class ProcessExecutorTests
             Environment.CurrentDirectory,
             Timeout: TimeSpan.FromSeconds(30)), cancellation.Token));
     }
+
+    [Fact]
+    public async Task OmitsInheritedSecretVariablesFromChildEnvironment()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        const string name = "WFX_API_KEY";
+        const string sentinel = "wfx-test-secret-should-not-leak";
+        var previous = Environment.GetEnvironmentVariable(name);
+        Environment.SetEnvironmentVariable(name, sentinel);
+        try
+        {
+            var executor = new ProcessExecutor();
+            var result = await executor.ExecuteAsync(new ProcessCommand(
+                "cmd.exe",
+                ["/d", "/c", $"if defined {name} (echo PRESENT) else (echo ABSENT)"],
+                Environment.CurrentDirectory,
+                Timeout: TimeSpan.FromSeconds(10)), TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("ABSENT", result.StandardOutput);
+            Assert.DoesNotContain(sentinel, result.StandardOutput);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(name, previous);
+        }
+    }
+
+    [Fact]
+    public async Task OverlayRestoresSpecificSecretVariables()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        const string name = "WFX_API_KEY";
+        const string sentinel = "wfx-test-opt-in-secret";
+        var executor = new ProcessExecutor();
+        var result = await executor.ExecuteAsync(new ProcessCommand(
+            "cmd.exe",
+            ["/d", "/c", $"if defined {name} (echo PRESENT) else (echo ABSENT)"],
+            Environment.CurrentDirectory,
+            Environment: new Dictionary<string, string?> { [name] = sentinel },
+            Timeout: TimeSpan.FromSeconds(10)), TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("PRESENT", result.StandardOutput);
+        Assert.DoesNotContain(sentinel, result.StandardOutput);
+    }
+
+    [Fact]
+    public async Task StillInheritsNonSecretVariables()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        const string name = "WFX_TEST_MARKER";
+        const string sentinel = "wfx-test-marker-present";
+        var previous = Environment.GetEnvironmentVariable(name);
+        Environment.SetEnvironmentVariable(name, sentinel);
+        try
+        {
+            var executor = new ProcessExecutor();
+            var result = await executor.ExecuteAsync(new ProcessCommand(
+                "cmd.exe",
+                ["/d", "/c", $"if defined {name} (echo PRESENT) else (echo ABSENT)"],
+                Environment.CurrentDirectory,
+                Timeout: TimeSpan.FromSeconds(10)), TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("PRESENT", result.StandardOutput);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(name, previous);
+        }
+    }
 }

@@ -2,7 +2,8 @@
 
 | Risk | Milestone 1 treatment | Follow-up |
 | --- | --- | --- |
-| PowerShell cannot be classified perfectly from text | Conservative allowlist plus aliases; rooted/`..`/`$`/`&` scripts are `SystemChange` (never auto-approved `ReadOnly`); unknown scripts are `SystemChange`; root/disk operations including `rm`/`ri` are `Dangerous` | Use the PowerShell parser AST plus command metadata and an OS sandbox |
+| PowerShell cannot be classified perfectly from text | Conservative allowlist plus aliases; rooted/`..`/`$`/`&`/`Env:` scripts are `SystemChange` (never auto-approved `ReadOnly`); unknown scripts are `SystemChange`; root/disk operations including `rm`/`ri` are `Dangerous` | Use the PowerShell parser AST plus command metadata and an OS sandbox |
+| Child processes inherit the agent host environment | `ProcessExecutor` scrubs secret-bearing variable names (`*_API_KEY`/`*_TOKEN`/`*_SECRET` and the documented credential names) before overlay; `inherit_environment` is an explicit, `SystemChange` opt-in. Values are never logged | Broader secret-name heuristics and a Windows job-object sandbox |
 | Path check/operation race (TOCTOU) | Normalize and resolve links immediately before each operation; recursive tools avoid reparse points | Add handle-based Windows final-path validation and adversarial junction race tests |
 | OpenAI-compatible endpoints vary | Small explicit Chat Completions SSE adapter; `stream_options` only for OpenAI/OpenRouter | Add endpoint capability profiles and recorded conformance fixtures |
 | Tool output can exhaust context | Individual read/search limits, bounded result counts, and 1 MiB process stdout/stderr capture | Add a central byte/token budget and spill large output to artifacts |

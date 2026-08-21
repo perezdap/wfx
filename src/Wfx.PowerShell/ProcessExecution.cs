@@ -58,13 +58,7 @@ public sealed class ProcessExecutor : IProcessExecutor
             startInfo.ArgumentList.Add(argument);
         }
 
-        if (command.Environment is not null)
-        {
-            foreach (var pair in command.Environment)
-            {
-                startInfo.Environment[pair.Key] = pair.Value;
-            }
-        }
+        ChildProcessEnvironment.Apply(startInfo.Environment, command.Environment);
 
         using var process = new Process { StartInfo = startInfo };
         var started = Stopwatch.GetTimestamp();

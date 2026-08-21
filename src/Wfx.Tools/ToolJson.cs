@@ -48,6 +48,41 @@ internal static class ToolJson
         return Math.Clamp(result, min, max);
     }
 
+    public static IReadOnlyList<string> Strings(JsonElement root, string name)
+    {
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty(name, out var value))
+        {
+            return [];
+        }
+
+        if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return [];
+        }
+
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException($"'{name}' must be an array of strings.");
+        }
+
+        var items = new List<string>(value.GetArrayLength());
+        foreach (var item in value.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                throw new JsonException($"'{name}' must be an array of strings.");
+            }
+
+            var text = item.GetString();
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                items.Add(text);
+            }
+        }
+
+        return items;
+    }
+
     public static JsonObject ObjectSchema(
         IEnumerable<(string Name, JsonObject Schema, bool Required)> properties)
     {
@@ -89,5 +124,12 @@ internal static class ToolJson
         ["description"] = description,
         ["minimum"] = minimum,
         ["maximum"] = maximum
+    };
+
+    public static JsonObject StringArraySchema(string description) => new()
+    {
+        ["type"] = "array",
+        ["description"] = description,
+        ["items"] = new JsonObject { ["type"] = "string" }
     };
 }
