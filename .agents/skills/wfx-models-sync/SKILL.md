@@ -57,6 +57,8 @@ pwsh tools/Sync-WfxProfiles.ps1 -ListProviders
 Not yet ported from the pi collection: the Cloudflare-AI-Gateway-routed
 providers (`asterlab`, `nube`, `cloudflare-vertex`), Chatbox AI, and Cline.
 Add them to the hashtable in `tools/Sync-WfxProfiles.ps1` when needed.
+Registry entries are ported from the pi skills; only `venice`, `deepseek`,
+`gemini`, and `cursor` have been verified live so far.
 
 ## Behavior to know before running
 
@@ -64,10 +66,14 @@ Add them to the hashtable in `tools/Sync-WfxProfiles.ps1` when needed.
   updated, or removed to match the catalog. Hand-written profiles should use
   other names; everything outside the namespace is preserved.
 - **Secrets:** profiles carry `provider`, `base_url`, and `model` only. At wfx
-  runtime, credentials come from `WFX_API_KEY` (any provider) or a hand-added
+  runtime, credentials come from `WFX_API_KEY` (any provider; `OPENAI_API_KEY`
+  is the generic fallback for non-OpenRouter providers) or a hand-added
   `"api_key"` in the profile. The script never writes keys.
-- Preserves an existing config's comments-tolerant content; writes a
-  `config.json.bak` backup before overwriting.
+- **Writing normalizes the file to plain JSON.** Comments and trailing commas
+  are tolerated on read but not preserved on write; when the catalog matches
+  the managed profiles, the file is left untouched. Before overwriting, the
+  previous file is saved to `config.json.bak` — the backup keeps any
+  hand-written secrets the original held, so treat it as a secrets file.
 - Useful flags: `-DryRun`, `-Include <regex[]>`, `-Exclude <regex[]>`,
   `-PreserveRouting` (keep existing provider/base_url), `-Prefix`,
   `-ModelsEndpoint`, `-BaseUrl`, `-EnvVar`, `-WhatIf`.

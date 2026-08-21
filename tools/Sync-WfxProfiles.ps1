@@ -11,9 +11,15 @@
     else in the file — top-level keys and hand-written profiles — is preserved.
 
     Profiles never carry secrets. Set the provider's API key via an environment
-    variable at wfx runtime (WFX_API_KEY works with any provider; OPENAI_API_KEY
-    and OPENROUTER_API_KEY are provider-specific fallbacks), or add "api_key" to
-    a profile by hand.
+    variable at wfx runtime (WFX_API_KEY works with any provider and
+    OPENAI_API_KEY is the generic fallback for non-OpenRouter providers), or add
+    "api_key" to a profile by hand.
+
+    Writing normalizes the file to plain JSON: comments and trailing commas are
+    tolerated on read but not preserved on write. The previous file is saved to
+    <config>.bak before overwriting — note the backup keeps any hand-written
+    secrets the original contained. When the catalog matches the managed
+    profiles already, the file is left untouched.
 
 .EXAMPLE
     pwsh tools/Sync-WfxProfiles.ps1 venice -DryRun
@@ -49,6 +55,9 @@ $ErrorActionPreference = 'Stop'
 # Each entry: BaseUrl (also the default /models endpoint and the value written
 # to profiles), EnvVar for the API key ($null = no auth, e.g. a local proxy),
 # Filter (scriptblock over a raw catalog entry), Exclude (regex over the id).
+# Endpoints are ported from the pi *-models-sync skills; verified live so far:
+# venice, deepseek, gemini (x-goog-api-key listing + v1beta/openai shim), and
+# cursor against a local fake endpoint.
 $script:ProviderRegistry = [ordered]@{
     'atlas-cloud'     = @{ BaseUrl = 'https://api.atlascloud.ai/v1';          EnvVar = 'ATLAS_CLOUD_API_KEY' }
     'cursor'          = @{ BaseUrl = 'http://127.0.0.1:8080/v1';              EnvVar = $null } # local proxy from cursor-openai-api-sync
@@ -187,7 +196,7 @@ if ($null -eq $entry)
 }
 
 $resolvedBaseUrl  = Resolve-Setting $BaseUrl $entry['BaseUrl']
-$resolvedEndpoint = Resolve-Setting $ModelsEndpoint ($entry['ModelsEndpoint'] ?? "$($entry['BaseUrl'])/models")
+$resolvedEndpoint = Resolve-Setting $ModelsEndpoint "$($entry['BaseUrl'])/models"
 $resolvedEnvVar   = Resolve-Setting $EnvVar $entry['EnvVar']
 $resolvedPrefix   = Resolve-Setting $Prefix $Provider
 $profileBaseUrl   = $entry['ProfileBaseUrl'] ?? $resolvedBaseUrl
@@ -270,6 +279,22 @@ foreach ($modelId in $modelIds)
 $added = @($desired.Keys | Where-Object { $_ -notin $managed })
 $removed = @($managed | Where-Object { -not $desired.Contains($_) })
 
+$changed = $added.Count -gt 0 -or $removed.Count -gt 0
+if (-not $changed)
+{
+    foreach ($name in $desired.Keys)
+    {
+        $existing = $profiles[$name]
+        if ($existing['provider'] -ne $desired[$name]['provider'] -or
+            $existing['base_url'] -ne $desired[$name]['base_url'] -or
+            $existing['model'] -ne $desired[$name]['model'])
+        {
+            $changed = $true
+            break
+        }
+    }
+}
+
 Write-Host "Plan: $($added.Count) added, $($desired.Count - $added.Count) updated, $($removed.Count) removed (managed namespace '$resolvedPrefix/*')."
 
 if ($DryRun)
@@ -278,6 +303,12 @@ if ($DryRun)
     Write-Host 'Dry run; no changes written.'
     foreach ($name in $added) { Write-Host "  + $name" }
     foreach ($name in $removed) { Write-Host "  - $name" }
+    return
+}
+
+if (-not $changed)
+{
+    Write-Host "Profiles already up to date; $ConfigPath left untouched."
     return
 }
 
@@ -293,7 +324,7 @@ if ($PSCmdlet.ShouldProcess($ConfigPath, "sync $($desired.Count) profile(s)"))
         Copy-Item $ConfigPath "$ConfigPath.bak" -Force
     }
 
-    ($config | ConvertTo-Json -Depth 10) | Set-Content $ConfigPath -Encoding utf8
+    ($config | ConvertTo-Json -Depth 32) | Set-Content $ConfigPath -Encoding utf8
     Write-Host "Wrote $($desired.Count) profile(s) to $ConfigPath (backup: $ConfigPath.bak)"
     if ($removed.Count -gt 0) { Write-Host "Removed $($removed.Count) stale profile(s)." }
     if ($resolvedEnvVar)
