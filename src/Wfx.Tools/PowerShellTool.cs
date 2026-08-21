@@ -45,13 +45,24 @@ public sealed class PowerShellTool : WorkspaceTool, ITool
         | \$
         | `
         | &
+        | [(){}]
         """);
-    private static readonly Regex ReadOnlyScript = Pattern(@"^(?:\s*(?:
+
+    // Output redirection (>, >>, 2>) writes to the file system; PowerShell has no
+    // '>' comparison operator, so any '>' is treated as a write.
+    private static readonly Regex Redirection = Pattern(@">");
+
+    // Matches a single read-only statement. Arguments may not contain a redirection
+    // operator; statements are evaluated one at a time so a read-only prefix cannot
+    // swallow a following command on another line or after a separator.
+    private static readonly Regex ReadOnlyStatement = Pattern(@"^\s*(?:
         Get-[\w-]+ | gc | cat | type | gi | gci | ls | dir | gl | pwd
         | Test-[\w-]+ | Select-[\w-]+ | Where-Object | Sort-Object | Measure-Object
         | Format-[\w-]+ | Convert(?:To|From)-[\w-]+ | Resolve-Path
         | git\s+(?:status|diff|log) | dotnet\s+--info
-    )(?:\s+[^;|&]*)?\s*[;|]?)+$");
+    )(?:\s+[^>]*)?$");
+
+    private static readonly char[] StatementSeparators = ['\n', '\r', ';', '|', '&'];
 
     private readonly IPowerShellRunner _runner;
 
@@ -136,12 +147,13 @@ public sealed class PowerShellTool : WorkspaceTool, ITool
             return ApprovalLevel.SystemChange;
         }
 
-        if (WorkspaceWrite.IsMatch(script) || TestCommand.IsMatch(script))
+        if (Redirection.IsMatch(script) || WorkspaceWrite.IsMatch(script) || TestCommand.IsMatch(script))
         {
             return ApprovalLevel.WorkspaceWrite;
         }
 
-        return ReadOnlyScript.IsMatch(script.Trim())
+        var statements = script.Split(StatementSeparators, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        return statements.Length > 0 && statements.All(statement => ReadOnlyStatement.IsMatch(statement))
             ? ApprovalLevel.ReadOnly
             : ApprovalLevel.SystemChange;
     }

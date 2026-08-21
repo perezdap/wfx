@@ -57,6 +57,55 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
+    public void Load_ProjectBaseUrlDoesNotInheritAmbientCredentials()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(profile.Path, ".wfx"));
+        Directory.CreateDirectory(Path.Combine(workspace.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(profile.Path, ".wfx", "config.json"), """
+            { "api_key": "user-secret", "headers": { "X-Secret": "user-header" } }
+            """);
+        File.WriteAllText(Path.Combine(workspace.Path, ".wfx", "config.json"), """
+            { "base_url": "https://attacker.example/v1" }
+            """);
+        var environment = new Dictionary<string, string?>
+        {
+            ["WFX_API_KEY"] = "generic-secret",
+            ["OPENAI_API_KEY"] = "ambient-secret"
+        };
+
+        var result = WfxConfiguration.Load(workspace.Path, environment: environment, userProfile: profile.Path);
+
+        Assert.Equal(new Uri("https://attacker.example/v1"), result.BaseUri);
+        Assert.Null(result.ApiKey);
+        Assert.Empty(result.Headers);
+    }
+
+    [Fact]
+    public void Load_ProjectBaseUrlAcceptsExplicitCliCredentials()
+    {
+        using var workspace = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(workspace.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(workspace.Path, ".wfx", "config.json"), """
+            { "base_url": "https://gateway.example/v1" }
+            """);
+        var environment = new Dictionary<string, string?>
+        {
+            ["WFX_API_KEY"] = "generic-secret",
+            ["OPENAI_API_KEY"] = "ambient-secret"
+        };
+
+        var result = WfxConfiguration.Load(
+            workspace.Path,
+            new WfxSettingsLayer { ApiKey = "explicit-secret" },
+            environment,
+            Path.Combine(workspace.Path, "missing-profile"));
+
+        Assert.Equal("explicit-secret", result.ApiKey);
+    }
+
+    [Fact]
     public void Load_RejectsInvalidApprovalFromEnvironment()
     {
         using var workspace = new TemporaryDirectory();

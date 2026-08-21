@@ -20,7 +20,23 @@ public abstract class WorkspaceTool
             var directory = pending.Dequeue();
             foreach (var file in Directory.EnumerateFiles(directory))
             {
-                yield return Paths.Resolve(file, mustExist: true);
+                string resolved;
+                try
+                {
+                    var info = new FileInfo(file);
+                    if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
+                    {
+                        continue;
+                    }
+
+                    resolved = Paths.Resolve(file, mustExist: true);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    continue;
+                }
+
+                yield return resolved;
             }
 
             if (!recursive)

@@ -48,12 +48,15 @@ public static class WfxConfiguration
             layers.Add(ReadFile(userConfig));
         }
 
+        WfxSettingsLayer? projectLayer = null;
         if (File.Exists(projectConfig))
         {
-            layers.Add(ReadFile(projectConfig));
+            projectLayer = ReadFile(projectConfig);
+            layers.Add(projectLayer);
         }
 
-        layers.Add(FromEnvironment(environment));
+        var environmentLayer = FromEnvironment(environment);
+        layers.Add(environmentLayer);
         if (cli is not null)
         {
             layers.Add(cli);
@@ -67,20 +70,29 @@ public static class WfxConfiguration
             throw new InvalidOperationException("The configured base_url must be an absolute HTTP or HTTPS URL.");
         }
 
-        var apiKey = merged.ApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey))
+        var projectControlsBaseUrl = !string.IsNullOrWhiteSpace(projectLayer?.BaseUrl) &&
+            string.IsNullOrWhiteSpace(environmentLayer.BaseUrl) &&
+            string.IsNullOrWhiteSpace(cli?.BaseUrl);
+        var apiKey = projectControlsBaseUrl
+            ? cli?.ApiKey ?? projectLayer?.ApiKey
+            : merged.ApiKey;
+        if (string.IsNullOrWhiteSpace(apiKey) && !projectControlsBaseUrl)
         {
             apiKey = GetEnvironment(environment, provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase)
                 ? "OPENROUTER_API_KEY"
                 : "OPENAI_API_KEY");
         }
 
+        var headers = projectControlsBaseUrl
+            ? cli?.Headers ?? projectLayer?.Headers ?? new Dictionary<string, string>()
+            : merged.Headers ?? new Dictionary<string, string>();
+
         return new WfxSettings(
             provider,
             baseUri,
             string.IsNullOrWhiteSpace(apiKey) ? null : apiKey,
             merged.Model ?? string.Empty,
-            merged.Headers ?? new Dictionary<string, string>(),
+            headers,
             TimeSpan.FromSeconds(Math.Clamp(merged.TimeoutSeconds ?? 300, 1, 3600)),
             Math.Clamp(merged.MaxIterations ?? 24, 1, 100),
             merged.Approval ?? ApprovalMode.Always);
