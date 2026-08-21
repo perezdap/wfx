@@ -7,3 +7,8 @@ artifacts/
 *.suo
 TestResults/
 .wfx/config.local.json
+
+# pi-fleet runtime artifacts (worktrees, sessions, logs, manifest);
+# the fleet config itself stays tracked
+.pi/fleet/*
+!.pi/fleet/config.json

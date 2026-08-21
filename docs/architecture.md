@@ -60,6 +60,8 @@ Provider capability discovery is intentionally deferred. A later `ModelCapabilit
 
 Configuration layers are parsed independently and merged in documented order. The effective settings object is immutable. Secrets may be read from configuration for compatibility, but environment variables are recommended and normal CLI output only reports whether credentials exist. As a trust-boundary exception to ordinary precedence, a workspace-level `base_url` does not inherit user or environment credentials/custom headers; hosts receive a warning when those values are suppressed.
 
+Named profiles are settings layers stored under `profiles` in the user/project config files. A selected profile (`--profile` > `WFX_PROFILE` > `"profile"` key; project default over user default) expands in place into its file's layer, so the merge, suppression, and override semantics above apply unchanged. See [ADR 0001](adr/0001-profiles-are-named-settings-layers.md).
+
 ## Future seams
 
 - MCP tools can implement `ITool` through an adapter.

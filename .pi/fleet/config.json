@@ -1,0 +1,22 @@
+{
+  "maxMembers": 4,
+  "baseRef": "HEAD",
+  "defaultRole": "coder",
+  "roles": {
+    "coder": {
+      "model": "qwen-token-plan/qwen3.8-max"
+    },
+    "tester": {
+      "model": "qwen-token-plan/qwen3.6-flash"
+    },
+    "reviewer": {
+      "model": "cursor/opus-5@300k",
+      "thinking": "high",
+      "tools": "read,grep,find,ls"
+    },
+    "integrator": {
+      "model": "cursor/sonnet-5@300k",
+      "thinking": "high"
+    }
+  }
+}

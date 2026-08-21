@@ -13,7 +13,7 @@ WFX is a small, embeddable, Windows-first AI coding-agent runtime. It is designe
 - Dedicated PowerShell execution with `pwsh.exe` preference, Windows PowerShell fallback, cancellation, timeout, environment, stdout, stderr, and exit codes
 - Link-aware workspace boundary checks and conservative approvals
 - Root-to-working-directory `AGENTS.md` discovery
-- Layered JSON and environment configuration
+- Layered JSON and environment configuration with named profiles
 - Native AOT publish configuration for `win-x64` and `win-arm64`
 
 ## Build

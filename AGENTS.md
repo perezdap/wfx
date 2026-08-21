@@ -41,3 +41,17 @@ Keep MCP, ACP, skills, subagents, WinGet, Pester, and other future capabilities 
 - Favor small sealed types and composition.
 - Keep public APIs minimal and XML documentation focused on SDK-facing contracts once the SDK surface stabilizes.
 - CLI flags use kebab-case; configuration properties use snake_case.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `perezdap/wfx`, managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout: root `CONTEXT.md` and `docs/adr/`, created lazily by `/domain-modeling`. See `docs/agents/domain.md`.
