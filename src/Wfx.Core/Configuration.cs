@@ -376,7 +376,7 @@ public static class WfxConfiguration
         if (!KnownProtocols.Any(known => known.Equals(protocol, StringComparison.OrdinalIgnoreCase)))
         {
             throw new InvalidOperationException(
-                $"Protocol '{protocol}' is not supported. Valid values are: chat_completions, responses, anthropic_messages.");
+                $"Protocol '{protocol}' is not supported. Valid values are: {string.Join(", ", KnownProtocols)}.");
         }
     }
 

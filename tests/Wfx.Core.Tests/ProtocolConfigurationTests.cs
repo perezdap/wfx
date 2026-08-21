@@ -147,6 +147,22 @@ public sealed class ProtocolConfigurationTests
     }
 
     [Fact]
+    public void Load_ResponsesProtocolAppliesOpenAiDefaultForCustomProvider()
+    {
+        using var workspace = new TemporaryDirectory();
+
+        var result = WfxConfiguration.Load(
+            workspace.Path,
+            new WfxSettingsLayer { Provider = "custom", Protocol = "responses", Model = "gpt-5" },
+            new Dictionary<string, string?> { ["OPENAI_API_KEY"] = "openai-secret" },
+            Path.Combine(workspace.Path, "missing-profile"));
+
+        Assert.Equal("custom", result.Provider);
+        Assert.Equal("responses", result.Protocol);
+        Assert.Equal(new Uri("https://api.openai.com/v1"), result.BaseUri);
+    }
+
+    [Fact]
     public void Load_ProfileCanSetProtocol()
     {
         using var workspace = new TemporaryDirectory();
