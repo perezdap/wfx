@@ -2,17 +2,35 @@ using Wfx.Core;
 
 namespace Wfx.Cli;
 
-internal sealed class ConsoleAgentObserver(bool verbose, bool debug) : IAgentObserver
+internal sealed class ConsoleAgentObserver(bool verbose, bool debug, bool unicode = true) : IAgentObserver
 {
+    private readonly string _marker = unicode ? ConsoleText.Marker : ConsoleText.AsciiMarker;
+
     public ValueTask OnModelTextAsync(string text, CancellationToken cancellationToken)
     {
         Console.Write(text);
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask OnToolStartedAsync(string name, ApprovalLevel level, CancellationToken cancellationToken)
+    public ValueTask OnToolStartedAsync(
+        string name,
+        string argumentsJson,
+        ApprovalLevel level,
+        CancellationToken cancellationToken)
     {
-        Console.Error.WriteLine($"● {name}{(verbose ? $" [{level}]" : string.Empty)}");
+        var call = ToolCallSummary.Describe(name, argumentsJson);
+        WriteLine($"{_marker} {call}{(verbose ? $" [{level}]" : string.Empty)}");
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask OnToolRejectedAsync(
+        string name,
+        string argumentsJson,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        WriteLine($"{_marker} {ToolCallSummary.Describe(name, argumentsJson)}");
+        WriteLine($"  skipped: {ToolCallSummary.DescribeText(reason)}");
         return ValueTask.CompletedTask;
     }
 
@@ -24,15 +42,23 @@ internal sealed class ConsoleAgentObserver(bool verbose, bool debug) : IAgentObs
     {
         if (verbose)
         {
-            Console.Error.WriteLine($"  {(result.Success ? "completed" : "failed")} in {duration.TotalMilliseconds:F0} ms");
+            WriteLine($"  {(result.Success ? "completed" : "failed")} in {duration.TotalMilliseconds:F0} ms");
+        }
+        else if (!result.Success)
+        {
+            WriteLine($"  failed: {ToolCallSummary.DescribeText(result.Error ?? "unknown error")}");
         }
 
         if (debug && !string.IsNullOrWhiteSpace(result.Output))
         {
-            var output = result.Output.Length > 2_000 ? result.Output[..2_000] + "…" : result.Output;
-            Console.Error.WriteLine(output);
+            var output = result.Output.Length > 2_000
+                ? result.Output[..2_000] + ConsoleText.Ellipsis
+                : result.Output;
+            WriteLine(output);
         }
 
         return ValueTask.CompletedTask;
     }
+
+    private void WriteLine(string line) => Console.Error.WriteLine(ConsoleText.ForConsole(line, unicode));
 }

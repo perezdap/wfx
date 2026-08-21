@@ -21,11 +21,23 @@ public interface IAgentObserver
 {
     ValueTask OnModelTextAsync(string text, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
-    ValueTask OnToolStartedAsync(string name, ApprovalLevel level, CancellationToken cancellationToken) =>
-        ValueTask.CompletedTask;
+    ValueTask OnToolStartedAsync(
+        string name,
+        string argumentsJson,
+        ApprovalLevel level,
+        CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
     ValueTask OnToolCompletedAsync(string name, ToolResult result, TimeSpan duration, CancellationToken cancellationToken) =>
         ValueTask.CompletedTask;
+
+    /// <summary>
+    /// Raised when a tool call never runs: the tool is unknown, its arguments are unusable, or approval was refused.
+    /// </summary>
+    ValueTask OnToolRejectedAsync(
+        string name,
+        string argumentsJson,
+        string reason,
+        CancellationToken cancellationToken) => ValueTask.CompletedTask;
 }
 
 public interface IAgent
@@ -134,11 +146,21 @@ public sealed class Agent : IAgent
         throw new InvalidOperationException($"The agent exceeded the maximum of {_options.MaxIterations} model iterations.");
     }
 
+    private async ValueTask<ToolResult> RejectAsync(
+        ModelToolCall call,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        await _observer.OnToolRejectedAsync(call.Name, call.ArgumentsJson, reason, cancellationToken)
+            .ConfigureAwait(false);
+        return ToolResult.Fail(reason);
+    }
+
     private async ValueTask<ToolResult> ExecuteToolAsync(ModelToolCall call, CancellationToken cancellationToken)
     {
         if (!_tools.TryGet(call.Name, out var tool) || tool is null)
         {
-            return ToolResult.Fail($"Unknown tool '{call.Name}'.");
+            return await RejectAsync(call, $"Unknown tool '{call.Name}'.", cancellationToken).ConfigureAwait(false);
         }
 
         JsonDocument argumentsDocument;
@@ -148,7 +170,8 @@ public sealed class Agent : IAgent
         }
         catch (JsonException exception)
         {
-            return ToolResult.Fail($"Invalid JSON arguments: {exception.Message}");
+            return await RejectAsync(call, $"Invalid JSON arguments: {exception.Message}", cancellationToken)
+                .ConfigureAwait(false);
         }
 
         using (argumentsDocument)
@@ -160,16 +183,21 @@ public sealed class Agent : IAgent
             }
             catch (Exception exception) when (exception is JsonException or ArgumentException or InvalidOperationException)
             {
-                return ToolResult.Fail($"Invalid tool arguments: {exception.Message}");
+                return await RejectAsync(call, $"Invalid tool arguments: {exception.Message}", cancellationToken)
+                    .ConfigureAwait(false);
             }
 
             var request = new ApprovalRequest(call.Name, call.ArgumentsJson, level, $"Run {call.Name}");
             if (!await _approval.ApproveAsync(request, cancellationToken).ConfigureAwait(false))
             {
-                return ToolResult.Fail($"Execution denied by approval policy ({level}).");
+                return await RejectAsync(
+                    call,
+                    $"Execution denied by approval policy ({level}).",
+                    cancellationToken).ConfigureAwait(false);
             }
 
-            await _observer.OnToolStartedAsync(call.Name, level, cancellationToken).ConfigureAwait(false);
+            await _observer.OnToolStartedAsync(call.Name, call.ArgumentsJson, level, cancellationToken)
+                .ConfigureAwait(false);
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
             ToolResult result;
             try

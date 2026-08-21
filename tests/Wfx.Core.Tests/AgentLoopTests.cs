@@ -37,6 +37,32 @@ public sealed class AgentLoopTests
     }
 
     [Fact]
+    public async Task ReportsToolArgumentsToTheObserver()
+    {
+        using var workspace = new TemporaryDirectory();
+        var model = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("call-1", "echo", "{\"value\":\"hello\"}")]),
+            new ModelMessage(ModelRole.Assistant, "finished")
+        ]);
+        var observer = new RecordingObserver();
+        var agent = new Agent(
+            model,
+            new ToolRegistry([new EchoTool()]),
+            new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
+            new StaticContextProvider("test context"),
+            observer,
+            new AgentOptions("fake-model"),
+            workspace.Path);
+
+        await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        var started = Assert.Single(observer.Started);
+        Assert.Equal("echo", started.Name);
+        Assert.Equal("{\"value\":\"hello\"}", started.ArgumentsJson);
+    }
+
+    [Fact]
     public async Task DeniedToolReturnsStructuredFailureAndDoesNotExecute()
     {
         using var workspace = new TemporaryDirectory();
@@ -63,6 +89,62 @@ public sealed class AgentLoopTests
         var toolMessage = Assert.Single(model.Requests[1].Messages, static message => message.Role == ModelRole.Tool);
         Assert.Contains("\"success\":false", toolMessage.Content!);
         Assert.Contains("denied", toolMessage.Content!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("missing", "{\"value\":\"hello\"}", "Unknown tool")]
+    [InlineData("echo", "{\"value\":", "Invalid JSON arguments")]
+    public async Task ReportsRejectedToolCallsToTheObserver(string toolName, string argumentsJson, string expectedReason)
+    {
+        using var workspace = new TemporaryDirectory();
+        var model = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("call-1", toolName, argumentsJson)]),
+            new ModelMessage(ModelRole.Assistant, "stopped")
+        ]);
+        var observer = new RecordingObserver();
+        var agent = new Agent(
+            model,
+            new ToolRegistry([new EchoTool()]),
+            new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(true)),
+            new StaticContextProvider("test context"),
+            observer,
+            new AgentOptions("fake-model"),
+            workspace.Path);
+
+        await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        Assert.Empty(observer.Started);
+        var rejected = Assert.Single(observer.Rejected);
+        Assert.Equal(toolName, rejected.Name);
+        Assert.Equal(argumentsJson, rejected.ArgumentsJson);
+        Assert.Contains(expectedReason, rejected.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReportsApprovalDenialToTheObserver()
+    {
+        using var workspace = new TemporaryDirectory();
+        var model = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("call-1", "mutate", "{\"value\":\"hello\"}")]),
+            new ModelMessage(ModelRole.Assistant, "stopped")
+        ]);
+        var observer = new RecordingObserver();
+        var agent = new Agent(
+            model,
+            new ToolRegistry([new MutatingTool()]),
+            new PolicyApprovalService(ApprovalMode.Never, static (_, _) => ValueTask.FromResult(true)),
+            new StaticContextProvider("test context"),
+            observer,
+            new AgentOptions("fake-model"),
+            workspace.Path);
+
+        await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        Assert.Empty(observer.Started);
+        var rejected = Assert.Single(observer.Rejected);
+        Assert.Contains("denied", rejected.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class SequenceModelProvider(IReadOnlyList<ModelMessage> responses) : IModelProvider
@@ -124,4 +206,31 @@ public sealed class AgentLoopTests
     }
 
     private sealed class SilentObserver : IAgentObserver;
+
+    private sealed class RecordingObserver : IAgentObserver
+    {
+        public List<(string Name, string ArgumentsJson, ApprovalLevel Level)> Started { get; } = [];
+
+        public List<(string Name, string ArgumentsJson, string Reason)> Rejected { get; } = [];
+
+        public ValueTask OnToolStartedAsync(
+            string name,
+            string argumentsJson,
+            ApprovalLevel level,
+            CancellationToken cancellationToken)
+        {
+            Started.Add((name, argumentsJson, level));
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnToolRejectedAsync(
+            string name,
+            string argumentsJson,
+            string reason,
+            CancellationToken cancellationToken)
+        {
+            Rejected.Add((name, argumentsJson, reason));
+            return ValueTask.CompletedTask;
+        }
+    }
 }

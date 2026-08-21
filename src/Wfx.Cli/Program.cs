@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using Wfx.Core;
 using Wfx.Providers;
 using Wfx.Tools;
@@ -9,8 +10,13 @@ internal static class Program
 {
     private const string Version = "0.1.0";
 
+    private const int ApprovalSummaryLength = 400;
+
+    private static bool _unicodeConsole;
+
     public static async Task<int> Main(string[] args)
     {
+        _unicodeConsole = TryEnableUnicodeConsole();
         using var shutdown = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) =>
         {
@@ -170,9 +176,23 @@ internal static class Program
             tools,
             approval,
             context,
-            new ConsoleAgentObserver(arguments.Verbose, arguments.Debug),
+            new ConsoleAgentObserver(arguments.Verbose, arguments.Debug, _unicodeConsole),
             new AgentOptions(settings.Model, settings.MaxIterations),
             workspace.Root);
+    }
+
+    private static bool TryEnableUnicodeConsole()
+    {
+        try
+        {
+            Console.OutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or PlatformNotSupportedException
+            or ArgumentException or System.Security.SecurityException)
+        {
+            return false;
+        }
     }
 
     private static HttpClient CreateHttpClient() => new(new SocketsHttpHandler
@@ -186,14 +206,18 @@ internal static class Program
 
     private static async ValueTask<bool> PromptForApprovalAsync(ApprovalRequest request, CancellationToken cancellationToken)
     {
+        var call = ConsoleText.ForConsole(
+            ToolCallSummary.Describe(request.ToolName, request.ArgumentsJson, ApprovalSummaryLength),
+            _unicodeConsole);
         if (Console.IsInputRedirected)
         {
-            Console.Error.WriteLine($"Denied {request.ToolName}: approval is required but input is redirected.");
+            Console.Error.WriteLine($"Denied {call}: approval is required but input is redirected.");
             return false;
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        Console.Error.Write($"Approve {request.ToolName} [{request.Level}]? [y/N] ");
+        Console.Error.WriteLine($"Approve {call}");
+        Console.Error.Write($"  [{request.Level}] y/N? ");
         var readLine = Task.Run(Console.ReadLine, CancellationToken.None);
         using var promptCompleted = new CancellationTokenSource();
         using var waitCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, promptCompleted.Token);
