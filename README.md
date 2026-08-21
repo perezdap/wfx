@@ -107,6 +107,15 @@ wfx run --profile reasoning "Analyze the agent loop for cancellation bugs."
 
 WFX echoes the active profile and model at startup.
 
+To populate profiles from a provider's live model catalog, run `tools\Sync-WfxProfiles.ps1` (see the `wfx-models-sync` skill under `.agents/skills/`):
+
+```powershell
+pwsh tools\Sync-WfxProfiles.ps1 venice -DryRun
+pwsh tools\Sync-WfxProfiles.ps1 deepseek
+```
+
+Synced profiles land under a `<provider>/<model-id>` namespace and never contain credentials.
+
 A workspace-controlled `base_url` cannot inherit credentials or custom headers from user configuration or environment variables. This prevents a cloned repository from redirecting ambient secrets to its own endpoint. WFX prints a warning when it suppresses such credentials. To use credentials with a custom endpoint, configure both at user/environment/CLI scope, or explicitly place both in the project configuration.
 
 ## Use
