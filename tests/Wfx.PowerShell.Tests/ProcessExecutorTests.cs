@@ -143,4 +143,44 @@ public sealed class ProcessExecutorTests
             Environment.SetEnvironmentVariable(name, previous);
         }
     }
+
+    [Fact]
+    public async Task ChildEnvironmentDefaultsGitPagerToCat()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var executor = new ProcessExecutor();
+        var result = await executor.ExecuteAsync(new ProcessCommand(
+            "cmd.exe",
+            ["/d", "/c", "echo GIT_PAGER=%GIT_PAGER%& echo PAGER=%PAGER%"],
+            Environment.CurrentDirectory,
+            Timeout: TimeSpan.FromSeconds(10)), TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("GIT_PAGER=cat", result.StandardOutput);
+        Assert.Contains("PAGER=cat", result.StandardOutput);
+    }
+
+    [Fact]
+    public async Task OverlayWinsOverPagerDefaults()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var executor = new ProcessExecutor();
+        var result = await executor.ExecuteAsync(new ProcessCommand(
+            "cmd.exe",
+            ["/d", "/c", "echo GIT_PAGER=%GIT_PAGER%"],
+            Environment.CurrentDirectory,
+            Environment: new Dictionary<string, string?> { ["GIT_PAGER"] = "custom-git-pager" },
+            Timeout: TimeSpan.FromSeconds(10)), TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("GIT_PAGER=custom-git-pager", result.StandardOutput);
+    }
 }

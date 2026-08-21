@@ -31,6 +31,9 @@ public static class ChildProcessEnvironment
             }
         }
 
+        environment["GIT_PAGER"] = "cat";
+        environment["PAGER"] = "cat";
+
         if (overlay is null)
         {
             return;

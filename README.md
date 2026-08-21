@@ -10,7 +10,7 @@ WFX is a small, embeddable, Windows-first AI coding-agent runtime. It is designe
 - Streaming OpenAI-compatible Chat Completions transport
 - OpenAI, OpenRouter, LM Studio, Ollama-compatible, and custom endpoints
 - Structured `read_file`, `write_file`, `apply_patch`, `list_directory`, `search_files`, `search_text`, `powershell`, and `git` tools
-- Dedicated PowerShell execution with `pwsh.exe` preference, Windows PowerShell fallback, cancellation, timeout, environment, stdout, stderr, and exit codes. Child processes omit secret-bearing variables by default.
+- Dedicated PowerShell execution with `pwsh.exe` preference, Windows PowerShell fallback, cancellation, timeout, environment, stdout, stderr, and exit codes. Child processes omit secret-bearing variables by default and set `GIT_PAGER=cat` / `PAGER=cat` so tool-driven git cannot block on a pager.
 - Link-aware workspace boundary checks and conservative approvals
 - Root-to-working-directory `AGENTS.md` discovery
 - Layered JSON and environment configuration with named profiles
@@ -164,6 +164,11 @@ WFX takes inspiration from the small, native, model-agnostic philosophy of [Verc
 - The CLI never commits or pushes.
 - API keys are not printed and are redacted if an endpoint echoes one in an error.
 - Child processes omit secret-bearing environment variables by default: names matching `*_API_KEY`, `*_TOKEN`, or `*_SECRET`, plus `WFX_API_KEY`, `OPENAI_API_KEY`, and `OPENROUTER_API_KEY`. The `powershell` tool can restore specific parent variables with `inherit_environment`, which is classified as at least a system change. Scrubbed values are never logged.
+- Child processes set `GIT_PAGER=cat` and `PAGER=cat` by default. An explicit process-environment overlay still wins.
 - `--approval never` means deny mutations rather than silently execute them.
 
 See [risks.md](docs/risks.md) for remaining limitations.
+
+## License
+
+WFX is licensed under the [MIT License](LICENSE).
