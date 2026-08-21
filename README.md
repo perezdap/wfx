@@ -98,7 +98,7 @@ A profile is a named settings layer stored under `profiles` in a config file. Pr
 }
 ```
 
-Select a profile per invocation with `--profile <name>`, set a session default with `WFX_PROFILE`, or set a file default with a top-level `"profile"` key. Precedence is `--profile` > `WFX_PROFILE` > `"profile"` key, and the project file's default overrides the user file's. Profiles with the same name in both files merge key-by-key with the project winning; environment variables and CLI flags still override profile values. Selecting an undefined profile fails and lists every available profile.
+Select a profile per invocation with `--profile <name>`, set a session default with `WFX_PROFILE`, or set a file default with a top-level `"profile"` key. Precedence is `--profile` > `WFX_PROFILE` > `"profile"` key, and the project file's default overrides the user file's. When a profile is selected, its keys override the top-level keys of the same file. Profiles with the same name in both files merge key-by-key with the project winning (`headers` sets replace wholesale, as with ordinary layers); environment variables and CLI flags still override profile values. Selecting an undefined profile fails and lists every available profile.
 
 ```powershell
 wfx --profile fast

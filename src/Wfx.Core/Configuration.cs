@@ -203,6 +203,11 @@ public static class WfxConfiguration
                 throw new InvalidOperationException($"Configuration profile '{property.Name}' cannot contain a 'profile' key: {path}");
             }
 
+            if (property.Value.TryGetProperty("profiles", out _))
+            {
+                throw new InvalidOperationException($"Configuration profile '{property.Name}' cannot contain a nested 'profiles' map: {path}");
+            }
+
             profiles[property.Name] = ParseLayer(property.Value, path);
         }
 
@@ -309,13 +314,13 @@ public static class WfxConfiguration
         }
 
         return new InvalidOperationException(
-            $"Profile '{name}' is not defined. Available profiles — user: {Describe(userProfiles)}; project: {Describe(projectProfiles)}.");
+            $"Profile '{name}' is not defined. Available profiles — user: {FormatProfileNames(userProfiles)}; project: {FormatProfileNames(projectProfiles)}.");
     }
 
     private static IReadOnlyList<string> ProfileNames(WfxSettingsLayer? layer) =>
         layer?.Profiles?.Keys.ToArray() ?? [];
 
-    private static string Describe(IReadOnlyList<string> names) =>
+    private static string FormatProfileNames(IReadOnlyList<string> names) =>
         names.Count == 0 ? "(none)" : string.Join(", ", names);
 
     private static WfxSettingsLayer Merge(IEnumerable<WfxSettingsLayer> layers)

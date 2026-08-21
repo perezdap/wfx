@@ -294,6 +294,42 @@ public sealed class ProfileConfigurationTests
         Assert.Equal("1", Assert.Single(result.Headers).Value);
     }
 
+    [Fact]
+    public void ReadFile_RejectsProfileContainingANestedProfilesKey()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "config.json");
+        File.WriteAllText(path, """
+            { "profiles": { "nested": { "profiles": { "other": {} } } } }
+            """);
+
+        Assert.Throws<InvalidOperationException>(() => WfxConfiguration.ReadFile(path));
+    }
+
+    [Fact]
+    public void Load_SameNamedProfilesReplaceHeaderSetsWithProjectWinning()
+    {
+        // Header sets follow existing layer semantics: a higher layer's set replaces
+        // the lower layer's set wholesale; scalar keys merge key-by-key.
+        using var workspace = new TemporaryDirectory();
+        using var user = new TemporaryDirectory();
+        WriteConfig(user.Path, """
+            { "profiles": { "dev": { "headers": { "X-User": "1" }, "model": "user-model" } } }
+            """);
+        WriteConfig(workspace.Path, """
+            { "profiles": { "dev": { "headers": { "X-Project": "2" } } } }
+            """);
+
+        var result = WfxConfiguration.Load(
+            workspace.Path,
+            new WfxSettingsLayer { Profile = "dev" },
+            new Dictionary<string, string?>(),
+            user.Path);
+
+        Assert.Equal("2", Assert.Single(result.Headers).Value);
+        Assert.Equal("user-model", result.Model);
+    }
+
     private static void WriteConfig(string root, string json)
     {
         Directory.CreateDirectory(Path.Combine(root, ".wfx"));

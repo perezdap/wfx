@@ -71,10 +71,9 @@ internal static class Program
         CancellationToken cancellationToken)
     {
         EnsureRunnable(settings);
-        if (settings.Profile is not null)
-        {
-            Console.Error.WriteLine($"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
-        }
+        Console.Error.WriteLine(settings.Profile is null
+            ? $"wfx: {settings.Provider}/{settings.Model}"
+            : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
 
         var agent = CreateAgent(settings, workspace, arguments, httpClient);
         var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
