@@ -208,7 +208,10 @@ public static class WfxConfiguration
                 throw new InvalidOperationException($"Configuration profile '{property.Name}' cannot contain a nested 'profiles' map: {path}");
             }
 
-            profiles[property.Name] = ParseLayer(property.Value, path);
+            if (!profiles.TryAdd(property.Name, ParseLayer(property.Value, path)))
+            {
+                throw new InvalidOperationException($"Configuration defines a duplicate profile '{property.Name}': {path}");
+            }
         }
 
         return profiles;

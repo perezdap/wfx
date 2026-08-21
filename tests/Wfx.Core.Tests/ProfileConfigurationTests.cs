@@ -330,6 +330,39 @@ public sealed class ProfileConfigurationTests
         Assert.Equal("user-model", result.Model);
     }
 
+    [Fact]
+    public void ReadFile_RejectsDuplicateProfileNamesDifferingOnlyByCase()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "config.json");
+        File.WriteAllText(path, """
+            { "profiles": { "fast": {}, "FAST": {} } }
+            """);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => WfxConfiguration.ReadFile(path));
+
+        Assert.Contains("duplicate", exception.Message);
+    }
+
+    [Fact]
+    public void Load_MatchesProfileNamesCaseInsensitively()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var user = new TemporaryDirectory();
+        WriteConfig(user.Path, """
+            { "profiles": { "fast": { "model": "fast-model" } } }
+            """);
+
+        var result = WfxConfiguration.Load(
+            workspace.Path,
+            new WfxSettingsLayer { Profile = "FAST" },
+            new Dictionary<string, string?>(),
+            user.Path);
+
+        Assert.Equal("fast-model", result.Model);
+        Assert.Equal("FAST", result.Profile);
+    }
+
     private static void WriteConfig(string root, string json)
     {
         Directory.CreateDirectory(Path.Combine(root, ".wfx"));
