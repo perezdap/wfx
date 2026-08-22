@@ -359,6 +359,41 @@ public sealed class AgentLoopTests
     }
 
     [Fact]
+    public async Task ToolResultSecretsAreRedactedOnceAtIngestionInTheReplayedRequest()
+    {
+        using var workspace = new TemporaryDirectory();
+        var model = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("call-1", "secret", "{}")]),
+            new ModelMessage(ModelRole.Assistant, "finished")
+        ]);
+        var agent = new Agent(
+            model,
+            new ToolRegistry([new SecretOutputTool()]),
+            new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
+            new StaticContextProvider("test context"),
+            new SilentObserver(),
+            new AgentOptions("fake-model"),
+            workspace.Path);
+
+        await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        var toolMessage = Assert.Single(model.Requests[1].Messages, static m => m.Role == ModelRole.Tool);
+        var content = toolMessage.Content!;
+        Assert.Contains("API_KEY=[REDACTED]", content);
+        Assert.Contains("OpenAI_API_KEY=[REDACTED]", content);
+        Assert.Contains("export SECRET_TOKEN=[REDACTED]", content);
+        Assert.DoesNotContain("sk-1111111111111111", content);
+        Assert.DoesNotContain("hunter2", content);
+        Assert.DoesNotContain("exported-secret", content);
+        // Punctuation-bearing token must be redacted whole, not split at the dot.
+        Assert.DoesNotContain(".leak", content);
+        // Prefix-anchored non-match case: a filename like this must be left alone.
+        Assert.Contains("ask-turn-default-auto.txt", content);
+        Assert.Equal(1, model.Requests[1].Messages.Count(static m => m.Role == ModelRole.Tool));
+    }
+
+    [Fact]
     public async Task NewAgentContinuesAnExistingConversation()
     {
         using var workspace = new TemporaryDirectory();
@@ -479,6 +514,31 @@ public sealed class AgentLoopTests
         {
             ExecutionCount++;
             return ValueTask.FromResult(ToolResult.Ok("mutated"));
+        }
+    }
+
+    private sealed class SecretOutputTool : ITool
+    {
+        public ToolDefinition Definition { get; } = new(
+            "secret",
+            "Return secret-bearing output.",
+            new System.Text.Json.Nodes.JsonObject { ["type"] = "object" });
+
+        public ApprovalLevel Classify(JsonElement arguments) => ApprovalLevel.ReadOnly;
+
+        public ValueTask<ToolResult> ExecuteAsync(
+            JsonElement arguments,
+            ToolContext context,
+            CancellationToken cancellationToken = default)
+        {
+            const string output = """
+                API_KEY=hunter2
+                OpenAI_API_KEY=sk-1111111111111111
+                export SECRET_TOKEN=exported-secret
+                inline: sk-2222222222.leak
+                file: ask-turn-default-auto.txt
+                """;
+            return ValueTask.FromResult(ToolResult.Ok(output));
         }
     }
 

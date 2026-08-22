@@ -224,9 +224,12 @@ public sealed class Agent : IAgent
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var result = await ExecuteToolAsync(call, cancellationToken).ConfigureAwait(false);
+                // Redact secrets exactly once, here at ingestion, so the model's view,
+                // in-memory state, and any persisted transcript hold identical text. The
+                // observer received the raw result for display (its redaction is separate).
                 var toolMessage = new ModelMessage(
                     ModelRole.Tool,
-                    result.ToProtocolJson(),
+                    result.ToProtocolJson(SecretRedactor.Redact),
                     ToolCallId: call.Id,
                     Name: call.Name);
                 messages.Add(toolMessage);
