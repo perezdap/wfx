@@ -158,7 +158,6 @@ public sealed class OpenAiResponsesProvider : IModelProvider
         writer.WriteEndObject();
     }
 
-
     private sealed class ResponseAccumulator
     {
         private readonly StringBuilder _content = new();
@@ -198,11 +197,11 @@ public sealed class OpenAiResponsesProvider : IModelProvider
                     return null;
 
                 case "response.function_call_arguments.delta":
-                    _toolCalls.At(RequireOutputIndex(root)).AppendArguments(RequireString(root, "delta"));
+                    _toolCalls.GetOrAdd(RequireOutputIndex(root)).AppendArguments(RequireString(root, "delta"));
                     return null;
 
                 case "response.function_call_arguments.done":
-                    _toolCalls.At(RequireOutputIndex(root)).SetArguments(OptionalString(root, "arguments"));
+                    _toolCalls.GetOrAdd(RequireOutputIndex(root)).SetArguments(OptionalString(root, "arguments"));
                     return null;
 
                 case "response.completed":
@@ -245,7 +244,7 @@ public sealed class OpenAiResponsesProvider : IModelProvider
                 return;
             }
 
-            var builder = _toolCalls.At(RequireOutputIndex(root));
+            var builder = _toolCalls.GetOrAdd(RequireOutputIndex(root));
             builder.Identify(OptionalString(item, "call_id"), OptionalString(item, "name"));
             builder.SetArguments(OptionalString(item, "arguments"));
         }

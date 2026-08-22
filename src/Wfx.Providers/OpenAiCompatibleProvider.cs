@@ -181,7 +181,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
                         throw new JsonException("Tool-call delta is missing an integer index.");
                     }
 
-                    var builder = _toolCalls.At(index);
+                    var builder = _toolCalls.GetOrAdd(index);
                     var name = (string?)null;
                     if (toolCall.TryGetProperty("function", out var function) && function.ValueKind == JsonValueKind.Object)
                     {

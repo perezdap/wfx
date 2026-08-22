@@ -14,9 +14,7 @@ internal sealed class ToolCallAccumulator
 {
     private readonly SortedDictionary<int, ToolCallBuilder> _builders = new();
 
-    public bool IsEmpty => _builders.Count == 0;
-
-    public ToolCallBuilder At(int index)
+    public ToolCallBuilder GetOrAdd(int index)
     {
         if (!_builders.TryGetValue(index, out var builder))
         {
