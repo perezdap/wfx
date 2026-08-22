@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Wfx.Core;
 
@@ -159,7 +160,7 @@ public sealed class Agent : IAgent
                 var result = await ExecuteToolAsync(call, cancellationToken).ConfigureAwait(false);
                 messages.Add(new ModelMessage(
                     ModelRole.Tool,
-                    result.ToProtocolJson(),
+                    RedactToolResultForConversation(result),
                     ToolCallId: call.Id,
                     Name: call.Name));
             }
@@ -249,5 +250,38 @@ public sealed class Agent : IAgent
             await _observer.OnToolCompletedAsync(call.Name, result, duration, cancellationToken).ConfigureAwait(false);
             return result;
         }
+    }
+
+    /// <summary>
+    /// Builds the text that becomes the tool message, masking known secret shapes once, at
+    /// ingestion, so the model, in-memory state, and any persisted transcript hold identical
+    /// text. The observer still receives the raw, unredacted result for display (whose own
+    /// redaction is a separate mechanism).
+    /// </summary>
+    private static string RedactToolResultForConversation(ToolResult result)
+    {
+        var root = new JsonObject
+        {
+            ["success"] = result.Success,
+            ["output"] = SecretRedactor.Redact(result.Output)
+        };
+
+        if (result.Error is not null)
+        {
+            root["error"] = SecretRedactor.Redact(result.Error);
+        }
+
+        if (result.Metadata is not null)
+        {
+            var metadata = new JsonObject();
+            foreach (var pair in result.Metadata)
+            {
+                metadata[pair.Key] = SecretRedactor.Redact(pair.Value);
+            }
+
+            root["metadata"] = metadata;
+        }
+
+        return root.ToJsonString();
     }
 }
