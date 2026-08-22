@@ -156,7 +156,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
 
             if (choices.ValueKind != JsonValueKind.Array)
             {
-                throw new JsonException("Streaming response is missing choices.");
+                throw new JsonException("Streaming response choices is not an array.");
             }
 
             if (choices.GetArrayLength() == 0)
