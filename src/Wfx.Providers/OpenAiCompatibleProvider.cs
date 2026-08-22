@@ -11,18 +11,24 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
     private readonly OpenAiProviderOptions _options;
 
     public OpenAiCompatibleProvider(HttpClient httpClient, OpenAiProviderOptions options)
+        : this(httpClient, options, null)
+    {
+    }
+
+    internal OpenAiCompatibleProvider(HttpClient httpClient, OpenAiProviderOptions options, Func<TimeSpan, CancellationToken, Task>? delayAsync)
     {
         _options = options;
-        _channel = new SseHttpChannel(httpClient, options);
+        _channel = new SseHttpChannel(httpClient, options, delayAsync);
     }
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
         ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var httpRequest = _channel.CreateRequest("/chat/completions", BuildBody(request));
         var accumulator = new ResponseAccumulator();
-        await foreach (var data in _channel.ReadDataEventsAsync(httpRequest, cancellationToken).ConfigureAwait(false))
+        await foreach (var data in _channel.ReadDataEventsAsync(
+                           () => _channel.CreateRequest("/chat/completions", BuildBody(request)),
+                           cancellationToken).ConfigureAwait(false))
         {
             string? delta;
             try
