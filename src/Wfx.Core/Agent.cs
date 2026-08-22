@@ -72,8 +72,9 @@ public interface IAgentObserver
         ValueTask.CompletedTask;
 
     /// <summary>
-    /// Raised for every message the turn appends to the conversation: each completed assistant
-    /// message (content, tool calls, provider items) and each tool-result message (tool-call ID and name).
+    /// Raised for every message the turn appends to the conversation: the system prompt on a
+    /// new conversation, the user prompt, each completed assistant message (content, tool calls,
+    /// provider items), and each tool-result message (tool-call ID and name).
     /// </summary>
     ValueTask OnMessageAsync(ModelMessage message, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
@@ -168,10 +169,14 @@ public sealed class Agent : IAgent
             var systemPrompt = string.IsNullOrWhiteSpace(supplementalContext)
                 ? BaseSystemPrompt
                 : $"{BaseSystemPrompt}\n\nWorkspace context and project instructions:\n{supplementalContext}";
-            messages.Add(new ModelMessage(ModelRole.System, systemPrompt));
+            var system = new ModelMessage(ModelRole.System, systemPrompt);
+            messages.Add(system);
+            await _observer.OnMessageAsync(system, cancellationToken).ConfigureAwait(false);
         }
 
-        messages.Add(new ModelMessage(ModelRole.User, prompt));
+        var user = new ModelMessage(ModelRole.User, prompt);
+        messages.Add(user);
+        await _observer.OnMessageAsync(user, cancellationToken).ConfigureAwait(false);
 
         var assistantTexts = new List<string>();
         for (var iteration = 1; iteration <= _options.MaxIterations; iteration++)

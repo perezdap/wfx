@@ -64,6 +64,10 @@ Configuration layers are parsed independently and merged in documented order. Th
 
 Named profiles are settings layers stored under `profiles` in the user/project config files. A selected profile (`--profile` > `WFX_PROFILE` > `"profile"` key; project default over user default) expands in place into its file's layer, so the merge, suppression, and override semantics above apply unchanged. See [ADR 0001](adr/0001-profiles-are-named-settings-layers.md).
 
+## Sessions
+
+A session is an append-only JSONL event log owned by `Wfx.Core.SessionStore`, stored per user at `%USERPROFILE%\.wfx\sessions\<session-id>.jsonl`. The workspace is a field on the `header` event, not a path segment. The agent loop does not know about persistence: `SessionRecorder` implements `IAgentObserver` and writes `turn_started`, `message`, `usage`, `interrupted`, and `error` events as they occur. `--no-session` skips creating a log. See [ADR 0002](adr/0002-sessions-are-append-only-event-logs.md), [ADR 0003](adr/0003-secrets-are-redacted-at-ingestion-not-at-persist.md), and [ADR 0004](adr/0004-provider-items-are-persisted-and-downgraded-on-rejection.md).
+
 ## Future seams
 
 - MCP tools can implement `ITool` through an adapter.

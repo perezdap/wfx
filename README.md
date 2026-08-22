@@ -6,7 +6,7 @@ WFX is a small, embeddable, Windows-first AI coding-agent runtime. It is designe
 
 ## What works
 
-- Interactive mode and single-task `wfx run` mode
+- Interactive mode and single-task `wfx run` mode, each persisted by default as an append-only JSONL session log
 - Streaming OpenAI-compatible Chat Completions transport
 - OpenAI, OpenRouter, LM Studio, Ollama-compatible, and custom endpoints
 - Structured `read_file`, `write_file`, `apply_patch`, `list_directory`, `search_files`, `search_text`, `powershell`, and `git` tools
@@ -164,6 +164,14 @@ Synced profiles land under a `<provider>/<model-id>` namespace and never contain
 
 A workspace-controlled `base_url` cannot inherit credentials or custom headers from user configuration or environment variables. This prevents a cloned repository from redirecting ambient secrets to its own endpoint. WFX prints a warning when it suppresses such credentials. To use credentials with a custom endpoint, configure both at user/environment/CLI scope, or explicitly place both in the project configuration.
 
+## Sessions
+
+Interactive mode and `wfx run` write an append-only JSONL event log under `%USERPROFILE%\.wfx\sessions\` as the turn progresses. The filename is the session ID (`yyyyMMddTHHmmssZ-` plus 6 characters). Pass `--no-session` to skip persistence for that invocation.
+
+The sessions directory is created with a Windows ACL granting only the current user. Known secret shapes in tool output are masked at ingestion, but redaction is not a guarantee: session files remain sensitive and should be treated as plaintext credentials-adjacent data.
+
+Resume, listing, and pruning are not in this slice.
+
 ## Use
 
 ```powershell
@@ -217,7 +225,7 @@ WFX takes inspiration from the small, native, model-agnostic philosophy of [Verc
 - Recursive tools do not traverse reparse points and skip `.git`, `bin`, and `obj`.
 - Git tool operations are restricted to `status`, `diff`, staged diff, and bounded `log`.
 - The CLI never commits or pushes.
-- API keys are not printed and are redacted if an endpoint echoes one in an error. Approval prompts, tool-call summaries, rejection reasons, and debug tool output replace known provider secrets with `[REDACTED]`.
+- API keys are not printed and are redacted if an endpoint echoes one in an error. Approval prompts, tool-call summaries, rejection reasons, and debug tool output replace known provider secrets with `[REDACTED]`. Known secret shapes in tool output are masked before they reach the model, memory, or a session file. Session files remain sensitive despite that matcher.
 - Child processes omit secret-bearing environment variables by default: names matching `*_API_KEY`, `*_TOKEN`, or `*_SECRET`, plus `WFX_API_KEY`, `OPENAI_API_KEY`, and `OPENROUTER_API_KEY`. The `powershell` tool can restore specific parent variables with `inherit_environment`, which is classified as at least a system change. Scrubbed values are never logged.
 - Child processes set `GIT_PAGER=cat` and `PAGER=cat` by default. An explicit process-environment overlay still wins.
 - `--approval never` means deny mutations rather than silently execute them.
