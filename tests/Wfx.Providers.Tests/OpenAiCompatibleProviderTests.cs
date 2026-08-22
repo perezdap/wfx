@@ -161,7 +161,7 @@ public sealed class OpenAiCompatibleProviderTests
             "data: [DONE]\n\n"
         ];
         var handler = new DripStreamHandler(chunks, TimeSpan.FromMilliseconds(150));
-        var provider = CreateProvider(handler, timeout: TimeSpan.FromMilliseconds(500));
+        var provider = CreateProvider(handler, timeout: TimeSpan.FromMilliseconds(800));
 
         var events = await CollectAsync(provider.StreamAsync(
             new ModelRequest("model", [new ModelMessage(ModelRole.User, "x")], []),
@@ -185,6 +185,20 @@ public sealed class OpenAiCompatibleProviderTests
             await CollectAsync(provider.StreamAsync(
                 new ModelRequest("model", [new ModelMessage(ModelRole.User, "x")], []),
                 TestContext.Current.CancellationToken)));
+    }
+
+    [Fact]
+    public void RejectsHttpClientWithItsOwnTimeout()
+    {
+        using var httpClient = new HttpClient(new StubHandler(HttpStatusCode.OK, "", "text/event-stream"));
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new OpenAiCompatibleProvider(httpClient, new OpenAiProviderOptions
+            {
+                BaseUri = new Uri("https://example.test/v1")
+            }));
+
+        Assert.Contains("InfiniteTimeSpan", exception.Message);
     }
 
     [Fact]
@@ -214,7 +228,7 @@ public sealed class OpenAiCompatibleProviderTests
         bool includeStreamOptions = false,
         IReadOnlyDictionary<string, string>? headers = null,
         TimeSpan? timeout = null) =>
-        new(new HttpClient(handler), new OpenAiProviderOptions
+        new(new HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan }, new OpenAiProviderOptions
         {
             BaseUri = new Uri("https://example.test/v1"),
             ApiKey = apiKey,

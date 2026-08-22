@@ -619,7 +619,7 @@ public sealed class OpenAiResponsesProviderTests
         HttpMessageHandler handler,
         string? apiKey = null,
         IReadOnlyDictionary<string, string>? headers = null) =>
-        new(new HttpClient(handler), new OpenAiProviderOptions
+        new(new HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan }, new OpenAiProviderOptions
         {
             BaseUri = new Uri("https://example.test/v1"),
             ApiKey = apiKey,

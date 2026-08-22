@@ -22,6 +22,13 @@ internal sealed class SseHttpChannel
         {
             throw new ArgumentException("Provider base URI must be absolute.", nameof(options));
         }
+
+        if (httpClient.Timeout != Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentException(
+                "HttpClient.Timeout must be Timeout.InfiniteTimeSpan; the channel applies the configured timeout to each wait instead of capping the whole stream.",
+                nameof(httpClient));
+        }
     }
 
     public HttpRequestMessage CreateRequest(string relativePath, byte[] body)
