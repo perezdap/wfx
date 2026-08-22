@@ -156,7 +156,7 @@ internal static class Program
         CliArguments arguments,
         HttpClient httpClient)
     {
-        var provider = new OpenAiCompatibleProvider(httpClient, new OpenAiProviderOptions
+        var provider = ModelTransports.Create(settings.Protocol, httpClient, new OpenAiProviderOptions
         {
             BaseUri = settings.BaseUri,
             ApiKey = settings.ApiKey,

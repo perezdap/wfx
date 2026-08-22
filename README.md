@@ -85,10 +85,25 @@ Supported environment variables are `WFX_PROVIDER`, `WFX_PROTOCOL`, `WFX_PROFILE
 | Protocol | Status | Default endpoint | Credential fallback |
 | --- | --- | --- | --- |
 | `chat_completions` | implemented (default) | provider preset | provider preset |
-| `responses` | transport in a later release | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `responses` | implemented | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `anthropic_messages` | reserved | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
 
 `anthropic_messages` fails with an explicit "not implemented yet" error. Unknown protocol values fail with a clear error naming the valid values.
+
+`protocol: responses` runs the agent over the OpenAI Responses API: conversation state is sent as Responses input items, text and tool-call arguments stream from the typed Responses events, and tool results round-trip as `function_call_output` items. Requests are stateless (`store: false`), so the full conversation is replayed each turn rather than kept server-side.
+
+```powershell
+wfx run --protocol responses --model gpt-5.1 "Summarize this repo."
+```
+
+Or in config:
+
+```json
+{
+  "protocol": "responses",
+  "model": "gpt-5.1"
+}
+```
 
 Provider remains orthogonal to protocol. The `anthropic` provider preset targets Anthropic's OpenAI-compatible endpoint (`https://api.anthropic.com/v1`) with `ANTHROPIC_API_KEY`:
 
