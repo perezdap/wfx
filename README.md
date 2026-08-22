@@ -90,7 +90,7 @@ Supported environment variables are `WFX_PROVIDER`, `WFX_PROTOCOL`, `WFX_PROFILE
 
 `anthropic_messages` fails with an explicit "not implemented yet" error. Unknown protocol values fail with a clear error naming the valid values.
 
-`protocol: responses` runs the agent over the OpenAI Responses API: conversation state is sent as Responses input items, text and tool-call arguments stream from the typed Responses events, and tool results round-trip as `function_call_output` items. Requests are stateless (`store: false`), so the full conversation is replayed each turn rather than kept server-side.
+`protocol: responses` runs the agent over the OpenAI Responses API: conversation state is sent as Responses input items, text and tool-call arguments stream from the typed Responses events, and tool results round-trip as `function_call_output` items. Requests are stateless (`store: false`), so the full conversation is replayed each turn rather than kept server-side. A stream that fails, truncates (`response.incomplete`), or ends without a completion event fails the turn with an explicit protocol error rather than returning a partial answer.
 
 ```powershell
 wfx run --protocol responses --model gpt-5.1 "Summarize this repo."

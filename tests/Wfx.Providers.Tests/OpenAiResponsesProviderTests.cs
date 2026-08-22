@@ -220,7 +220,7 @@ public sealed class OpenAiResponsesProviderTests
     }
 
     [Fact]
-    public async Task ResolvesArgumentDeltasByItemIdWhenOutputIndexIsAbsent()
+    public async Task RejectsFunctionCallEventsWithoutAnOutputIndex()
     {
         var handler = new StubHandler(HttpStatusCode.OK, """
             data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc-1","call_id":"call-1","name":"read_file","arguments":""}}
@@ -232,12 +232,72 @@ public sealed class OpenAiResponsesProviderTests
             """, "text/event-stream");
         var provider = CreateProvider(handler);
 
+        await Assert.ThrowsAsync<ProviderProtocolException>(async () =>
+            await CollectAsync(provider.StreamAsync(
+                new ModelRequest("test-model", [new ModelMessage(ModelRole.User, "inspect")], []),
+                TestContext.Current.CancellationToken)));
+    }
+
+    [Fact]
+    public async Task KeepsWholeArgumentsAnnouncedWithTheToolCall()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, """
+            data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc-1","call_id":"call-1","name":"read_file","arguments":"{\"path\":\"AGENTS.md\"}"}}
+
+            data: {"type":"response.completed","response":{"id":"resp-1"}}
+
+            """, "text/event-stream");
+        var provider = CreateProvider(handler);
+
         var events = await CollectAsync(provider.StreamAsync(
             new ModelRequest("test-model", [new ModelMessage(ModelRole.User, "inspect")], []),
             TestContext.Current.CancellationToken));
 
         var call = Assert.Single(Assert.Single(events.OfType<ModelCompleted>()).Message.ToolCalls!);
-        Assert.Equal("{}", call.ArgumentsJson);
+        Assert.Equal("{\"path\":\"AGENTS.md\"}", call.ArgumentsJson);
+    }
+
+    [Fact]
+    public async Task ReplacesAnnouncedArgumentsWithStreamedDeltas()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, """
+            data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc-1","call_id":"call-1","name":"read_file","arguments":"{}"}}
+
+            data: {"type":"response.function_call_arguments.delta","item_id":"fc-1","output_index":0,"delta":"{\"path\":"}
+
+            data: {"type":"response.function_call_arguments.delta","item_id":"fc-1","output_index":0,"delta":"\"README.md\"}"}
+
+            data: {"type":"response.completed","response":{"id":"resp-1"}}
+
+            """, "text/event-stream");
+        var provider = CreateProvider(handler);
+
+        var events = await CollectAsync(provider.StreamAsync(
+            new ModelRequest("test-model", [new ModelMessage(ModelRole.User, "inspect")], []),
+            TestContext.Current.CancellationToken));
+
+        var call = Assert.Single(Assert.Single(events.OfType<ModelCompleted>()).Message.ToolCalls!);
+        Assert.Equal("{\"path\":\"README.md\"}", call.ArgumentsJson);
+    }
+
+    [Fact]
+    public async Task RejectsTruncatedResponsesWithTheReportedReason()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, """
+            data: {"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"delta":"half an ans"}
+
+            data: {"type":"response.incomplete","response":{"id":"resp-1","incomplete_details":{"reason":"max_output_tokens"}}}
+
+            """, "text/event-stream");
+        var provider = CreateProvider(handler);
+
+        var exception = await Assert.ThrowsAsync<ProviderProtocolException>(async () =>
+            await CollectAsync(provider.StreamAsync(
+                new ModelRequest("test-model", [new ModelMessage(ModelRole.User, "x")], []),
+                TestContext.Current.CancellationToken)));
+
+        Assert.Contains("incomplete response", exception.Message);
+        Assert.Contains("max_output_tokens", exception.Message);
     }
 
     [Fact]

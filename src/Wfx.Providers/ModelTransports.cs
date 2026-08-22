@@ -3,7 +3,9 @@ using Wfx.Core;
 namespace Wfx.Providers;
 
 /// <summary>
-/// Maps a configured protocol to the transport that speaks it.
+/// Maps a configured protocol to the transport that speaks it. Configuration
+/// rejects unknown protocols first; this guard covers hosts that compose a
+/// transport directly.
 /// </summary>
 public static class ModelTransports
 {
@@ -20,6 +22,6 @@ public static class ModelTransports
             return new OpenAiCompatibleProvider(httpClient, options);
         }
 
-        throw new InvalidOperationException($"Protocol '{protocol}' has no model transport.");
+        throw new InvalidOperationException($"Protocol '{protocol}' is not implemented yet.");
     }
 }

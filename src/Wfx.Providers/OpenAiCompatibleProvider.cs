@@ -7,22 +7,22 @@ namespace Wfx.Providers;
 
 public sealed class OpenAiCompatibleProvider : IModelProvider
 {
-    private readonly ProviderSseTransport _transport;
+    private readonly SseHttpChannel _channel;
     private readonly OpenAiProviderOptions _options;
 
     public OpenAiCompatibleProvider(HttpClient httpClient, OpenAiProviderOptions options)
     {
         _options = options;
-        _transport = new ProviderSseTransport(httpClient, options);
+        _channel = new SseHttpChannel(httpClient, options);
     }
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
         ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var httpRequest = _transport.CreateRequest("/chat/completions", BuildBody(request));
+        using var httpRequest = _channel.CreateRequest("/chat/completions", BuildBody(request));
         var accumulator = new ResponseAccumulator();
-        await foreach (var data in _transport.ReadDataEventsAsync(httpRequest, cancellationToken).ConfigureAwait(false))
+        await foreach (var data in _channel.ReadDataEventsAsync(httpRequest, cancellationToken).ConfigureAwait(false))
         {
             string? delta;
             try
@@ -140,7 +140,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
     private sealed class ResponseAccumulator
     {
         private readonly StringBuilder _content = new();
-        private readonly SortedDictionary<int, ToolCallBuilder> _toolCalls = new();
+        private readonly ToolCallAccumulator _toolCalls = new();
 
         public ModelUsage? Usage { get; private set; }
 
@@ -181,64 +181,34 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
                         throw new JsonException("Tool-call delta is missing an integer index.");
                     }
 
-                    if (!_toolCalls.TryGetValue(index, out var builder))
-                    {
-                        builder = new ToolCallBuilder();
-                        _toolCalls.Add(index, builder);
-                    }
-
-                    if (toolCall.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
-                    {
-                        builder.Id ??= id.GetString();
-                    }
-
+                    var builder = _toolCalls.At(index);
+                    var name = (string?)null;
                     if (toolCall.TryGetProperty("function", out var function) && function.ValueKind == JsonValueKind.Object)
                     {
-                        if (function.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+                        if (function.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String)
                         {
-                            builder.Name ??= name.GetString();
+                            name = nameElement.GetString();
                         }
 
                         if (function.TryGetProperty("arguments", out var arguments) && arguments.ValueKind == JsonValueKind.String)
                         {
-                            builder.Arguments.Append(arguments.GetString());
+                            builder.AppendArguments(arguments.GetString());
                         }
                     }
+
+                    builder.Identify(
+                        toolCall.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String ? id.GetString() : null,
+                        name);
                 }
             }
 
             return text;
         }
 
-        public ModelMessage BuildMessage()
-        {
-            var calls = new List<ModelToolCall>();
-            foreach (var pair in _toolCalls)
-            {
-                var call = pair.Value;
-                if (string.IsNullOrWhiteSpace(call.Id) || string.IsNullOrWhiteSpace(call.Name))
-                {
-                    throw new ProviderProtocolException("The provider returned an incomplete tool call.");
-                }
-
-                var arguments = call.Arguments.Length == 0 ? "{}" : call.Arguments.ToString();
-                try
-                {
-                    using var _ = JsonDocument.Parse(arguments);
-                }
-                catch (JsonException exception)
-                {
-                    throw new ProviderProtocolException("The provider returned malformed tool-call arguments.", exception);
-                }
-
-                calls.Add(new ModelToolCall(call.Id, call.Name, arguments));
-            }
-
-            return new ModelMessage(
-                ModelRole.Assistant,
-                _content.Length == 0 ? null : _content.ToString(),
-                calls.Count == 0 ? null : calls);
-        }
+        public ModelMessage BuildMessage() => new(
+            ModelRole.Assistant,
+            _content.Length == 0 ? null : _content.ToString(),
+            _toolCalls.Build());
 
         private void ReadUsage(JsonElement root)
         {
@@ -254,15 +224,6 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
                 ? completionValue
                 : null;
             Usage = new ModelUsage(input, output);
-        }
-
-        private sealed class ToolCallBuilder
-        {
-            public string? Id { get; set; }
-
-            public string? Name { get; set; }
-
-            public StringBuilder Arguments { get; } = new();
         }
     }
 }

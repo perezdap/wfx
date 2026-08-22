@@ -27,6 +27,7 @@ public sealed class ModelTransportsTests
             ModelTransports.Create("anthropic_messages", httpClient, Options()));
 
         Assert.Contains("anthropic_messages", exception.Message);
+        Assert.Contains("not implemented yet", exception.Message);
     }
 
     private static OpenAiProviderOptions Options() => new()

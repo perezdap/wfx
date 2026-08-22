@@ -12,20 +12,20 @@ namespace Wfx.Providers;
 /// </summary>
 public sealed class OpenAiResponsesProvider : IModelProvider
 {
-    private readonly ProviderSseTransport _transport;
+    private readonly SseHttpChannel _channel;
 
     public OpenAiResponsesProvider(HttpClient httpClient, OpenAiProviderOptions options)
     {
-        _transport = new ProviderSseTransport(httpClient, options);
+        _channel = new SseHttpChannel(httpClient, options);
     }
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
         ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var httpRequest = _transport.CreateRequest("/responses", BuildBody(request));
-        var accumulator = new ResponseAccumulator(_transport.Redact);
-        await foreach (var data in _transport.ReadDataEventsAsync(httpRequest, cancellationToken).ConfigureAwait(false))
+        using var httpRequest = _channel.CreateRequest("/responses", BuildBody(request));
+        var accumulator = new ResponseAccumulator();
+        await foreach (var data in _channel.ReadDataEventsAsync(httpRequest, cancellationToken).ConfigureAwait(false))
         {
             string? delta;
             try
@@ -35,6 +35,11 @@ public sealed class OpenAiResponsesProvider : IModelProvider
             catch (JsonException exception)
             {
                 throw new ProviderProtocolException("The provider returned malformed streaming JSON.", exception);
+            }
+
+            if (accumulator.Failure is { } failure)
+            {
+                throw new ProviderProtocolException(_channel.Redact(failure));
             }
 
             if (!string.IsNullOrEmpty(delta))
@@ -153,15 +158,21 @@ public sealed class OpenAiResponsesProvider : IModelProvider
         writer.WriteEndObject();
     }
 
-    private sealed class ResponseAccumulator(Func<string, string> redact)
+
+    private sealed class ResponseAccumulator
     {
         private readonly StringBuilder _content = new();
-        private readonly SortedDictionary<int, ToolCallBuilder> _toolCalls = new();
-        private readonly Dictionary<string, int> _itemIndexes = new(StringComparer.Ordinal);
+        private readonly ToolCallAccumulator _toolCalls = new();
 
         public bool Completed { get; private set; }
 
         public ModelUsage? Usage { get; private set; }
+
+        /// <summary>
+        /// The provider-reported reason this turn cannot be delivered, if any.
+        /// The caller redacts it and throws, keeping secret handling in one place.
+        /// </summary>
+        public string? Failure { get; private set; }
 
         public string? ApplyEvent(string json)
         {
@@ -182,71 +193,47 @@ public sealed class OpenAiResponsesProvider : IModelProvider
                 }
 
                 case "response.output_item.added":
-                    ApplyOutputItem(root, authoritativeArguments: false);
-                    return null;
-
                 case "response.output_item.done":
-                    ApplyOutputItem(root, authoritativeArguments: true);
+                    ApplyOutputItem(root);
                     return null;
 
                 case "response.function_call_arguments.delta":
-                    ResolveBuilder(root).Arguments.Append(RequireString(root, "delta"));
+                    _toolCalls.At(RequireOutputIndex(root)).AppendArguments(RequireString(root, "delta"));
                     return null;
 
                 case "response.function_call_arguments.done":
-                    SetArguments(ResolveBuilder(root), OptionalString(root, "arguments"));
+                    _toolCalls.At(RequireOutputIndex(root)).SetArguments(OptionalString(root, "arguments"));
                     return null;
 
                 case "response.completed":
-                case "response.incomplete":
                     ReadUsage(root);
                     Completed = true;
                     return null;
 
+                case "response.incomplete":
+                    ReadUsage(root);
+                    Failure = $"The provider returned an incomplete response: {IncompleteReason(root)}";
+                    return null;
+
                 case "response.failed":
-                    throw new ProviderProtocolException(
-                        $"The provider reported a failed response: {redact(FailureMessage(root))}");
+                    Failure = $"The provider reported a failed response: {FailureMessage(root)}";
+                    return null;
 
                 case "error":
-                    throw new ProviderProtocolException(
-                        $"The provider reported a stream error: {redact(FailureMessage(root))}");
+                    Failure = $"The provider reported a stream error: {FailureMessage(root)}";
+                    return null;
 
                 default:
                     return null;
             }
         }
 
-        public ModelMessage BuildMessage()
-        {
-            var calls = new List<ModelToolCall>();
-            foreach (var pair in _toolCalls)
-            {
-                var call = pair.Value;
-                if (string.IsNullOrWhiteSpace(call.CallId) || string.IsNullOrWhiteSpace(call.Name))
-                {
-                    throw new ProviderProtocolException("The provider returned an incomplete tool call.");
-                }
+        public ModelMessage BuildMessage() => new(
+            ModelRole.Assistant,
+            _content.Length == 0 ? null : _content.ToString(),
+            _toolCalls.Build());
 
-                var arguments = call.Arguments.Length == 0 ? "{}" : call.Arguments.ToString();
-                try
-                {
-                    using var _ = JsonDocument.Parse(arguments);
-                }
-                catch (JsonException exception)
-                {
-                    throw new ProviderProtocolException("The provider returned malformed tool-call arguments.", exception);
-                }
-
-                calls.Add(new ModelToolCall(call.CallId, call.Name, arguments));
-            }
-
-            return new ModelMessage(
-                ModelRole.Assistant,
-                _content.Length == 0 ? null : _content.ToString(),
-                calls.Count == 0 ? null : calls);
-        }
-
-        private void ApplyOutputItem(JsonElement root, bool authoritativeArguments)
+        private void ApplyOutputItem(JsonElement root)
         {
             if (!root.TryGetProperty("item", out var item) || item.ValueKind != JsonValueKind.Object)
             {
@@ -258,66 +245,31 @@ public sealed class OpenAiResponsesProvider : IModelProvider
                 return;
             }
 
-            var index = RequireOutputIndex(root);
-            var builder = Builder(index);
-            builder.CallId ??= OptionalString(item, "call_id");
-            builder.Name ??= OptionalString(item, "name");
-            if (OptionalString(item, "id") is { } itemId)
-            {
-                _itemIndexes[itemId] = index;
-            }
-
-            if (authoritativeArguments)
-            {
-                SetArguments(builder, OptionalString(item, "arguments"));
-            }
-        }
-
-        private ToolCallBuilder ResolveBuilder(JsonElement root)
-        {
-            if (root.TryGetProperty("output_index", out var outputIndex) && outputIndex.TryGetInt32(out var index))
-            {
-                return Builder(index);
-            }
-
-            if (OptionalString(root, "item_id") is { } itemId && _itemIndexes.TryGetValue(itemId, out var mapped))
-            {
-                return Builder(mapped);
-            }
-
-            throw new JsonException("Function-call event is missing a resolvable output index.");
-        }
-
-        private ToolCallBuilder Builder(int index)
-        {
-            if (!_toolCalls.TryGetValue(index, out var builder))
-            {
-                builder = new ToolCallBuilder();
-                _toolCalls.Add(index, builder);
-            }
-
-            return builder;
-        }
-
-        private static void SetArguments(ToolCallBuilder builder, string? arguments)
-        {
-            if (string.IsNullOrEmpty(arguments))
-            {
-                return;
-            }
-
-            builder.Arguments.Clear();
-            builder.Arguments.Append(arguments);
+            var builder = _toolCalls.At(RequireOutputIndex(root));
+            builder.Identify(OptionalString(item, "call_id"), OptionalString(item, "name"));
+            builder.SetArguments(OptionalString(item, "arguments"));
         }
 
         private static int RequireOutputIndex(JsonElement root)
         {
             if (!root.TryGetProperty("output_index", out var outputIndex) || !outputIndex.TryGetInt32(out var index))
             {
-                throw new JsonException("Output-item event is missing an integer output index.");
+                throw new JsonException("Function-call event is missing an integer output index.");
             }
 
             return index;
+        }
+
+        private static string IncompleteReason(JsonElement root)
+        {
+            if (root.TryGetProperty("response", out var response) && response.ValueKind == JsonValueKind.Object &&
+                response.TryGetProperty("incomplete_details", out var details) && details.ValueKind == JsonValueKind.Object &&
+                OptionalString(details, "reason") is { } reason)
+            {
+                return reason;
+            }
+
+            return "no reason was provided.";
         }
 
         private static string FailureMessage(JsonElement root)
@@ -371,14 +323,5 @@ public sealed class OpenAiResponsesProvider : IModelProvider
             root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
                 ? value.GetString()
                 : null;
-
-        private sealed class ToolCallBuilder
-        {
-            public string? CallId { get; set; }
-
-            public string? Name { get; set; }
-
-            public StringBuilder Arguments { get; } = new();
-        }
     }
 }

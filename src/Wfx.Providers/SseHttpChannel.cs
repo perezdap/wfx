@@ -5,16 +5,16 @@ using System.Text;
 namespace Wfx.Providers;
 
 /// <summary>
-/// HTTP plumbing shared by the OpenAI-style streaming transports: endpoint
-/// composition, authorization, request timeout, secret redaction, and
-/// server-sent-event framing. Protocol-specific JSON stays in the transports.
+/// The HTTP half of an OpenAI-style streaming call: endpoint composition,
+/// authorization, request timeout, secret redaction, and server-sent-event
+/// framing. Protocol-specific JSON stays in the transports that own it.
 /// </summary>
-internal sealed class ProviderSseTransport
+internal sealed class SseHttpChannel
 {
     private readonly HttpClient _httpClient;
     private readonly OpenAiProviderOptions _options;
 
-    public ProviderSseTransport(HttpClient httpClient, OpenAiProviderOptions options)
+    public SseHttpChannel(HttpClient httpClient, OpenAiProviderOptions options)
     {
         _httpClient = httpClient;
         _options = options;
