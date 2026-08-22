@@ -230,6 +230,41 @@ public sealed class AgentLoopTests
         Assert.Null(completed.AccumulatedText);
     }
 
+    [Fact]
+    public async Task NewAgentContinuesAnExistingConversation()
+    {
+        using var workspace = new TemporaryDirectory();
+        const string providerItems = """[{"type":"reasoning","id":"rs-1","encrypted_content":"opaque"}]""";
+        var firstModel = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, "first answer", ProviderItemsJson: providerItems)
+        ]);
+        var first = await CreateAgent(firstModel, workspace.Path)
+            .RunAsync("first question", TestContext.Current.CancellationToken);
+        var secondModel = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, "second answer")
+        ]);
+        var secondAgent = new Agent(
+            secondModel,
+            new ToolRegistry([new EchoTool()]),
+            new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
+            new StaticContextProvider("test context"),
+            new SilentObserver(),
+            new AgentOptions("other-model"),
+            workspace.Path,
+            first.Messages);
+
+        var second = await secondAgent.RunAsync("second question", TestContext.Current.CancellationToken);
+
+        var messages = second.Messages;
+        Assert.Equal(5, messages.Count);
+        Assert.Equal(ModelRole.System, messages[0].Role);
+        Assert.Equal("first question", messages[1].Content);
+        Assert.Equal("first answer", messages[2].Content);
+        Assert.Equal(providerItems, messages[2].ProviderItemsJson);
+        Assert.Equal("second question", messages[3].Content);
+        Assert.Equal("second answer", messages[4].Content);
+    }
+
     private static Agent CreateAgent(IModelProvider model, string workspaceRoot, int maxIterations = 24) => new(
         model,
         new ToolRegistry([new EchoTool()]),
