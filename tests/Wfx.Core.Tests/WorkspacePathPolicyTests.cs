@@ -110,23 +110,51 @@ public sealed class WorkspacePathPolicyTests
     }
 
     [Fact]
-    public void Resolve_MustExist_ThrowsForSymlinkWithMissingTarget()
+    public void Resolve_MustExist_ThrowsForDirectorySymlinkWithMissingTarget()
     {
         using var workspace = new TemporaryDirectory();
         var link = Path.Combine(workspace.Path, "broken-link");
         var missingTarget = Path.Combine(workspace.Path, "missing-target");
         try
         {
-            File.CreateSymbolicLink(link, missingTarget);
+            // A directory symlink (like a junction) is a reparse point that carries the
+            // directory attribute, so Directory.Exists(link) is true even though its target
+            // is missing. A dangling *file* symlink registers as non-existent and never
+            // reaches ResolveLinkTarget, so it would not exercise the resolved-path check.
+            Directory.CreateSymbolicLink(link, missingTarget);
         }
         catch (Exception exception) when (exception is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
         {
-            Assert.Skip($"Unable to create a file symbolic link: {exception.Message}");
+            Assert.Skip($"Unable to create a directory symbolic link: {exception.Message}");
         }
 
         var policy = new WorkspacePathPolicy(workspace.Path);
 
         Assert.Throws<FileNotFoundException>(() => policy.Resolve("broken-link", mustExist: true));
+    }
+
+    [Fact]
+    public void Resolve_MustExist_SucceedsThroughDirectorySymlinkToExistingFile()
+    {
+        using var workspace = new TemporaryDirectory();
+        var realDirectory = Path.Combine(workspace.Path, "real");
+        Directory.CreateDirectory(realDirectory);
+        File.WriteAllText(Path.Combine(realDirectory, "file.txt"), "ok");
+        var link = Path.Combine(workspace.Path, "linked");
+        try
+        {
+            Directory.CreateSymbolicLink(link, realDirectory);
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            Assert.Skip($"Unable to create a directory symbolic link: {exception.Message}");
+        }
+
+        var policy = new WorkspacePathPolicy(workspace.Path);
+
+        var result = policy.Resolve(Path.Combine("linked", "file.txt"), mustExist: true);
+
+        Assert.Equal(Path.Combine(workspace.Path, "linked", "file.txt"), result);
     }
 
     [Fact]
