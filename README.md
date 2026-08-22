@@ -206,7 +206,7 @@ WFX takes inspiration from the small, native, model-agnostic philosophy of [Verc
 - Recursive tools do not traverse reparse points and skip `.git`, `bin`, and `obj`.
 - Git tool operations are restricted to `status`, `diff`, staged diff, and bounded `log`.
 - The CLI never commits or pushes.
-- API keys are not printed and are redacted if an endpoint echoes one in an error.
+- API keys are not printed and are redacted if an endpoint echoes one in an error. Approval prompts, tool-call summaries, rejection reasons, and debug tool output replace known provider secrets with `[REDACTED]`.
 - Child processes omit secret-bearing environment variables by default: names matching `*_API_KEY`, `*_TOKEN`, or `*_SECRET`, plus `WFX_API_KEY`, `OPENAI_API_KEY`, and `OPENROUTER_API_KEY`. The `powershell` tool can restore specific parent variables with `inherit_environment`, which is classified as at least a system change. Scrubbed values are never logged.
 - Child processes set `GIT_PAGER=cat` and `PAGER=cat` by default. An explicit process-environment overlay still wins.
 - `--approval never` means deny mutations rather than silently execute them.
