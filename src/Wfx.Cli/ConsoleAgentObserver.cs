@@ -34,7 +34,7 @@ internal sealed class ConsoleAgentObserver(
         CancellationToken cancellationToken)
     {
         WriteLine($"{_marker} {ToolCallSummary.Describe(name, argumentsJson, secrets: secrets)}");
-        WriteLine($"  skipped: {ToolCallSummary.DescribeText(reason)}");
+        WriteLine($"  skipped: {ToolCallSummary.DescribeText(reason, secrets: secrets)}");
         return ValueTask.CompletedTask;
     }
 
@@ -50,14 +50,17 @@ internal sealed class ConsoleAgentObserver(
         }
         else if (!result.Success)
         {
-            WriteLine($"  failed: {ToolCallSummary.DescribeText(result.Error ?? "unknown error")}");
+            WriteLine($"  failed: {ToolCallSummary.DescribeText(result.Error ?? "unknown error", secrets: secrets)}");
         }
 
         if (debug && !string.IsNullOrWhiteSpace(result.Output))
         {
-            var output = result.Output.Length > 2_000
-                ? result.Output[..2_000] + ConsoleText.Ellipsis
-                : result.Output;
+            var output = ToolCallSummary.RedactSecrets(result.Output, secrets);
+            if (output.Length > 2_000)
+            {
+                output = output[..2_000] + ConsoleText.Ellipsis;
+            }
+
             WriteLine(output);
         }
 

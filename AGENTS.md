@@ -34,7 +34,6 @@ Keep MCP, ACP, skills, subagents, WinGet, Pester, and other future capabilities 
 - Unknown PowerShell behavior is sensitive; classify conservatively.
 - Git writes, commits, pushes, and network operations are not part of the Milestone 1 Git tool.
 - Add deterministic tests that do not require a paid or live model API.
-- Pass multi-line `gh` issue and PR bodies with `--body-file`. Keep `pwsh -Command` argv to a short git/gh invocation; AMSI scans the entire string.
 
 ## Style
 

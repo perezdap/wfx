@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
@@ -10,6 +11,8 @@ namespace Wfx.Core;
 public static class ToolCallSummary
 {
     public const int DefaultMaxArgumentLength = 160;
+
+    public const int MinSecretLength = 8;
 
     private const string Redacted = "[REDACTED]";
 
@@ -49,16 +52,24 @@ public static class ToolCallSummary
         int maxArgumentLength = DefaultMaxArgumentLength,
         IReadOnlyList<string>? secrets = null)
     {
-        var normalized = NormalizeSecrets(secrets);
-        var arguments = DescribeArguments(argumentsJson, maxArgumentLength, normalized);
+        var arguments = DescribeArguments(argumentsJson, maxArgumentLength, NormalizeSecrets(secrets));
         return arguments.Length == 0 ? toolName : $"{toolName}({arguments})";
     }
 
     /// <summary>
     /// Collapses free-form text onto a single truncated line.
     /// </summary>
-    public static string DescribeText(string? text, int maxLength = DefaultMaxArgumentLength) =>
-        Truncate(Collapse(text), maxLength);
+    public static string DescribeText(
+        string? text,
+        int maxLength = DefaultMaxArgumentLength,
+        IReadOnlyList<string>? secrets = null) =>
+        Truncate(Collapse(Redact(text, NormalizeSecrets(secrets))), maxLength);
+
+    /// <summary>
+    /// Replaces known secret values without collapsing or truncating, for debug output.
+    /// </summary>
+    public static string RedactSecrets(string? text, IReadOnlyList<string>? secrets) =>
+        Redact(text, NormalizeSecrets(secrets));
 
     private static string DescribeArguments(
         string? argumentsJson,
@@ -77,14 +88,14 @@ public static class ToolCallSummary
         }
         catch (JsonException)
         {
-            return DescribeText(Redact(argumentsJson, secrets), maxArgumentLength);
+            return DescribeRawArguments(argumentsJson, maxArgumentLength, secrets);
         }
 
         using (document)
         {
             if (document.RootElement.ValueKind != JsonValueKind.Object)
             {
-                return DescribeText(Redact(argumentsJson, secrets), maxArgumentLength);
+                return DescribeRawArguments(argumentsJson, maxArgumentLength, secrets);
             }
 
             var maxValueLength = Math.Max(MinValueLength, maxArgumentLength * 3 / 4);
@@ -116,6 +127,15 @@ public static class ToolCallSummary
         }
     }
 
+    private static string DescribeRawArguments(
+        string argumentsJson,
+        int maxArgumentLength,
+        IReadOnlyList<string> secrets)
+    {
+        var prepared = RedactSecretNamedJsonFields(DecodeJsonEscapes(argumentsJson));
+        return Truncate(Collapse(Redact(prepared, secrets)), maxArgumentLength);
+    }
+
     private static string? DescribeValue(JsonElement value, int maxValueLength, IReadOnlyList<string> secrets) =>
         value.ValueKind switch
         {
@@ -137,24 +157,19 @@ public static class ToolCallSummary
             return [];
         }
 
-        var normalized = new List<string>(secrets.Count);
+        var needles = new List<string>(secrets.Count);
         foreach (var secret in secrets)
         {
-            if (string.IsNullOrEmpty(secret) || normalized.Contains(secret, StringComparer.Ordinal))
-            {
-                continue;
-            }
-
-            normalized.Add(secret);
+            AddNeedles(needles, secret);
         }
 
-        normalized.Sort(static (left, right) => right.Length.CompareTo(left.Length));
-        return normalized;
+        SortLongestFirst(needles);
+        return needles;
     }
 
     private static IReadOnlyList<string> CollectJsonSecrets(JsonElement root, IReadOnlyList<string> secrets)
     {
-        List<string>? extra = null;
+        List<string>? merged = null;
         foreach (var property in root.EnumerateObject())
         {
             if (!IsSecretPropertyName(property.Name) || property.Value.ValueKind != JsonValueKind.String)
@@ -163,30 +178,53 @@ public static class ToolCallSummary
             }
 
             var value = property.Value.GetString();
-            if (string.IsNullOrEmpty(value) || ContainsOrdinal(secrets, value) ||
-                (extra is not null && ContainsOrdinal(extra, value)))
+            if (string.IsNullOrEmpty(value) || ContainsIgnoreCase(secrets, value) ||
+                (merged is not null && ContainsIgnoreCase(merged, value)))
             {
                 continue;
             }
 
-            extra ??= [.. secrets];
-            extra.Add(value);
+            merged ??= [.. secrets];
+            AddNeedles(merged, value);
         }
 
-        if (extra is null)
+        if (merged is null)
         {
             return secrets;
         }
 
-        extra.Sort(static (left, right) => right.Length.CompareTo(left.Length));
-        return extra;
+        SortLongestFirst(merged);
+        return merged;
     }
 
-    private static bool ContainsOrdinal(IReadOnlyList<string> values, string candidate)
+    private static void AddNeedles(List<string> needles, string? secret)
+    {
+        if (string.IsNullOrEmpty(secret) || secret.Length < MinSecretLength)
+        {
+            return;
+        }
+
+        AddUnique(needles, secret);
+        var encoded = JsonEncodedText.Encode(secret).ToString();
+        if (!encoded.Equals(secret, StringComparison.Ordinal))
+        {
+            AddUnique(needles, encoded);
+        }
+    }
+
+    private static void AddUnique(List<string> needles, string value)
+    {
+        if (!ContainsIgnoreCase(needles, value))
+        {
+            needles.Add(value);
+        }
+    }
+
+    private static bool ContainsIgnoreCase(IReadOnlyList<string> values, string candidate)
     {
         for (var index = 0; index < values.Count; index++)
         {
-            if (values[index].Equals(candidate, StringComparison.Ordinal))
+            if (values[index].Equals(candidate, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
@@ -194,6 +232,9 @@ public static class ToolCallSummary
 
         return false;
     }
+
+    private static void SortLongestFirst(List<string> values) =>
+        values.Sort(static (left, right) => right.Length.CompareTo(left.Length));
 
     private static string Redact(string? value, IReadOnlyList<string> secrets)
     {
@@ -204,10 +245,149 @@ public static class ToolCallSummary
 
         foreach (var secret in secrets)
         {
-            value = value.Replace(secret, Redacted, StringComparison.Ordinal);
+            value = value.Replace(secret, Redacted, StringComparison.OrdinalIgnoreCase);
         }
 
         return value;
+    }
+
+    private static string DecodeJsonEscapes(string value)
+    {
+        if (value.IndexOf('\\') < 0)
+        {
+            return value;
+        }
+
+        var builder = new StringBuilder(value.Length);
+        for (var index = 0; index < value.Length; index++)
+        {
+            if (value[index] != '\\' || index + 1 >= value.Length)
+            {
+                builder.Append(value[index]);
+                continue;
+            }
+
+            var next = value[index + 1];
+            switch (next)
+            {
+                case 'u' when index + 5 < value.Length &&
+                    int.TryParse(value.AsSpan(index + 2, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var code):
+                    builder.Append((char)code);
+                    index += 5;
+                    break;
+                case 'n':
+                    builder.Append('\n');
+                    index++;
+                    break;
+                case 'r':
+                    builder.Append('\r');
+                    index++;
+                    break;
+                case 't':
+                    builder.Append('\t');
+                    index++;
+                    break;
+                case '"':
+                case '\\':
+                case '/':
+                    builder.Append(next);
+                    index++;
+                    break;
+                default:
+                    builder.Append(value[index]);
+                    break;
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static string RedactSecretNamedJsonFields(string json)
+    {
+        var builder = new StringBuilder(json.Length);
+        var index = 0;
+        while (index < json.Length)
+        {
+            if (json[index] != '"' || !TryReadJsonString(json, index, out var name, out var afterName))
+            {
+                builder.Append(json[index]);
+                index++;
+                continue;
+            }
+
+            var colon = SkipWhite(json, afterName);
+            if (colon >= json.Length || json[colon] != ':' || !IsSecretPropertyName(name))
+            {
+                builder.Append(json, index, afterName - index);
+                index = afterName;
+                continue;
+            }
+
+            builder.Append(json, index, colon + 1 - index);
+            builder.Append(' ');
+            builder.Append(Redacted);
+            var valueStart = SkipWhite(json, colon + 1);
+            if (valueStart < json.Length && json[valueStart] == '"' &&
+                TryReadJsonString(json, valueStart, out _, out var afterValue))
+            {
+                index = afterValue;
+                continue;
+            }
+
+            index = json.Length;
+        }
+
+        return builder.ToString();
+    }
+
+    private static bool TryReadJsonString(string json, int start, out string value, out int after)
+    {
+        value = string.Empty;
+        after = start;
+        if (start >= json.Length || json[start] != '"')
+        {
+            return false;
+        }
+
+        var builder = new StringBuilder();
+        var escaped = false;
+        for (var index = start + 1; index < json.Length; index++)
+        {
+            var character = json[index];
+            if (escaped)
+            {
+                builder.Append(character);
+                escaped = false;
+                continue;
+            }
+
+            if (character == '\\')
+            {
+                escaped = true;
+                continue;
+            }
+
+            if (character == '"')
+            {
+                value = builder.ToString();
+                after = index + 1;
+                return true;
+            }
+
+            builder.Append(character);
+        }
+
+        return false;
+    }
+
+    private static int SkipWhite(string json, int index)
+    {
+        while (index < json.Length && char.IsWhiteSpace(json[index]))
+        {
+            index++;
+        }
+
+        return index;
     }
 
     private static bool IsSecretPropertyName(string name)
