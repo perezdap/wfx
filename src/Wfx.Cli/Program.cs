@@ -304,13 +304,16 @@ internal static class Program
             new StaticContextProvider($"Workspace root: {workspace.Root}\nWorking directory: {workspace.WorkingDirectory}\nGit repository: {workspace.IsGitRepository}"),
             new AgentInstructionsContextProvider(workspace.Root, workspace.WorkingDirectory)
         ]);
-        var approval = new PolicyApprovalService(settings.Approval, PromptForApprovalAsync);
+        var secrets = ProviderSecrets(settings);
+        var approval = new PolicyApprovalService(
+            settings.Approval,
+            (request, token) => PromptForApprovalAsync(request, secrets, token));
         return new Agent(
             provider,
             tools,
             approval,
             context,
-            new ConsoleAgentObserver(arguments.Verbose, arguments.Debug, _unicodeConsole),
+            new ConsoleAgentObserver(arguments.Verbose, arguments.Debug, _unicodeConsole, secrets),
             new AgentOptions(settings.Model, settings.MaxIterations),
             workspace.Root,
             conversation);
@@ -326,6 +329,25 @@ internal static class Program
             IncludeStreamOptions = settings.Provider.Equals("openai", StringComparison.OrdinalIgnoreCase)
                 || settings.Provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase)
         });
+
+    private static IReadOnlyList<string> ProviderSecrets(WfxSettings settings)
+    {
+        var secrets = new List<string>();
+        if (!string.IsNullOrEmpty(settings.ApiKey))
+        {
+            secrets.Add(settings.ApiKey);
+        }
+
+        foreach (var value in settings.Headers.Values)
+        {
+            if (!string.IsNullOrEmpty(value))
+            {
+                secrets.Add(value);
+            }
+        }
+
+        return secrets;
+    }
 
     private static bool TryEnableUnicodeConsole()
     {
@@ -350,10 +372,13 @@ internal static class Program
         Timeout = Timeout.InfiniteTimeSpan
     };
 
-    private static async ValueTask<bool> PromptForApprovalAsync(ApprovalRequest request, CancellationToken cancellationToken)
+    private static async ValueTask<bool> PromptForApprovalAsync(
+        ApprovalRequest request,
+        IReadOnlyList<string> secrets,
+        CancellationToken cancellationToken)
     {
         var call = ConsoleText.ForConsole(
-            ToolCallSummary.Describe(request.ToolName, request.ArgumentsJson, ApprovalSummaryLength),
+            ToolCallSummary.Describe(request.ToolName, request.ArgumentsJson, ApprovalSummaryLength, secrets),
             _unicodeConsole);
         if (Console.IsInputRedirected)
         {
