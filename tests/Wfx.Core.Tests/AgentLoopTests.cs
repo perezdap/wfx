@@ -158,21 +158,16 @@ public sealed class AgentLoopTests
             new ModelMessage(ModelRole.Assistant, "step two",
             [new ModelToolCall("call-2", "echo", "{\"value\":\"b\"}")])
         ]);
-        var agent = new Agent(
-            model,
-            new ToolRegistry([new EchoTool()]),
-            new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
-            new StaticContextProvider("test context"),
-            new SilentObserver(),
-            new AgentOptions("fake-model", maxIterations: 2),
-            workspace.Path);
+        var agent = CreateAgent(model, workspace.Path, maxIterations: 2);
 
         var result = await agent.RunAsync("do it", TestContext.Current.CancellationToken);
 
         Assert.Equal(AgentRunStatus.IterationLimitReached, result.Status);
         Assert.Equal(2, result.Iterations);
-        Assert.Contains("step one", result.FinalResponse, StringComparison.Ordinal);
-        Assert.Contains("step two", result.FinalResponse, StringComparison.Ordinal);
+        Assert.Equal("step two", result.FinalResponse);
+        Assert.Equal("step one\nstep two", result.AccumulatedText);
+        Assert.NotNull(result.Note);
+        Assert.Contains("iteration limit", result.Note, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(2, result.Messages.Count(static message => message.Role == ModelRole.Tool));
         Assert.Equal(2, result.Messages.Count(static message => message.Role == ModelRole.Assistant));
     }
@@ -192,23 +187,28 @@ public sealed class AgentLoopTests
             [new ModelToolCall("call-1", "echo", "{\"value\":\"a\"}")]),
             new ModelMessage(ModelRole.Assistant, "finished")
         ]);
-        Agent CreateAgent(IModelProvider provider) => new(
-            provider,
-            new ToolRegistry([new EchoTool()]),
-            new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
-            new StaticContextProvider("test context"),
-            new SilentObserver(),
-            new AgentOptions("fake-model", maxIterations: 2),
-            workspace.Path);
 
-        var exhausted = await CreateAgent(exhaustedModel).RunAsync("do it", TestContext.Current.CancellationToken);
-        var completed = await CreateAgent(completedModel).RunAsync("do it", TestContext.Current.CancellationToken);
+        var exhausted = await CreateAgent(exhaustedModel, workspace.Path, maxIterations: 2)
+            .RunAsync("do it", TestContext.Current.CancellationToken);
+        var completed = await CreateAgent(completedModel, workspace.Path)
+            .RunAsync("do it", TestContext.Current.CancellationToken);
 
         Assert.Equal(2, exhausted.Iterations);
         Assert.Equal(2, completed.Iterations);
         Assert.Equal(AgentRunStatus.IterationLimitReached, exhausted.Status);
         Assert.Equal(AgentRunStatus.Completed, completed.Status);
+        Assert.Equal(string.Empty, exhausted.AccumulatedText);
+        Assert.Null(completed.AccumulatedText);
     }
+
+    private static Agent CreateAgent(IModelProvider model, string workspaceRoot, int maxIterations = 24) => new(
+        model,
+        new ToolRegistry([new EchoTool()]),
+        new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
+        new StaticContextProvider("test context"),
+        new SilentObserver(),
+        new AgentOptions("fake-model", maxIterations),
+        workspaceRoot);
 
     private sealed class SequenceModelProvider(IReadOnlyList<ModelMessage> responses) : IModelProvider
     {
@@ -222,7 +222,7 @@ public sealed class AgentLoopTests
         {
             Requests.Add(request);
             await Task.Yield();
-            yield return new ModelCompleted(responses[Math.Min(_index++, responses.Count - 1)]);
+            yield return new ModelCompleted(responses[_index++]);
         }
     }
 
