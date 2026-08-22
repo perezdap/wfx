@@ -12,10 +12,10 @@ only the current user. Matching is **prefix-anchored only** — environment-styl
 ## Considered Options
 
 - **Store verbatim, rely on directory ACL alone**: rejected. It was the initial proposal, and a survey
-  of the field argued against it: of five harnesses examined (fx, OpenAI Codex, Aider, OpenHands,
-  Claude Code) only fx both redacts and restricts permissions, and it is also the closest comparable
-  design. Codex and Aider persist tool output unfiltered; Claude Code's docs state that OS file
-  permissions are the only protection.
+  of the field argued against it: of five harnesses examined (Vercel's fx, OpenAI Codex, Aider,
+  OpenHands, Claude Code) only Vercel's fx both redacts and restricts permissions, and it is the closest
+  comparable design. Codex and Aider persist tool output unfiltered; Claude Code's docs state that OS
+  file permissions are the only protection.
 - **Redact at write time, on the persistence path**: rejected, and this is the substantive decision. It
   makes the transcript disagree with what the model actually received, so the authoritative record of a
   session becomes a record of something that never happened. Redacting at ingestion means there is only
