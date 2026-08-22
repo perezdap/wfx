@@ -28,6 +28,13 @@ internal sealed class SseHttpChannel
         {
             throw new ArgumentException("Provider base URI must be absolute.", nameof(options));
         }
+
+        if (httpClient.Timeout != Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentException(
+                "HttpClient.Timeout must be Timeout.InfiniteTimeSpan; the channel applies the configured timeout to each wait instead of capping the whole stream.",
+                nameof(httpClient));
+        }
     }
 
     public HttpRequestMessage CreateRequest(string relativePath, byte[] body)
@@ -64,7 +71,9 @@ internal sealed class SseHttpChannel
     /// Transient statuses (429 and 5xx) are retried with bounded, jittered
     /// backoff, honoring <c>Retry-After</c> when the endpoint sends one. The
     /// request factory runs once per attempt because sent messages cannot be
-    /// replayed.
+    /// replayed. The configured timeout bounds each wait, not the whole stream:
+    /// each attempt (headers plus any backoff) gets a fresh window, and so does
+    /// every subsequent line read.
     /// </summary>
     public async IAsyncEnumerable<string> ReadDataEventsAsync(
         Func<HttpRequestMessage> createRequest,
@@ -73,36 +82,51 @@ internal sealed class SseHttpChannel
         using var timeoutSource = new CancellationTokenSource(_options.Timeout);
         using var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
         using var response = await SendWithRetriesAsync(createRequest, timeoutSource, linkedSource.Token, cancellationToken).ConfigureAwait(false);
+        await using var stream = await response.Content.ReadAsStreamAsync(linkedSource.Token).ConfigureAwait(false);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        var sawData = false;
+        while (await ReadLineOrTimeoutAsync(reader, timeoutSource, cancellationToken, linkedSource.Token).ConfigureAwait(false) is { } line)
         {
-            await using var stream = await response.Content.ReadAsStreamAsync(linkedSource.Token).ConfigureAwait(false);
-            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-            var sawData = false;
-            while (await reader.ReadLineAsync(linkedSource.Token).ConfigureAwait(false) is { } line)
+            if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
             {
-                if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                var data = line[5..].TrimStart();
-                if (data.Equals("[DONE]", StringComparison.Ordinal))
-                {
-                    break;
-                }
-
-                if (data.Length == 0)
-                {
-                    continue;
-                }
-
-                sawData = true;
-                yield return data;
+                continue;
             }
 
-            if (!sawData)
+            var data = line[5..].TrimStart();
+            if (data.Equals("[DONE]", StringComparison.Ordinal))
             {
-                throw new ProviderProtocolException("The provider stream ended without any data events.");
+                break;
             }
+
+            if (data.Length == 0)
+            {
+                continue;
+            }
+
+            sawData = true;
+            yield return data;
+        }
+
+        if (!sawData)
+        {
+            throw new ProviderProtocolException("The provider stream ended without any data events.");
+        }
+    }
+
+    private async Task<string?> ReadLineOrTimeoutAsync(
+        StreamReader reader,
+        CancellationTokenSource timeoutSource,
+        CancellationToken cancellationToken,
+        CancellationToken linkedToken)
+    {
+        timeoutSource.CancelAfter(_options.Timeout);
+        try
+        {
+            return await reader.ReadLineAsync(linkedToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeoutSource.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Model stream stalled: no data received for {_options.Timeout}.");
         }
     }
 
@@ -114,6 +138,7 @@ internal sealed class SseHttpChannel
     {
         for (var attempt = 0; ; attempt++)
         {
+            timeoutSource.CancelAfter(_options.Timeout);
             using var request = createRequest();
             HttpResponseMessage response;
             try
@@ -122,7 +147,7 @@ internal sealed class SseHttpChannel
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeoutSource.IsCancellationRequested)
             {
-                throw new TimeoutException($"Model request exceeded the {_options.Timeout} timeout.");
+                throw new TimeoutException($"Model endpoint did not respond within the {_options.Timeout} timeout.");
             }
 
             if (response.IsSuccessStatusCode)

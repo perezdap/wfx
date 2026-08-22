@@ -3,6 +3,8 @@
   "base_url": "http://localhost:1234/v1",
   "model": "qwen3-coder",
   "approval": "workspace",
+  // Bounds waiting for response headers and each idle gap between stream
+  // events; resets on every event, so a long healthy stream is not cut off.
   "timeout_seconds": 300,
   "max_iterations": 24
 }

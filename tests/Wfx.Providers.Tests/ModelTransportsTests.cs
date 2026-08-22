@@ -11,7 +11,7 @@ public sealed class ModelTransportsTests
     [InlineData("Responses", typeof(OpenAiResponsesProvider))]
     public void SelectsTheTransportForTheProtocol(string protocol, Type expected)
     {
-        using var httpClient = new HttpClient();
+        using var httpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
 
         var transport = ModelTransports.Create(protocol, httpClient, Options());
 
@@ -21,7 +21,7 @@ public sealed class ModelTransportsTests
     [Fact]
     public void RejectsProtocolsWithoutATransport()
     {
-        using var httpClient = new HttpClient();
+        using var httpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
 
         var exception = Assert.Throws<InvalidOperationException>(() =>
             ModelTransports.Create("anthropic_messages", httpClient, Options()));

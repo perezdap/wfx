@@ -136,7 +136,7 @@ public sealed class ProviderRetryTests
             Success
         ]);
         using var cancellation = new CancellationTokenSource();
-        var provider = new OpenAiCompatibleProvider(new HttpClient(handler), new OpenAiProviderOptions
+        var provider = new OpenAiCompatibleProvider(new HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan }, new OpenAiProviderOptions
         {
             BaseUri = new Uri("https://example.test/v1"),
             Timeout = TimeSpan.FromMinutes(5)
@@ -163,7 +163,7 @@ public sealed class ProviderRetryTests
             QueuedResponse.Failure((HttpStatusCode)429, retryAfter: TimeSpan.FromMinutes(5)),
             Success
         ]);
-        var provider = new OpenAiCompatibleProvider(new HttpClient(handler), new OpenAiProviderOptions
+        var provider = new OpenAiCompatibleProvider(new HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan }, new OpenAiProviderOptions
         {
             BaseUri = new Uri("https://example.test/v1"),
             Timeout = TimeSpan.FromMilliseconds(150)
@@ -178,7 +178,7 @@ public sealed class ProviderRetryTests
     }
 
     private static OpenAiCompatibleProvider CreateProvider(QueueStubHandler handler, Action<TimeSpan> recordDelay) =>
-        new(new HttpClient(handler), new OpenAiProviderOptions
+        new(new HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan }, new OpenAiProviderOptions
         {
             BaseUri = new Uri("https://example.test/v1"),
             Timeout = TimeSpan.FromMinutes(5)

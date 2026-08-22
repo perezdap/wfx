@@ -60,6 +60,8 @@ Example project configuration:
 }
 ```
 
+`timeout_seconds` bounds two phases of a provider request: waiting for response headers, and each gap between stream events after headers arrive. The idle window resets on every event, so a long generation that keeps producing output is never cut off; the request fails only if headers do not arrive in time or the stream goes silent for longer than the configured value.
+
 For LM Studio:
 
 ```powershell
