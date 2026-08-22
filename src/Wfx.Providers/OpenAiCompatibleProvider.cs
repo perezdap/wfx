@@ -1,4 +1,3 @@
-using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -8,118 +7,44 @@ namespace Wfx.Providers;
 
 public sealed class OpenAiCompatibleProvider : IModelProvider
 {
-    private readonly HttpClient _httpClient;
+    private readonly SseHttpChannel _channel;
     private readonly OpenAiProviderOptions _options;
 
     public OpenAiCompatibleProvider(HttpClient httpClient, OpenAiProviderOptions options)
     {
-        _httpClient = httpClient;
         _options = options;
-        if (!_options.BaseUri.IsAbsoluteUri)
-        {
-            throw new ArgumentException("Provider base URI must be absolute.", nameof(options));
-        }
+        _channel = new SseHttpChannel(httpClient, options);
     }
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
         ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var timeoutSource = new CancellationTokenSource(_options.Timeout);
-        using var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
-        using var httpRequest = BuildRequest(request);
-        HttpResponseMessage response;
-        try
+        using var httpRequest = _channel.CreateRequest("/chat/completions", BuildBody(request));
+        var accumulator = new ResponseAccumulator();
+        await foreach (var data in _channel.ReadDataEventsAsync(httpRequest, cancellationToken).ConfigureAwait(false))
         {
-            response = await _httpClient.SendAsync(
-                httpRequest,
-                HttpCompletionOption.ResponseHeadersRead,
-                linkedSource.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeoutSource.IsCancellationRequested)
-        {
-            throw new TimeoutException($"Model request exceeded the {_options.Timeout} timeout.");
-        }
-
-        using (response)
-        {
-            if (!response.IsSuccessStatusCode)
+            string? delta;
+            try
             {
-                var error = await ReadBoundedAsync(response.Content, 64 * 1024, linkedSource.Token).ConfigureAwait(false);
-                throw new HttpRequestException(
-                    $"Model endpoint returned {(int)response.StatusCode} {response.ReasonPhrase}: {Redact(error)}",
-                    null,
-                    response.StatusCode);
+                delta = accumulator.ApplyChunk(data);
+            }
+            catch (JsonException exception)
+            {
+                throw new ProviderProtocolException("The provider returned malformed streaming JSON.", exception);
             }
 
-            await using var stream = await response.Content.ReadAsStreamAsync(linkedSource.Token).ConfigureAwait(false);
-            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-            var accumulator = new ResponseAccumulator();
-            var sawData = false;
-            while (await reader.ReadLineAsync(linkedSource.Token).ConfigureAwait(false) is { } line)
+            if (!string.IsNullOrEmpty(delta))
             {
-                if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                var data = line[5..].TrimStart();
-                if (data.Equals("[DONE]", StringComparison.Ordinal))
-                {
-                    break;
-                }
-
-                if (data.Length == 0)
-                {
-                    continue;
-                }
-
-                sawData = true;
-                string? delta;
-                try
-                {
-                    delta = accumulator.ApplyChunk(data);
-                }
-                catch (JsonException exception)
-                {
-                    throw new ProviderProtocolException("The provider returned malformed streaming JSON.", exception);
-                }
-
-                if (!string.IsNullOrEmpty(delta))
-                {
-                    yield return new ModelTextDelta(delta);
-                }
+                yield return new ModelTextDelta(delta);
             }
-
-            if (!sawData)
-            {
-                throw new ProviderProtocolException("The provider stream ended without any data events.");
-            }
-
-            yield return new ModelCompleted(accumulator.BuildMessage(), accumulator.Usage);
         }
+
+        yield return new ModelCompleted(accumulator.BuildMessage(), accumulator.Usage);
     }
 
-    private HttpRequestMessage BuildRequest(ModelRequest request)
+    private byte[] BuildBody(ModelRequest request)
     {
-        var endpoint = new Uri(_options.BaseUri.ToString().TrimEnd('/') + "/chat/completions", UriKind.Absolute);
-        var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint);
-        httpRequest.Headers.UserAgent.ParseAdd("wfx/0.1");
-        if (!string.IsNullOrWhiteSpace(_options.ApiKey))
-        {
-            httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
-        }
-
-        foreach (var header in _options.Headers)
-        {
-            if (header.Key.Equals("Authorization", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new ArgumentException("Use ApiKey rather than an Authorization custom header.");
-            }
-
-            httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
-        }
-
         var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
         {
@@ -162,12 +87,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
             writer.WriteEndObject();
         }
 
-        httpRequest.Content = new ByteArrayContent(stream.ToArray());
-        httpRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json")
-        {
-            CharSet = "utf-8"
-        };
-        return httpRequest;
+        return stream.ToArray();
     }
 
     private static void WriteMessage(Utf8JsonWriter writer, ModelMessage message)
@@ -217,34 +137,10 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         writer.WriteEndObject();
     }
 
-    private string Redact(string value)
-    {
-        var secrets = _options.Headers.Values
-            .Append(_options.ApiKey)
-            .Where(static secret => !string.IsNullOrEmpty(secret))
-            .Distinct(StringComparer.Ordinal)
-            .OrderByDescending(static secret => secret!.Length);
-        foreach (var secret in secrets)
-        {
-            value = value.Replace(secret!, "[REDACTED]", StringComparison.Ordinal);
-        }
-
-        return value;
-    }
-
-    private static async Task<string> ReadBoundedAsync(HttpContent content, int maxCharacters, CancellationToken cancellationToken)
-    {
-        await using var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var reader = new StreamReader(stream);
-        var buffer = new char[maxCharacters];
-        var count = await reader.ReadBlockAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
-        return new string(buffer, 0, count);
-    }
-
     private sealed class ResponseAccumulator
     {
         private readonly StringBuilder _content = new();
-        private readonly SortedDictionary<int, ToolCallBuilder> _toolCalls = new();
+        private readonly ToolCallAccumulator _toolCalls = new();
 
         public ModelUsage? Usage { get; private set; }
 
@@ -285,64 +181,34 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
                         throw new JsonException("Tool-call delta is missing an integer index.");
                     }
 
-                    if (!_toolCalls.TryGetValue(index, out var builder))
-                    {
-                        builder = new ToolCallBuilder();
-                        _toolCalls.Add(index, builder);
-                    }
-
-                    if (toolCall.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
-                    {
-                        builder.Id ??= id.GetString();
-                    }
-
+                    var builder = _toolCalls.GetOrAdd(index);
+                    var name = (string?)null;
                     if (toolCall.TryGetProperty("function", out var function) && function.ValueKind == JsonValueKind.Object)
                     {
-                        if (function.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+                        if (function.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String)
                         {
-                            builder.Name ??= name.GetString();
+                            name = nameElement.GetString();
                         }
 
                         if (function.TryGetProperty("arguments", out var arguments) && arguments.ValueKind == JsonValueKind.String)
                         {
-                            builder.Arguments.Append(arguments.GetString());
+                            builder.AppendArguments(arguments.GetString());
                         }
                     }
+
+                    builder.Identify(
+                        toolCall.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String ? id.GetString() : null,
+                        name);
                 }
             }
 
             return text;
         }
 
-        public ModelMessage BuildMessage()
-        {
-            var calls = new List<ModelToolCall>();
-            foreach (var pair in _toolCalls)
-            {
-                var call = pair.Value;
-                if (string.IsNullOrWhiteSpace(call.Id) || string.IsNullOrWhiteSpace(call.Name))
-                {
-                    throw new ProviderProtocolException("The provider returned an incomplete tool call.");
-                }
-
-                var arguments = call.Arguments.Length == 0 ? "{}" : call.Arguments.ToString();
-                try
-                {
-                    using var _ = JsonDocument.Parse(arguments);
-                }
-                catch (JsonException exception)
-                {
-                    throw new ProviderProtocolException("The provider returned malformed tool-call arguments.", exception);
-                }
-
-                calls.Add(new ModelToolCall(call.Id, call.Name, arguments));
-            }
-
-            return new ModelMessage(
-                ModelRole.Assistant,
-                _content.Length == 0 ? null : _content.ToString(),
-                calls.Count == 0 ? null : calls);
-        }
+        public ModelMessage BuildMessage() => new(
+            ModelRole.Assistant,
+            _content.Length == 0 ? null : _content.ToString(),
+            _toolCalls.Build());
 
         private void ReadUsage(JsonElement root)
         {
@@ -358,15 +224,6 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
                 ? completionValue
                 : null;
             Usage = new ModelUsage(input, output);
-        }
-
-        private sealed class ToolCallBuilder
-        {
-            public string? Id { get; set; }
-
-            public string? Name { get; set; }
-
-            public StringBuilder Arguments { get; } = new();
         }
     }
 }

@@ -1,5 +1,4 @@
 using System.Net;
-using System.Text;
 using Wfx.Core;
 using Wfx.Providers;
 
@@ -148,21 +147,5 @@ public sealed class OpenAiCompatibleProviderTests
         }
 
         return result;
-    }
-
-    private sealed class StubHandler(HttpStatusCode statusCode, string content, string mediaType) : HttpMessageHandler
-    {
-        public string RequestBody { get; private set; } = string.Empty;
-
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            RequestBody = request.Content is null
-                ? string.Empty
-                : await request.Content.ReadAsStringAsync(cancellationToken);
-            return new HttpResponseMessage(statusCode)
-            {
-                Content = new StringContent(content, Encoding.UTF8, mediaType)
-            };
-        }
     }
 }

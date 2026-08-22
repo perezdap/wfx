@@ -9,7 +9,7 @@ Milestone 1 proves one complete loop: discover a workspace and its instructions,
 ```mermaid
 flowchart TD
     CLI["Wfx.Cli\ncomposition + console"] --> Core["Wfx.Core\nagent + contracts + policy"]
-    CLI --> Providers["Wfx.Providers\nOpenAI-compatible SSE"]
+    CLI --> Providers["Wfx.Providers\nchat_completions + responses SSE"]
     CLI --> Tools["Wfx.Tools\nbuilt-in tools"]
     Tools --> Core
     Tools --> PS["Wfx.PowerShell\nprocess execution"]
