@@ -75,9 +75,9 @@ public sealed class WorkspacePathPolicy
         var resolvedPath = ResolveLinks(fullPath);
         EnsureInside(resolvedPath, _resolvedRoot, "Path resolves outside the workspace through a link or junction.");
 
-        if (mustExist && !File.Exists(fullPath) && !Directory.Exists(fullPath))
+        if (mustExist && !File.Exists(resolvedPath) && !Directory.Exists(resolvedPath))
         {
-            throw new FileNotFoundException($"Workspace path does not exist: {path}", fullPath);
+            throw new FileNotFoundException($"Workspace path does not exist: {path}", resolvedPath);
         }
 
         return fullPath;
