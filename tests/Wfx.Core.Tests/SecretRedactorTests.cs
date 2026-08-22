@@ -10,6 +10,9 @@ public sealed class SecretRedactorTests
     [InlineData("DATABASE_URL=postgres://user:s3cret@db:5432/app", "DATABASE_URL=[REDACTED]")]
     [InlineData("  ACCESS_TOKEN = abc", "  ACCESS_TOKEN = [REDACTED]")]
     [InlineData("FOO_BAR_KEY=value", "FOO_BAR_KEY=[REDACTED]")]
+    [InlineData("export API_KEY=hunter2", "export API_KEY=[REDACTED]")]
+    [InlineData("  export SECRET=shh", "  export SECRET=[REDACTED]")]
+    [InlineData("EXPORT\tACCESS_TOKEN=abc", "EXPORT\tACCESS_TOKEN=[REDACTED]")]
     public void RedactsEnvironmentStyleAssignments(string input, string expected) =>
         Assert.Equal(expected, SecretRedactor.Redact(input));
 
@@ -19,6 +22,9 @@ public sealed class SecretRedactorTests
     [InlineData("github_pat_11AAbb22CC", "[REDACTED]")]
     [InlineData("ghp_abcDEF123", "[REDACTED]")]
     [InlineData("AKIAIOSFODNN7EXAMPLE", "[REDACTED]")]
+    [InlineData("sk-abc.def", "[REDACTED]")]
+    [InlineData("key: sk-abc.def, next", "key: [REDACTED], next")]
+    [InlineData("\"token\":\"sk-abc.def\"", "\"token\":\"[REDACTED]\"")]
     [InlineData("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9",
         "Authorization: [REDACTED]")]
     public void RedactsInlineTokenPrefixes(string input, string expected) =>

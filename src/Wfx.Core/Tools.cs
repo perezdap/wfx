@@ -25,17 +25,26 @@ public sealed record ToolResult(
     public static ToolResult Fail(string error, string output = "") =>
         new(false, output, error);
 
-    public string ToProtocolJson()
+    /// <summary>
+    /// Serializes this result to the protocol JSON shape (<c>success</c>, <c>output</c>,
+    /// optional <c>error</c> and <c>metadata</c>). When <paramref name="transform"/> is
+    /// supplied it is applied to every string value (output, error, and each metadata value),
+    /// letting a caller such as the agent loop redact secrets at ingestion without duplicating
+    /// the protocol shape.
+    /// </summary>
+    public string ToProtocolJson(Func<string, string>? transform = null)
     {
+        transform ??= static value => value;
+
         var root = new JsonObject
         {
             ["success"] = Success,
-            ["output"] = Output
+            ["output"] = transform(Output)
         };
 
         if (Error is not null)
         {
-            root["error"] = Error;
+            root["error"] = transform(Error);
         }
 
         if (Metadata is not null)
@@ -43,7 +52,7 @@ public sealed record ToolResult(
             var metadata = new JsonObject();
             foreach (var pair in Metadata)
             {
-                metadata[pair.Key] = pair.Value;
+                metadata[pair.Key] = transform(pair.Value);
             }
 
             root["metadata"] = metadata;

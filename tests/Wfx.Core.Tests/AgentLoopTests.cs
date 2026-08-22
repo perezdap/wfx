@@ -254,8 +254,12 @@ public sealed class AgentLoopTests
         var content = toolMessage.Content!;
         Assert.Contains("API_KEY=[REDACTED]", content);
         Assert.Contains("OpenAI_API_KEY=[REDACTED]", content);
+        Assert.Contains("export SECRET_TOKEN=[REDACTED]", content);
         Assert.DoesNotContain("sk-1111111111111111", content);
         Assert.DoesNotContain("hunter2", content);
+        Assert.DoesNotContain("exported-secret", content);
+        // Punctuation-bearing token must be redacted whole, not split at the dot.
+        Assert.DoesNotContain(".leak", content);
         // Prefix-anchored non-match case: a filename like this must be left alone.
         Assert.Contains("ask-turn-default-auto.txt", content);
         Assert.Equal(1, model.Requests[1].Messages.Count(static m => m.Role == ModelRole.Tool));
@@ -380,6 +384,8 @@ public sealed class AgentLoopTests
             const string output = """
                 API_KEY=hunter2
                 OpenAI_API_KEY=sk-1111111111111111
+                export SECRET_TOKEN=exported-secret
+                inline: sk-2222222222.leak
                 file: ask-turn-default-auto.txt
                 """;
             return ValueTask.FromResult(ToolResult.Ok(output));

@@ -16,10 +16,10 @@ namespace Wfx.Core;
 /// scrubbing.
 /// </para>
 /// </summary>
-public static class SecretRedactor
+internal static class SecretRedactor
 {
     /// <summary>The marker that replaces a matched secret value.</summary>
-    public const string Redacted = "[REDACTED]";
+    internal const string Redacted = "[REDACTED]";
 
     private static readonly HashSet<string> SecretEnvKeys = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -64,21 +64,24 @@ public static class SecretRedactor
         "_credentials"
     ];
 
-    // An environment assignment that begins a line: optional leading whitespace, a plausible
-    // variable name, optional whitespace, then '='. The value runs to the end of the line and
-    // any leading whitespace after '=' is preserved.
+    // An environment assignment that begins a line: optional leading whitespace, an optional
+    // shell 'export' prefix (so 'export API_KEY=...' is covered too), a plausible variable
+    // name, optional whitespace, then '='. The value runs to the end of the line and any
+    // leading whitespace after '=' is preserved. The 'export' prefix is kept in <head>, so a
+    // variable literally named 'export' (as in 'export=x') still parses as the key.
     private static readonly Regex EnvAssignmentRegex = new(
-        @"(?im)^(?<head>[ \t]*)(?<key>[a-z_][a-z0-9_]*)(?<eq>[ \t]*=)(?<ws>[ \t]*)(?<value>[^\r\n]*)",
+        @"(?im)^(?<head>[ \t]*(?:export[ \t]+)?)(?<key>[a-z_][a-z0-9_]*)(?<eq>[ \t]*=)(?<ws>[ \t]*)(?<value>[^\r\n]*)",
         RegexOptions.CultureInvariant);
 
     // Prefix-anchored inline tokens. Each alternative is anchored at a word boundary; the
-    // trailing character class stops at punctuation and whitespace so no extra text is eaten.
-    // Token payloads are base62/alphanumeric, so matching is case-insensitive.
+    // payload runs to an explicit delimiter (whitespace, comma, or quote) rather than assuming
+    // a payload alphabet, so a value like 'sk-abc.def' is redacted whole instead of leaking
+    // '.def'. Matching is case-insensitive.
     private static readonly Regex InlineTokenRegex = new(
-        @"\bsk-[a-z0-9_\-]*|" +
-        @"\bgithub_pat_[a-z0-9_\-]*|" +
-        @"\bghp_[a-z0-9_\-]*|" +
-        @"\bAKIA[a-z0-9_\-]*|" +
+        @"\bsk-[^\s,""']*|" +
+        @"\bgithub_pat_[^\s,""']*|" +
+        @"\bghp_[^\s,""']*|" +
+        @"\bAKIA[^\s,""']*|" +
         @"\bBearer\s+[^\s,""']+",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
@@ -92,7 +95,7 @@ public static class SecretRedactor
     /// Returns <paramref name="input"/> with known secret shapes replaced by
     /// <see cref="Redacted"/>. A <see langword="null"/> input yields <see cref="string.Empty"/>.
     /// </summary>
-    public static string Redact(string? input)
+    internal static string Redact(string? input)
     {
         if (string.IsNullOrEmpty(input))
         {
