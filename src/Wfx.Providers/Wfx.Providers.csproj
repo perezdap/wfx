@@ -3,6 +3,7 @@
     <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Wfx.Providers.Tests" />
     <ProjectReference Include="../Wfx.Core/Wfx.Core.csproj" />
   </ItemGroup>
 </Project>
