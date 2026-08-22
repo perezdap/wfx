@@ -81,7 +81,8 @@ internal static class Program
             ? $"wfx: {settings.Provider}/{settings.Model}"
             : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
 
-        var agent = CreateAgent(settings, workspace, arguments, httpClient);
+        var provider = CreateModelProvider(settings, httpClient);
+        var agent = CreateAgent(settings, workspace, arguments, provider, []);
         var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
         PrintTrailingNewline(result);
 
@@ -106,18 +107,19 @@ internal static class Program
         HttpClient httpClient,
         CancellationToken cancellationToken)
     {
-        EnsureRunnable(settings);
-        Console.WriteLine("WFX");
-        Console.WriteLine();
-        if (settings.Profile is not null)
+        if (string.IsNullOrWhiteSpace(settings.Model) && settings.ConfiguredModels.Count == 0)
         {
-            Console.WriteLine($"Profile: {settings.Profile}");
+            EnsureRunnable(settings);
         }
 
-        Console.WriteLine($"Model: {settings.Provider}/{settings.Model}");
+        Console.WriteLine("WFX");
+        Console.WriteLine();
+        PrintActiveModel(settings);
         Console.WriteLine($"Workspace: {workspace.Root}");
         Console.WriteLine();
 
+        var provider = CreateModelProvider(settings, httpClient);
+        IReadOnlyList<ModelMessage> conversation = [];
         while (!cancellationToken.IsCancellationRequested)
         {
             Console.Write("> ");
@@ -133,10 +135,50 @@ internal static class Program
                 continue;
             }
 
+            if (prompt.Equals("/help", StringComparison.OrdinalIgnoreCase))
+            {
+                PrintInteractiveHelp();
+                Console.WriteLine();
+                continue;
+            }
+
+            if (IsModelCommand(prompt))
+            {
+                var request = ReadModelSwitchRequest(prompt, settings);
+                if (request is not null)
+                {
+                    var resolution = ModelSwitchResolver.Resolve(settings, request);
+                    if (!resolution.Succeeded)
+                    {
+                        Console.Error.WriteLine($"wfx: {resolution.Error}");
+                    }
+                    else
+                    {
+                        settings = resolution.Settings!;
+                        if (resolution.TransportChanged)
+                        {
+                            provider = CreateModelProvider(settings, httpClient);
+                        }
+
+                        foreach (var warning in settings.Warnings)
+                        {
+                            Console.Error.WriteLine($"wfx: warning: {warning}");
+                        }
+
+                        PrintActiveModel(settings);
+                    }
+                }
+
+                Console.WriteLine();
+                continue;
+            }
+
             try
             {
-                var agent = CreateAgent(settings, workspace, arguments, httpClient);
+                EnsureRunnable(settings);
+                var agent = CreateAgent(settings, workspace, arguments, provider, conversation);
                 var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
+                conversation = result.Messages;
                 PrintTrailingNewline(result);
 
                 if (result.Status is AgentRunStatus.IterationLimitReached)
@@ -155,6 +197,58 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    private static bool IsModelCommand(string prompt) =>
+        prompt.Equals("/model", StringComparison.OrdinalIgnoreCase) ||
+        (prompt.Length > "/model".Length &&
+         prompt.StartsWith("/model", StringComparison.OrdinalIgnoreCase) &&
+         char.IsWhiteSpace(prompt["/model".Length]));
+
+    private static ModelSwitchRequest? ReadModelSwitchRequest(string prompt, WfxSettings settings)
+    {
+        var argument = prompt["/model".Length..].Trim();
+        if (argument.Length > 0)
+        {
+            return ModelSwitchRequest.FreeForm(argument);
+        }
+
+        if (settings.ConfiguredModels.Count == 0)
+        {
+            Console.Error.WriteLine("wfx: No configured models are available. Add a profile with a model key.");
+            return null;
+        }
+
+        Console.WriteLine("Configured models:");
+        for (var index = 0; index < settings.ConfiguredModels.Count; index++)
+        {
+            var model = settings.ConfiguredModels[index];
+            Console.WriteLine($"  {index + 1}. {model.Profile}/{model.Provider}: {model.Model}");
+        }
+
+        Console.Write("Select model: ");
+        var selection = Console.ReadLine();
+        return selection is null ? null : ModelSwitchRequest.Picker(selection.Trim());
+    }
+
+    private static void PrintActiveModel(WfxSettings settings)
+    {
+        if (settings.Profile is not null)
+        {
+            Console.WriteLine($"Profile: {settings.Profile}");
+        }
+
+        var model = string.IsNullOrWhiteSpace(settings.Model) ? "(not configured)" : settings.Model;
+        Console.WriteLine($"Model: {settings.Provider}/{model}");
+    }
+
+    private static void PrintInteractiveHelp()
+    {
+        Console.WriteLine("Commands:");
+        Console.WriteLine("  /model             List configured models and choose one");
+        Console.WriteLine("  /model <id>        Use a model ID on the current connection");
+        Console.WriteLine("  /help              Show interactive commands");
+        Console.WriteLine("  /exit, /quit       End the session");
     }
 
     private static void PrintTrailingNewline(AgentRunResult result)
@@ -178,17 +272,9 @@ internal static class Program
         WfxSettings settings,
         WorkspaceInfo workspace,
         CliArguments arguments,
-        HttpClient httpClient)
+        IModelProvider provider,
+        IReadOnlyList<ModelMessage> conversation)
     {
-        var provider = ModelTransports.Create(settings.Protocol, httpClient, new OpenAiProviderOptions
-        {
-            BaseUri = settings.BaseUri,
-            ApiKey = settings.ApiKey,
-            Headers = settings.Headers,
-            Timeout = settings.Timeout,
-            IncludeStreamOptions = settings.Provider.Equals("openai", StringComparison.OrdinalIgnoreCase)
-                || settings.Provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase)
-        });
         var tools = BuiltInTools.Create(workspace.Root);
         var context = new CompositeContextProvider([
             new StaticContextProvider($"Workspace root: {workspace.Root}\nWorking directory: {workspace.WorkingDirectory}\nGit repository: {workspace.IsGitRepository}"),
@@ -202,8 +288,20 @@ internal static class Program
             context,
             new ConsoleAgentObserver(arguments.Verbose, arguments.Debug, _unicodeConsole),
             new AgentOptions(settings.Model, settings.MaxIterations),
-            workspace.Root);
+            workspace.Root,
+            conversation);
     }
+
+    private static IModelProvider CreateModelProvider(WfxSettings settings, HttpClient httpClient) =>
+        ModelTransports.Create(settings.Protocol, httpClient, new OpenAiProviderOptions
+        {
+            BaseUri = settings.BaseUri,
+            ApiKey = settings.ApiKey,
+            Headers = settings.Headers,
+            Timeout = settings.Timeout,
+            IncludeStreamOptions = settings.Provider.Equals("openai", StringComparison.OrdinalIgnoreCase)
+                || settings.Provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase)
+        });
 
     private static bool TryEnableUnicodeConsole()
     {
@@ -318,6 +416,12 @@ internal static class Program
               --debug                       Show tool result diagnostics
               --help                        Show help
               --version                     Show version
+
+            Interactive commands:
+              /model                        List configured models and choose one
+              /model <id>                   Use a model ID on the current connection
+              /help                         Show interactive commands
+              /exit, /quit                  End the session
 
             Configuration precedence: CLI > environment > project > user > defaults.
             Prefer WFX_API_KEY for credentials. WFX never prints API keys.

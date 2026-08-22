@@ -27,6 +27,13 @@ public sealed record WfxSettingsLayer
     public IReadOnlyDictionary<string, WfxSettingsLayer>? Profiles { get; init; }
 }
 
+public sealed record ConfiguredModel(string Profile, string Provider, string Model)
+{
+    internal WfxSettings? Settings { get; init; }
+
+    internal string? Error { get; init; }
+}
+
 public sealed record WfxSettings(
     string Provider,
     string Protocol,
@@ -41,6 +48,8 @@ public sealed record WfxSettings(
     public IReadOnlyList<string> Warnings { get; init; } = [];
 
     public string? Profile { get; init; }
+
+    public IReadOnlyList<ConfiguredModel> ConfiguredModels { get; init; } = [];
 }
 
 public static class WfxConfiguration
@@ -55,7 +64,6 @@ public static class WfxConfiguration
         IReadOnlyDictionary<string, string?>? environment = null,
         string? userProfile = null)
     {
-        var layers = new List<WfxSettingsLayer> { Defaults };
         userProfile ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var userConfig = Path.GetFullPath(Path.Combine(userProfile, ".wfx", "config.json"));
         var projectConfig = Path.Combine(Path.GetFullPath(workspaceRoot), ".wfx", "config.json");
@@ -78,11 +86,32 @@ public static class WfxConfiguration
 
         var environmentLayer = FromEnvironment(environment);
         var profile = cli?.Profile ?? environmentLayer.Profile ?? projectLayer?.Profile ?? userLayer?.Profile;
+        var settings = ResolveSettings(userLayer, projectLayer, environmentLayer, cli, profile, environment);
+        return settings with
+        {
+            ConfiguredModels = BuildConfiguredModels(
+                userLayer,
+                projectLayer,
+                environmentLayer,
+                cli,
+                environment)
+        };
+    }
+
+    private static WfxSettings ResolveSettings(
+        WfxSettingsLayer? userLayer,
+        WfxSettingsLayer? projectLayer,
+        WfxSettingsLayer environmentLayer,
+        WfxSettingsLayer? cli,
+        string? profile,
+        IReadOnlyDictionary<string, string?>? environment)
+    {
         if (profile is not null)
         {
             (userLayer, projectLayer) = ExpandProfile(profile, userLayer, projectLayer);
         }
 
+        var layers = new List<WfxSettingsLayer> { Defaults };
         if (userLayer is not null)
         {
             layers.Add(userLayer);
@@ -340,6 +369,76 @@ public static class WfxConfiguration
 
     private static string FormatProfileNames(IReadOnlyList<string> names) =>
         names.Count == 0 ? "(none)" : string.Join(", ", names);
+
+    private static IReadOnlyList<ConfiguredModel> BuildConfiguredModels(
+        WfxSettingsLayer? userLayer,
+        WfxSettingsLayer? projectLayer,
+        WfxSettingsLayer environmentLayer,
+        WfxSettingsLayer? cli,
+        IReadOnlyDictionary<string, string?>? environment)
+    {
+        var names = ProfileNames(userLayer)
+            .Concat(ProfileNames(projectLayer))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase);
+        var models = new List<ConfiguredModel>();
+        foreach (var name in names)
+        {
+            var layers = new List<WfxSettingsLayer>();
+            if (GetProfile(userLayer, name) is { } userProfile)
+            {
+                layers.Add(userProfile);
+            }
+
+            if (GetProfile(projectLayer, name) is { } projectProfile)
+            {
+                layers.Add(projectProfile);
+            }
+
+            var profile = Merge(layers);
+            if (string.IsNullOrWhiteSpace(profile.Model))
+            {
+                continue;
+            }
+
+            var candidateCli = (cli ?? new WfxSettingsLayer()) with { Profile = name, Model = null };
+            var (candidateUser, candidateProject) = ExpandProfile(name, userLayer, projectLayer);
+            var providerLayers = new List<WfxSettingsLayer> { Defaults };
+            if (candidateUser is not null)
+            {
+                providerLayers.Add(candidateUser);
+            }
+
+            if (candidateProject is not null)
+            {
+                providerLayers.Add(candidateProject);
+            }
+
+            providerLayers.Add(environmentLayer);
+            providerLayers.Add(candidateCli);
+            var provider = Merge(providerLayers).Provider ?? "openai";
+            try
+            {
+                var settings = ResolveSettings(
+                    userLayer,
+                    projectLayer,
+                    environmentLayer,
+                    candidateCli,
+                    name,
+                    environment) with
+                {
+                    Model = profile.Model
+                };
+                models.Add(new ConfiguredModel(name, provider, profile.Model) { Settings = settings });
+            }
+            catch (InvalidOperationException exception)
+            {
+                models.Add(new ConfiguredModel(name, provider, profile.Model) { Error = exception.Message });
+            }
+        }
+
+        return models;
+    }
 
     private static WfxSettingsLayer Merge(IEnumerable<WfxSettingsLayer> layers)
     {

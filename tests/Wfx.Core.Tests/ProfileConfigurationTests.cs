@@ -363,6 +363,43 @@ public sealed class ProfileConfigurationTests
         Assert.Equal("FAST", result.Profile);
     }
 
+    [Fact]
+    public void Load_ListsConfiguredModelsAsDistinctProfileModelPairs()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var user = new TemporaryDirectory();
+        WriteConfig(user.Path, """
+            {
+              "model": "inherited-model",
+              "profiles": {
+                "openai-shared": { "provider": "openai", "model": "shared-model" },
+                "openrouter-shared": { "provider": "openrouter", "model": "shared-model" },
+                "connection-only": { "provider": "local" }
+              }
+            }
+            """);
+
+        var result = WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: user.Path);
+
+        Assert.Collection(
+            result.ConfiguredModels,
+            model =>
+            {
+                Assert.Equal("openai-shared", model.Profile);
+                Assert.Equal("openai", model.Provider);
+                Assert.Equal("shared-model", model.Model);
+            },
+            model =>
+            {
+                Assert.Equal("openrouter-shared", model.Profile);
+                Assert.Equal("openrouter", model.Provider);
+                Assert.Equal("shared-model", model.Model);
+            });
+    }
+
     private static void WriteConfig(string root, string json)
     {
         Directory.CreateDirectory(Path.Combine(root, ".wfx"));

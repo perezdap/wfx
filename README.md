@@ -169,6 +169,15 @@ cd C:\src\project
 wfx
 ```
 
+Interactive commands:
+
+- `/model` lists every profile that has a `model` key as `profile/provider: model`, then prompts for a numbered selection. The selected profile's connection is adopted when it differs from the current connection.
+- `/model <id>` switches to a free-form model ID on the current connection.
+- `/help` lists interactive commands.
+- `/exit` and `/quit` end the session.
+
+WFX echoes the active profile and model after a successful switch. Conversation history is retained across model, provider, and protocol switches. Provider-specific history that cannot cross protocols is mapped to portable text and tool-call state when possible.
+
 Or run one task:
 
 ```powershell

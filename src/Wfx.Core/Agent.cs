@@ -74,6 +74,7 @@ public sealed class Agent : IAgent
     private readonly IAgentObserver _observer;
     private readonly AgentOptions _options;
     private readonly string _workspaceRoot;
+    private readonly IReadOnlyList<ModelMessage> _conversation;
 
     public Agent(
         IModelProvider modelProvider,
@@ -82,7 +83,8 @@ public sealed class Agent : IAgent
         IContextProvider context,
         IAgentObserver observer,
         AgentOptions options,
-        string workspaceRoot)
+        string workspaceRoot,
+        IReadOnlyList<ModelMessage>? conversation = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Model);
         _modelProvider = modelProvider;
@@ -92,21 +94,23 @@ public sealed class Agent : IAgent
         _observer = observer;
         _options = options;
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
+        _conversation = conversation?.ToArray() ?? [];
     }
 
     public async Task<AgentRunResult> RunAsync(string prompt, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prompt);
-        var supplementalContext = await _context.GetContextAsync(cancellationToken).ConfigureAwait(false);
-        var systemPrompt = string.IsNullOrWhiteSpace(supplementalContext)
-            ? BaseSystemPrompt
-            : $"{BaseSystemPrompt}\n\nWorkspace context and project instructions:\n{supplementalContext}";
-
-        var messages = new List<ModelMessage>
+        var messages = new List<ModelMessage>(_conversation);
+        if (messages.Count == 0)
         {
-            new(ModelRole.System, systemPrompt),
-            new(ModelRole.User, prompt)
-        };
+            var supplementalContext = await _context.GetContextAsync(cancellationToken).ConfigureAwait(false);
+            var systemPrompt = string.IsNullOrWhiteSpace(supplementalContext)
+                ? BaseSystemPrompt
+                : $"{BaseSystemPrompt}\n\nWorkspace context and project instructions:\n{supplementalContext}";
+            messages.Add(new ModelMessage(ModelRole.System, systemPrompt));
+        }
+
+        messages.Add(new ModelMessage(ModelRole.User, prompt));
 
         var assistantTexts = new List<string>();
         for (var iteration = 1; iteration <= _options.MaxIterations; iteration++)
