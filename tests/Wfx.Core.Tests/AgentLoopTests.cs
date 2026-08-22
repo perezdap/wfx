@@ -178,6 +178,134 @@ public sealed class AgentLoopTests
     }
 
     [Fact]
+    public async Task NotifiesTurnStartWithEndpointIdentity()
+    {
+        using var workspace = new TemporaryDirectory();
+        var model = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, "finished")
+        ]);
+        var observer = new RecordingObserver();
+        var agent = CreateAgent(
+            model,
+            workspace.Path,
+            observer: observer,
+            options: new AgentOptions(new EndpointIdentity("work", "openrouter", "responses", "fake-model")));
+
+        await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        var endpoint = Assert.Single(observer.TurnStarts);
+        Assert.Equal("work", endpoint.Profile);
+        Assert.Equal("openrouter", endpoint.Provider);
+        Assert.Equal("responses", endpoint.Protocol);
+        Assert.Equal("fake-model", endpoint.Model);
+    }
+
+    [Fact]
+    public async Task NotifiesEachAssistantAndToolResultMessage()
+    {
+        using var workspace = new TemporaryDirectory();
+        const string providerItems = """[{"type":"reasoning","id":"rs-1","encrypted_content":"opaque"}]""";
+        var model = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, "calling",
+                [new ModelToolCall("call-1", "echo", "{\"value\":\"hello\"}")],
+                ProviderItemsJson: providerItems),
+            new ModelMessage(ModelRole.Assistant, "finished")
+        ]);
+        var observer = new RecordingObserver();
+        var agent = CreateAgent(model, workspace.Path, observer: observer);
+
+        await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        Assert.Equal(3, observer.Messages.Count);
+        var first = observer.Messages[0];
+        Assert.Equal(ModelRole.Assistant, first.Role);
+        Assert.Equal("calling", first.Content);
+        Assert.Equal("call-1", Assert.Single(first.ToolCalls!).Id);
+        Assert.Equal(providerItems, first.ProviderItemsJson);
+        var toolResult = observer.Messages[1];
+        Assert.Equal(ModelRole.Tool, toolResult.Role);
+        Assert.Equal("call-1", toolResult.ToolCallId);
+        Assert.Equal("echo", toolResult.Name);
+        Assert.Contains("echo:hello", toolResult.Content!);
+        Assert.Equal("finished", observer.Messages[2].Content);
+    }
+
+    [Fact]
+    public async Task NotifiesUsagePerModelCallNotPerTurn()
+    {
+        using var workspace = new TemporaryDirectory();
+        var model = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("call-1", "echo", "{\"value\":\"a\"}")]),
+            new ModelMessage(ModelRole.Assistant, "finished")
+        ], usage: new ModelUsage(10, 5));
+        var observer = new RecordingObserver();
+        var agent = CreateAgent(model, workspace.Path, observer: observer);
+
+        await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, observer.Usage.Count);
+        Assert.All(observer.Usage, static usage =>
+        {
+            Assert.Equal(10, usage.InputTokens);
+            Assert.Equal(5, usage.OutputTokens);
+        });
+    }
+
+    [Fact]
+    public async Task NotifiesInterruptionAsADistinctOutcome()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var interruption = new CancellationTokenSource();
+        var model = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("call-1", "interrupt", "{}")])
+        ]);
+        var observer = new RecordingObserver();
+        var agent = CreateAgent(model, workspace.Path, observer: observer, tool: new InterruptingTool(interruption));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => agent.RunAsync("do it", interruption.Token));
+
+        Assert.Equal(1, observer.Interruptions);
+        Assert.Empty(observer.Errors);
+    }
+
+    [Fact]
+    public async Task NotifiesErrorAsADistinctOutcome()
+    {
+        using var workspace = new TemporaryDirectory();
+        var observer = new RecordingObserver();
+        var agent = CreateAgent(
+            new ThrowingModelProvider(new InvalidOperationException("provider failed")),
+            workspace.Path,
+            observer: observer);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => agent.RunAsync("do it", TestContext.Current.CancellationToken));
+
+        Assert.Same(exception, Assert.Single(observer.Errors));
+        Assert.Equal(0, observer.Interruptions);
+    }
+
+    [Fact]
+    public async Task CancellationNotRequestedByTheCallerIsAnErrorNotAnInterruption()
+    {
+        using var workspace = new TemporaryDirectory();
+        var observer = new RecordingObserver();
+        var agent = CreateAgent(
+            new ThrowingModelProvider(new OperationCanceledException("provider-internal timeout")),
+            workspace.Path,
+            observer: observer);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => agent.RunAsync("do it", TestContext.Current.CancellationToken));
+
+        Assert.Single(observer.Errors);
+        Assert.Equal(0, observer.Interruptions);
+    }
+
+    [Fact]
     public async Task IterationExhaustionReturnsPartialStateInsteadOfThrowing()
     {
         using var workspace = new TemporaryDirectory();
@@ -265,16 +393,24 @@ public sealed class AgentLoopTests
         Assert.Equal("second answer", messages[4].Content);
     }
 
-    private static Agent CreateAgent(IModelProvider model, string workspaceRoot, int maxIterations = 24) => new(
+    private static Agent CreateAgent(
+        IModelProvider model,
+        string workspaceRoot,
+        int maxIterations = 24,
+        IAgentObserver? observer = null,
+        ITool? tool = null,
+        AgentOptions? options = null) => new(
         model,
-        new ToolRegistry([new EchoTool()]),
+        new ToolRegistry([tool ?? new EchoTool()]),
         new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
         new StaticContextProvider("test context"),
-        new SilentObserver(),
-        new AgentOptions("fake-model", maxIterations),
+        observer ?? new SilentObserver(),
+        options ?? new AgentOptions("fake-model", maxIterations),
         workspaceRoot);
 
-    private sealed class SequenceModelProvider(IReadOnlyList<ModelMessage> responses) : IModelProvider
+    private sealed class SequenceModelProvider(
+        IReadOnlyList<ModelMessage> responses,
+        ModelUsage? usage = null) : IModelProvider
     {
         private int _index;
 
@@ -286,7 +422,21 @@ public sealed class AgentLoopTests
         {
             Requests.Add(request);
             await Task.Yield();
-            yield return new ModelCompleted(responses[_index++]);
+            yield return new ModelCompleted(responses[_index++], usage);
+        }
+    }
+
+    private sealed class ThrowingModelProvider(Exception exception) : IModelProvider
+    {
+        public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
+            ModelRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            throw exception;
+#pragma warning disable CS0162 // unreachable yield keeps this an iterator
+            yield break;
+#pragma warning restore CS0162
         }
     }
 
@@ -332,6 +482,26 @@ public sealed class AgentLoopTests
         }
     }
 
+    private sealed class InterruptingTool(CancellationTokenSource interruption) : ITool
+    {
+        public ToolDefinition Definition { get; } = new(
+            "interrupt",
+            "Cancel the turn while executing.",
+            new System.Text.Json.Nodes.JsonObject { ["type"] = "object" });
+
+        public ApprovalLevel Classify(JsonElement arguments) => ApprovalLevel.ReadOnly;
+
+        public ValueTask<ToolResult> ExecuteAsync(
+            JsonElement arguments,
+            ToolContext context,
+            CancellationToken cancellationToken = default)
+        {
+            interruption.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(ToolResult.Ok("never reached"));
+        }
+    }
+
     private sealed class SilentObserver : IAgentObserver;
 
     private sealed class RecordingObserver : IAgentObserver
@@ -339,6 +509,46 @@ public sealed class AgentLoopTests
         public List<(string Name, string ArgumentsJson, ApprovalLevel Level)> Started { get; } = [];
 
         public List<(string Name, string ArgumentsJson, string Reason)> Rejected { get; } = [];
+
+        public List<EndpointIdentity> TurnStarts { get; } = [];
+
+        public List<ModelMessage> Messages { get; } = [];
+
+        public List<ModelUsage> Usage { get; } = [];
+
+        public List<Exception> Errors { get; } = [];
+
+        public int Interruptions { get; private set; }
+
+        public ValueTask OnTurnStartedAsync(EndpointIdentity endpoint, CancellationToken cancellationToken)
+        {
+            TurnStarts.Add(endpoint);
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnMessageAsync(ModelMessage message, CancellationToken cancellationToken)
+        {
+            Messages.Add(message);
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnUsageAsync(ModelUsage usage, CancellationToken cancellationToken)
+        {
+            Usage.Add(usage);
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnTurnInterruptedAsync(CancellationToken cancellationToken)
+        {
+            Interruptions++;
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnTurnErrorAsync(Exception exception, CancellationToken cancellationToken)
+        {
+            Errors.Add(exception);
+            return ValueTask.CompletedTask;
+        }
 
         public ValueTask OnToolStartedAsync(
             string name,
