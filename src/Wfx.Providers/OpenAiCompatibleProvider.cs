@@ -149,7 +149,12 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
             ReadUsage(root);
-            if (!root.TryGetProperty("choices", out var choices) || choices.ValueKind != JsonValueKind.Array)
+            if (!root.TryGetProperty("choices", out var choices))
+            {
+                return null;
+            }
+
+            if (choices.ValueKind != JsonValueKind.Array)
             {
                 throw new JsonException("Streaming response is missing choices.");
             }
