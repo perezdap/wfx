@@ -55,6 +55,8 @@ internal sealed class SseHttpChannel
     /// <summary>
     /// Yields the payload of every <c>data:</c> line in the response stream,
     /// stopping at <c>[DONE]</c>. Throws when the stream carries no data event.
+    /// The configured timeout bounds each wait, not the whole stream: response
+    /// headers must arrive within it, and so must every subsequent line.
     /// </summary>
     public async IAsyncEnumerable<string> ReadDataEventsAsync(
         HttpRequestMessage httpRequest,
@@ -72,11 +74,12 @@ internal sealed class SseHttpChannel
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeoutSource.IsCancellationRequested)
         {
-            throw new TimeoutException($"Model request exceeded the {_options.Timeout} timeout.");
+            throw new TimeoutException($"Model endpoint did not respond within the {_options.Timeout} timeout.");
         }
 
         using (response)
         {
+            timeoutSource.CancelAfter(_options.Timeout);
             if (!response.IsSuccessStatusCode)
             {
                 var error = await ReadBoundedAsync(response.Content, 64 * 1024, linkedSource.Token).ConfigureAwait(false);
@@ -89,7 +92,7 @@ internal sealed class SseHttpChannel
             await using var stream = await response.Content.ReadAsStreamAsync(linkedSource.Token).ConfigureAwait(false);
             using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
             var sawData = false;
-            while (await reader.ReadLineAsync(linkedSource.Token).ConfigureAwait(false) is { } line)
+            while (await ReadLineOrTimeoutAsync(reader, timeoutSource, cancellationToken, linkedSource.Token).ConfigureAwait(false) is { } line)
             {
                 if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
                 {
@@ -115,6 +118,23 @@ internal sealed class SseHttpChannel
             {
                 throw new ProviderProtocolException("The provider stream ended without any data events.");
             }
+        }
+    }
+
+    private async Task<string?> ReadLineOrTimeoutAsync(
+        StreamReader reader,
+        CancellationTokenSource timeoutSource,
+        CancellationToken cancellationToken,
+        CancellationToken linkedToken)
+    {
+        timeoutSource.CancelAfter(_options.Timeout);
+        try
+        {
+            return await reader.ReadLineAsync(linkedToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeoutSource.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Model stream stalled: no data received for {_options.Timeout}.");
         }
     }
 

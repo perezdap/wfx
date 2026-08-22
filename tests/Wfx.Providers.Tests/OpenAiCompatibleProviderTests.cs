@@ -147,17 +147,79 @@ public sealed class OpenAiCompatibleProviderTests
         Assert.Contains("[REDACTED]", exception.Message);
     }
 
+    [Fact]
+    public async Task StreamsLongerThanTimeoutWhileEventsKeepArriving()
+    {
+        string[] chunks =
+        [
+            "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"c\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"d\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"e\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"f\"}}]}\n\n",
+            "data: [DONE]\n\n"
+        ];
+        var handler = new DripStreamHandler(chunks, TimeSpan.FromMilliseconds(150));
+        var provider = CreateProvider(handler, timeout: TimeSpan.FromMilliseconds(500));
+
+        var events = await CollectAsync(provider.StreamAsync(
+            new ModelRequest("model", [new ModelMessage(ModelRole.User, "x")], []),
+            TestContext.Current.CancellationToken));
+
+        var completed = Assert.Single(events.OfType<ModelCompleted>());
+        Assert.Equal("abcdef", completed.Message.Content);
+    }
+
+    [Fact]
+    public async Task TimesOutWhenStreamStallsBetweenEvents()
+    {
+        var handler = new BlockingStreamHandler("""
+            data: {"choices":[{"delta":{"content":"first"}}]}
+
+
+            """);
+        var provider = CreateProvider(handler, timeout: TimeSpan.FromMilliseconds(200));
+
+        await Assert.ThrowsAsync<TimeoutException>(async () =>
+            await CollectAsync(provider.StreamAsync(
+                new ModelRequest("model", [new ModelMessage(ModelRole.User, "x")], []),
+                TestContext.Current.CancellationToken)));
+    }
+
+    [Fact]
+    public async Task TimesOutWhenResponseHeadersNeverArrive()
+    {
+        var handler = new NeverRespondingHandler();
+        var provider = CreateProvider(handler, timeout: TimeSpan.FromMilliseconds(200));
+
+        await Assert.ThrowsAsync<TimeoutException>(async () =>
+            await CollectAsync(provider.StreamAsync(
+                new ModelRequest("model", [new ModelMessage(ModelRole.User, "x")], []),
+                TestContext.Current.CancellationToken)));
+    }
+
+    private sealed class NeverRespondingHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(System.Threading.Timeout.Infinite, cancellationToken);
+            throw new InvalidOperationException("Unreachable.");
+        }
+    }
+
     private static OpenAiCompatibleProvider CreateProvider(
-        StubHandler handler,
+        HttpMessageHandler handler,
         string? apiKey = null,
         bool includeStreamOptions = false,
-        IReadOnlyDictionary<string, string>? headers = null) =>
+        IReadOnlyDictionary<string, string>? headers = null,
+        TimeSpan? timeout = null) =>
         new(new HttpClient(handler), new OpenAiProviderOptions
         {
             BaseUri = new Uri("https://example.test/v1"),
             ApiKey = apiKey,
             Headers = headers ?? new Dictionary<string, string>(),
-            Timeout = TimeSpan.FromSeconds(10),
+            Timeout = timeout ?? TimeSpan.FromSeconds(10),
             IncludeStreamOptions = includeStreamOptions
         });
 
