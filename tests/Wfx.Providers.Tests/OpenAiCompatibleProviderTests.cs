@@ -54,6 +54,29 @@ public sealed class OpenAiCompatibleProviderTests
     }
 
     [Fact]
+    public async Task SkipsUsageOnlyTerminalChunkAndReportsUsage()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, """
+            data: {"choices":[{"delta":{"content":"hello"}}]}
+
+            data: {"usage":{"prompt_tokens":4,"completion_tokens":2}}
+
+            data: [DONE]
+
+            """, "text/event-stream");
+        var provider = CreateProvider(handler, includeStreamOptions: true);
+
+        var events = await CollectAsync(provider.StreamAsync(
+            new ModelRequest("test-model", [new ModelMessage(ModelRole.User, "hi")], []),
+            TestContext.Current.CancellationToken));
+
+        var completed = Assert.Single(events.OfType<ModelCompleted>());
+        Assert.Equal("hello", completed.Message.Content);
+        Assert.Equal(4, completed.Usage!.InputTokens);
+        Assert.Equal(2, completed.Usage!.OutputTokens);
+    }
+
+    [Fact]
     public async Task ReassemblesFragmentedToolCallArguments()
     {
         var handler = new StubHandler(HttpStatusCode.OK, """
