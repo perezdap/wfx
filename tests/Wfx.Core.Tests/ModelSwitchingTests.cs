@@ -77,6 +77,11 @@ public sealed class ModelSwitchingTests
         Assert.Equal("second", result.Settings!.Profile);
         Assert.Equal("second-model", result.Settings.Model);
         Assert.Equal(current.BaseUri, result.Settings.BaseUri);
+        var conversation = new ModelMessage[]
+        {
+            new(ModelRole.Assistant, "answer", ProviderItemsJson: """[{"type":"reasoning"}]""")
+        };
+        Assert.Same(conversation, result.MapConversation(conversation));
     }
 
     [Fact]
@@ -105,6 +110,53 @@ public sealed class ModelSwitchingTests
         Assert.Equal(current.Protocol, result.Settings.Protocol);
         Assert.Equal(current.BaseUri, result.Settings.BaseUri);
         Assert.Equal(current.Profile, result.Settings.Profile);
+    }
+
+    [Fact]
+    public void TransportChangeMapsHistoryToPortableMessages()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var user = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(user.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(user.Path, ".wfx", "config.json"), """
+            {
+              "profiles": {
+                "first": {
+                  "protocol": "responses",
+                  "base_url": "https://first.example/v1",
+                  "model": "first-model"
+                },
+                "second": {
+                  "protocol": "responses",
+                  "base_url": "https://second.example/v1",
+                  "model": "second-model"
+                }
+              }
+            }
+            """);
+        var current = WfxConfiguration.Load(
+            workspace.Path,
+            new WfxSettingsLayer { Profile = "first" },
+            new Dictionary<string, string?>(),
+            user.Path);
+        var resolution = ModelSwitchResolver.Resolve(current, ModelSwitchRequest.Picker("2"));
+        var conversation = new ModelMessage[]
+        {
+            new(ModelRole.System, "instructions"),
+            new(ModelRole.Assistant, "portable answer", ProviderItemsJson: """[{"type":"reasoning"}]"""),
+            new(ModelRole.Assistant, null, ProviderItemsJson: """[{"type":"reasoning"}]""")
+        };
+
+        var mapped = resolution.MapConversation(conversation);
+
+        Assert.Collection(
+            mapped,
+            message => Assert.Equal(ModelRole.System, message.Role),
+            message =>
+            {
+                Assert.Equal("portable answer", message.Content);
+                Assert.Null(message.ProviderItemsJson);
+            });
     }
 
     [Fact]

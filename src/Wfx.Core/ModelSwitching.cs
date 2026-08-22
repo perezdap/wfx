@@ -26,6 +26,32 @@ public sealed record ModelSwitchRequest
 public sealed record ModelSwitchResult(WfxSettings? Settings, bool TransportChanged, string? Error)
 {
     public bool Succeeded => Settings is not null;
+
+    public IReadOnlyList<ModelMessage> MapConversation(IReadOnlyList<ModelMessage> conversation)
+    {
+        ArgumentNullException.ThrowIfNull(conversation);
+        if (!TransportChanged)
+        {
+            return conversation;
+        }
+
+        var mapped = new List<ModelMessage>(conversation.Count);
+        foreach (var message in conversation)
+        {
+            var portable = message with { ProviderItemsJson = null };
+            if (message.ProviderItemsJson is not null &&
+                portable.Role is ModelRole.Assistant &&
+                string.IsNullOrEmpty(portable.Content) &&
+                portable.ToolCalls is not { Count: > 0 })
+            {
+                continue;
+            }
+
+            mapped.Add(portable);
+        }
+
+        return mapped;
+    }
 }
 
 public static class ModelSwitchResolver
@@ -50,19 +76,26 @@ public static class ModelSwitchResolver
             return Failure($"Unknown model selection '{request.Target}'.");
         }
 
-        var configured = current.ConfiguredModels[selection - 1];
-        if (configured.Settings is null)
+        var configuredModel = current.ConfiguredModels[selection - 1];
+        if (selection > current.ConfiguredModelResolutions.Count)
         {
-            return Failure(configured.Error ?? $"Configured model '{configured.Profile}' could not be resolved.");
+            return Failure($"Configured model '{configuredModel.Profile}' could not be resolved.");
         }
 
-        var target = configured.Settings with
+        var resolution = current.ConfiguredModelResolutions[selection - 1];
+        if (resolution.Settings is null)
         {
-            Model = configured.Model,
-            Profile = configured.Profile,
+            return Failure(resolution.Error ?? $"Configured model '{configuredModel.Profile}' could not be resolved.");
+        }
+
+        var target = resolution.Settings with
+        {
+            Model = configuredModel.Model,
+            Profile = configuredModel.Profile,
             MaxIterations = current.MaxIterations,
             Approval = current.Approval,
-            ConfiguredModels = current.ConfiguredModels
+            ConfiguredModels = current.ConfiguredModels,
+            ConfiguredModelResolutions = current.ConfiguredModelResolutions
         };
         return new ModelSwitchResult(target, !SameTransport(current, target), null);
     }

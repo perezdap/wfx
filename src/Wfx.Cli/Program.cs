@@ -123,7 +123,7 @@ internal static class Program
         while (!cancellationToken.IsCancellationRequested)
         {
             Console.Write("> ");
-            var prompt = Console.ReadLine();
+            var prompt = await ReadConsoleLineAsync(cancellationToken).ConfigureAwait(false);
             if (prompt is null || prompt.Equals("/exit", StringComparison.OrdinalIgnoreCase) ||
                 prompt.Equals("/quit", StringComparison.OrdinalIgnoreCase))
             {
@@ -144,7 +144,7 @@ internal static class Program
 
             if (IsModelCommand(prompt))
             {
-                var request = ReadModelSwitchRequest(prompt, settings);
+                var request = await ReadModelSwitchRequestAsync(prompt, settings, cancellationToken).ConfigureAwait(false);
                 if (request is not null)
                 {
                     var resolution = ModelSwitchResolver.Resolve(settings, request);
@@ -154,6 +154,7 @@ internal static class Program
                     }
                     else
                     {
+                        conversation = resolution.MapConversation(conversation);
                         settings = resolution.Settings!;
                         if (resolution.TransportChanged)
                         {
@@ -205,7 +206,10 @@ internal static class Program
          prompt.StartsWith("/model", StringComparison.OrdinalIgnoreCase) &&
          char.IsWhiteSpace(prompt["/model".Length]));
 
-    private static ModelSwitchRequest? ReadModelSwitchRequest(string prompt, WfxSettings settings)
+    private static async Task<ModelSwitchRequest?> ReadModelSwitchRequestAsync(
+        string prompt,
+        WfxSettings settings,
+        CancellationToken cancellationToken)
     {
         var argument = prompt["/model".Length..].Trim();
         if (argument.Length > 0)
@@ -227,8 +231,28 @@ internal static class Program
         }
 
         Console.Write("Select model: ");
-        var selection = Console.ReadLine();
+        var selection = await ReadConsoleLineAsync(cancellationToken).ConfigureAwait(false);
         return selection is null ? null : ModelSwitchRequest.Picker(selection.Trim());
+    }
+
+    private static async Task<string?> ReadConsoleLineAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var readLine = Task.Run(Console.ReadLine, CancellationToken.None);
+        using var readCompleted = new CancellationTokenSource();
+        using var waitCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            readCompleted.Token);
+        var completed = await Task.WhenAny(
+            readLine,
+            Task.Delay(Timeout.Infinite, waitCancellation.Token)).ConfigureAwait(false);
+        if (completed != readLine)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        readCompleted.Cancel();
+        return await readLine.ConfigureAwait(false);
     }
 
     private static void PrintActiveModel(WfxSettings settings)
@@ -337,24 +361,18 @@ internal static class Program
             return false;
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
         Console.Error.WriteLine($"Approve {call}");
         Console.Error.Write($"  [{request.Level}] y/N? ");
-        var readLine = Task.Run(Console.ReadLine, CancellationToken.None);
-        using var promptCompleted = new CancellationTokenSource();
-        using var waitCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, promptCompleted.Token);
-        var completed = await Task.WhenAny(
-            readLine,
-            Task.Delay(Timeout.Infinite, waitCancellation.Token)).ConfigureAwait(false);
-        if (completed != readLine)
+        try
+        {
+            var answer = await ReadConsoleLineAsync(cancellationToken).ConfigureAwait(false);
+            return answer is not null && answer.Equals("y", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             Console.Error.WriteLine();
-            cancellationToken.ThrowIfCancellationRequested();
+            throw;
         }
-
-        promptCompleted.Cancel();
-        var answer = await readLine.ConfigureAwait(false);
-        return answer is not null && answer.Equals("y", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int PrintModels(WfxSettings settings, WorkspaceInfo workspace)
