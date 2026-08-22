@@ -2,17 +2,31 @@ using System.Text.Json;
 
 namespace Wfx.Core;
 
+/// <summary>
+/// The (profile, provider, protocol, model) tuple a turn runs under, recorded per
+/// turn because <c>/model</c> can change it mid-session.
+/// </summary>
+public sealed record EndpointIdentity(string? Profile, string Provider, string Protocol, string Model);
+
 public sealed record AgentOptions
 {
     public AgentOptions(string model, int maxIterations = 24)
+        : this(new EndpointIdentity(null, "openai", "chat_completions", model), maxIterations)
     {
-        Model = model;
+    }
+
+    public AgentOptions(EndpointIdentity endpoint, int maxIterations = 24)
+    {
+        ArgumentNullException.ThrowIfNull(endpoint);
+        Endpoint = endpoint;
         MaxIterations = Math.Clamp(maxIterations, 1, 100);
     }
 
-    public string Model { get; }
+    public string Model => Endpoint.Model;
 
     public int MaxIterations { get; }
+
+    public EndpointIdentity Endpoint { get; }
 }
 
 public enum AgentRunStatus
@@ -50,6 +64,34 @@ public interface IAgentObserver
         string argumentsJson,
         string reason,
         CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+    /// <summary>
+    /// Raised once at the start of every turn with the endpoint identity the turn runs under.
+    /// </summary>
+    ValueTask OnTurnStartedAsync(EndpointIdentity endpoint, CancellationToken cancellationToken) =>
+        ValueTask.CompletedTask;
+
+    /// <summary>
+    /// Raised for every message the turn appends to the conversation: each completed assistant
+    /// message (content, tool calls, provider items) and each tool-result message (tool-call ID and name).
+    /// </summary>
+    ValueTask OnMessageAsync(ModelMessage message, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+    /// <summary>
+    /// Raised per model call, not per turn, whenever the provider reports token usage.
+    /// </summary>
+    ValueTask OnUsageAsync(ModelUsage usage, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+    /// <summary>
+    /// Raised when the turn is cancelled before completing. The turn's cancellation has already
+    /// fired, so the observer receives an uncancelled token and can still record the outcome.
+    /// </summary>
+    ValueTask OnTurnInterruptedAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+    /// <summary>
+    /// Raised when the turn fails with an error other than cancellation.
+    /// </summary>
+    ValueTask OnTurnErrorAsync(Exception exception, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 }
 
 public interface IAgent
@@ -100,6 +142,25 @@ public sealed class Agent : IAgent
     public async Task<AgentRunResult> RunAsync(string prompt, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prompt);
+        await _observer.OnTurnStartedAsync(_options.Endpoint, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await RunTurnAsync(prompt, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await _observer.OnTurnInterruptedAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+        catch (Exception exception)
+        {
+            await _observer.OnTurnErrorAsync(exception, CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private async Task<AgentRunResult> RunTurnAsync(string prompt, CancellationToken cancellationToken)
+    {
         var messages = new List<ModelMessage>(_conversation);
         if (messages.Count == 0)
         {
@@ -143,6 +204,12 @@ public sealed class Agent : IAgent
             }
 
             messages.Add(assistant);
+            await _observer.OnMessageAsync(assistant, cancellationToken).ConfigureAwait(false);
+            if (completed.Usage is not null)
+            {
+                await _observer.OnUsageAsync(completed.Usage, cancellationToken).ConfigureAwait(false);
+            }
+
             if (!string.IsNullOrEmpty(assistant.Content))
             {
                 assistantTexts.Add(assistant.Content);
@@ -160,11 +227,13 @@ public sealed class Agent : IAgent
                 // Redact secrets exactly once, here at ingestion, so the model's view,
                 // in-memory state, and any persisted transcript hold identical text. The
                 // observer received the raw result for display (its redaction is separate).
-                messages.Add(new ModelMessage(
+                var toolMessage = new ModelMessage(
                     ModelRole.Tool,
                     result.ToProtocolJson(SecretRedactor.Redact),
                     ToolCallId: call.Id,
-                    Name: call.Name));
+                    Name: call.Name);
+                messages.Add(toolMessage);
+                await _observer.OnMessageAsync(toolMessage, cancellationToken).ConfigureAwait(false);
             }
         }
 
