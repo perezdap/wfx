@@ -1,6 +1,6 @@
 # WFX
 
-WFX is an embeddable, Windows-first coding-agent runtime. This glossary defines the language used for its configuration and model-endpoint concepts.
+WFX is an embeddable, Windows-first coding-agent runtime. This glossary defines the language used for its configuration, model-endpoint, and session concepts.
 
 ## Language
 
@@ -27,3 +27,33 @@ _Avoid_: endpoint type, API style, transport
 **Model**:
 The model identifier sent to an endpoint. A configured model is always a (profile, model) pair — the same model name may be offered by several profiles, so model identity includes its endpoint.
 _Avoid_: model name (for the pair)
+
+### Sessions
+
+**Session**:
+One conversation with the agent, identified by a session ID, bound to the workspace it was started in, and durable across process exits. A session is its transcript plus the endpoint identity each turn ran under — not a running process, and not a window.
+_Avoid_: conversation (for the durable record), history, thread, chat
+
+**Transcript**:
+The ordered record of what happened in a session: the messages exchanged, the tool calls and their results, token usage, interruptions, and errors. The transcript is the authoritative account of a session; anything the agent replays to an endpoint is derived from it.
+_Avoid_: log, history, message list
+
+**Turn**:
+One user prompt and everything the agent did in response, up to the point it stopped and returned control — including every model call and tool call in between. A turn is the unit that carries an endpoint identity and the unit an interrupt cancels.
+_Avoid_: iteration (that is one model call inside a turn), exchange, round
+
+**Endpoint identity**:
+The (profile, provider, protocol, model) tuple a turn ran under, recorded per turn because `/model` can change it mid-session. Approval mode is deliberately not part of it: approval is a posture of the current invocation, not a property of history.
+_Avoid_: session config, settings (for the recorded tuple)
+
+**Resume**:
+Continuing an existing session: its transcript is loaded, the last turn's endpoint identity is restored, and new turns append to the same session. Resuming refuses by default when the recorded workspace is not the current workspace.
+_Avoid_: restore, reopen, replay (replay is re-sending a transcript to an endpoint, not resuming a session)
+
+**Provider items**:
+A turn as the endpoint itself expressed it — opaque provider-native JSON that WFX stores and replays unchanged because it carries state that cannot be reconstructed from message content and tool calls (OpenAI Responses reasoning items, for instance). Provider items are valid only for the endpoint identity that issued them.
+_Avoid_: reasoning, raw response, native message
+
+**Interrupted turn**:
+A turn cancelled before it completed. It is recorded as such, and any trailing model request it left unanswered — tool calls with no results — is not replayed on resume.
+_Avoid_: aborted, cancelled turn (in the record), partial turn
