@@ -27,6 +27,7 @@ public sealed class AgentLoopTests
 
         var result = await agent.RunAsync("do it", TestContext.Current.CancellationToken);
 
+        Assert.Equal(AgentRunStatus.Completed, result.Status);
         Assert.Equal("finished", result.FinalResponse);
         Assert.Equal(2, result.Iterations);
         Assert.Equal(1, tool.ExecutionCount);
@@ -147,6 +148,68 @@ public sealed class AgentLoopTests
         Assert.Contains("denied", rejected.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task IterationExhaustionReturnsPartialStateInsteadOfThrowing()
+    {
+        using var workspace = new TemporaryDirectory();
+        var model = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, "step one",
+            [new ModelToolCall("call-1", "echo", "{\"value\":\"a\"}")]),
+            new ModelMessage(ModelRole.Assistant, "step two",
+            [new ModelToolCall("call-2", "echo", "{\"value\":\"b\"}")])
+        ]);
+        var agent = new Agent(
+            model,
+            new ToolRegistry([new EchoTool()]),
+            new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
+            new StaticContextProvider("test context"),
+            new SilentObserver(),
+            new AgentOptions("fake-model", maxIterations: 2),
+            workspace.Path);
+
+        var result = await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        Assert.Equal(AgentRunStatus.IterationLimitReached, result.Status);
+        Assert.Equal(2, result.Iterations);
+        Assert.Contains("step one", result.FinalResponse, StringComparison.Ordinal);
+        Assert.Contains("step two", result.FinalResponse, StringComparison.Ordinal);
+        Assert.Equal(2, result.Messages.Count(static message => message.Role == ModelRole.Tool));
+        Assert.Equal(2, result.Messages.Count(static message => message.Role == ModelRole.Assistant));
+    }
+
+    [Fact]
+    public async Task IterationExhaustionIsDistinguishableFromCompletionAtSameIterationCount()
+    {
+        using var workspace = new TemporaryDirectory();
+        var exhaustedModel = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("call-1", "echo", "{\"value\":\"a\"}")]),
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("call-2", "echo", "{\"value\":\"b\"}")])
+        ]);
+        var completedModel = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("call-1", "echo", "{\"value\":\"a\"}")]),
+            new ModelMessage(ModelRole.Assistant, "finished")
+        ]);
+        Agent CreateAgent(IModelProvider provider) => new(
+            provider,
+            new ToolRegistry([new EchoTool()]),
+            new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
+            new StaticContextProvider("test context"),
+            new SilentObserver(),
+            new AgentOptions("fake-model", maxIterations: 2),
+            workspace.Path);
+
+        var exhausted = await CreateAgent(exhaustedModel).RunAsync("do it", TestContext.Current.CancellationToken);
+        var completed = await CreateAgent(completedModel).RunAsync("do it", TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, exhausted.Iterations);
+        Assert.Equal(2, completed.Iterations);
+        Assert.Equal(AgentRunStatus.IterationLimitReached, exhausted.Status);
+        Assert.Equal(AgentRunStatus.Completed, completed.Status);
+    }
+
     private sealed class SequenceModelProvider(IReadOnlyList<ModelMessage> responses) : IModelProvider
     {
         private int _index;
@@ -159,7 +222,7 @@ public sealed class AgentLoopTests
         {
             Requests.Add(request);
             await Task.Yield();
-            yield return new ModelCompleted(responses[_index++]);
+            yield return new ModelCompleted(responses[Math.Min(_index++, responses.Count - 1)]);
         }
     }
 

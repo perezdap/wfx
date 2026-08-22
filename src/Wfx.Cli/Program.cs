@@ -88,6 +88,14 @@ internal static class Program
             Console.WriteLine();
         }
 
+        if (result.Status is AgentRunStatus.IterationLimitReached)
+        {
+            Console.Error.WriteLine(
+                $"wfx: iteration limit reached after {result.Iterations} iteration(s); " +
+                "raise --max-iterations to let the run continue");
+            return 2;
+        }
+
         if (arguments.Verbose)
         {
             Console.Error.WriteLine($"[wfx] completed in {result.Iterations} model iteration(s)");
@@ -137,6 +145,13 @@ internal static class Program
                 if (!result.FinalResponse.EndsWith('\n'))
                 {
                     Console.WriteLine();
+                }
+
+                if (result.Status is AgentRunStatus.IterationLimitReached)
+                {
+                    Console.Error.WriteLine(
+                        $"wfx: iteration limit reached after {result.Iterations} iteration(s); " +
+                        "raise --max-iterations or restate the task to continue");
                 }
             }
             catch (Exception exception) when (exception is not OperationCanceledException)

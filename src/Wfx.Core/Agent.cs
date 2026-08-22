@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 
 namespace Wfx.Core;
@@ -15,7 +16,17 @@ public sealed record AgentOptions
     public int MaxIterations { get; }
 }
 
-public sealed record AgentRunResult(string FinalResponse, int Iterations, IReadOnlyList<ModelMessage> Messages);
+public enum AgentRunStatus
+{
+    Completed,
+    IterationLimitReached
+}
+
+public sealed record AgentRunResult(
+    string FinalResponse,
+    int Iterations,
+    IReadOnlyList<ModelMessage> Messages,
+    AgentRunStatus Status = AgentRunStatus.Completed);
 
 public interface IAgentObserver
 {
@@ -96,6 +107,7 @@ public sealed class Agent : IAgent
             new(ModelRole.User, prompt)
         };
 
+        var accumulatedText = new StringBuilder();
         for (var iteration = 1; iteration <= _options.MaxIterations; iteration++)
         {
             ModelCompleted? completed = null;
@@ -126,6 +138,11 @@ public sealed class Agent : IAgent
             }
 
             messages.Add(assistant);
+            if (!string.IsNullOrEmpty(assistant.Content))
+            {
+                accumulatedText.Append(assistant.Content);
+            }
+
             if (assistant.ToolCalls is not { Count: > 0 })
             {
                 return new AgentRunResult(assistant.Content ?? string.Empty, iteration, messages);
@@ -143,7 +160,11 @@ public sealed class Agent : IAgent
             }
         }
 
-        throw new InvalidOperationException($"The agent exceeded the maximum of {_options.MaxIterations} model iterations.");
+        return new AgentRunResult(
+            accumulatedText.ToString(),
+            _options.MaxIterations,
+            messages,
+            AgentRunStatus.IterationLimitReached);
     }
 
     private async ValueTask<ToolResult> RejectAsync(
