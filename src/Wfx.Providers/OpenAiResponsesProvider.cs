@@ -65,8 +65,12 @@ public sealed class OpenAiResponsesProvider : IModelProvider
             writer.WriteString("model", request.Model);
             writer.WriteBoolean("stream", true);
             // wfx replays the whole conversation on every turn, so server-side
-            // response state would only duplicate it.
+            // response state would only duplicate it. Reasoning content is
+            // returned inline instead, which a stateless client must replay.
             writer.WriteBoolean("store", false);
+            writer.WriteStartArray("include");
+            writer.WriteStringValue("reasoning.encrypted_content");
+            writer.WriteEndArray();
             writer.WriteStartArray("input");
             foreach (var message in request.Messages)
             {
@@ -114,6 +118,13 @@ public sealed class OpenAiResponsesProvider : IModelProvider
                 writer.WriteEndObject();
                 return;
             case ModelRole.Assistant:
+                // A turn the endpoint described itself is replayed as it came,
+                // so reasoning items survive and nothing is written twice.
+                if (message.ProviderItemsJson is { } items && TryWriteVerbatim(writer, items))
+                {
+                    return;
+                }
+
                 if (!string.IsNullOrEmpty(message.Content))
                 {
                     WriteMessageItem(writer, "assistant", "output_text", message.Content);
@@ -144,6 +155,38 @@ public sealed class OpenAiResponsesProvider : IModelProvider
         }
     }
 
+    /// <summary>
+    /// Writes provider-native items back verbatim. Returns false when the stored
+    /// value is not a usable item array, so the caller rebuilds the turn instead.
+    /// </summary>
+    private static bool TryWriteVerbatim(Utf8JsonWriter writer, string itemsJson)
+    {
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(itemsJson);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        using (document)
+        {
+            if (document.RootElement.ValueKind != JsonValueKind.Array || document.RootElement.GetArrayLength() == 0)
+            {
+                return false;
+            }
+
+            foreach (var item in document.RootElement.EnumerateArray())
+            {
+                item.WriteTo(writer);
+            }
+        }
+
+        return true;
+    }
+
     private static void WriteMessageItem(Utf8JsonWriter writer, string role, string contentType, string text)
     {
         writer.WriteStartObject();
@@ -162,6 +205,7 @@ public sealed class OpenAiResponsesProvider : IModelProvider
     {
         private readonly StringBuilder _content = new();
         private readonly ToolCallAccumulator _toolCalls = new();
+        private readonly SortedDictionary<int, string> _rawItems = new();
 
         public bool Completed { get; private set; }
 
@@ -192,8 +236,11 @@ public sealed class OpenAiResponsesProvider : IModelProvider
                 }
 
                 case "response.output_item.added":
+                    ApplyOutputItem(root, recordVerbatim: false);
+                    return null;
+
                 case "response.output_item.done":
-                    ApplyOutputItem(root);
+                    ApplyOutputItem(root, recordVerbatim: true);
                     return null;
 
                 case "response.function_call_arguments.delta":
@@ -230,13 +277,21 @@ public sealed class OpenAiResponsesProvider : IModelProvider
         public ModelMessage BuildMessage() => new(
             ModelRole.Assistant,
             _content.Length == 0 ? null : _content.ToString(),
-            _toolCalls.Build());
+            _toolCalls.Build(),
+            ProviderItemsJson: _rawItems.Count == 0 ? null : $"[{string.Join(',', _rawItems.Values)}]");
 
-        private void ApplyOutputItem(JsonElement root)
+        private void ApplyOutputItem(JsonElement root, bool recordVerbatim)
         {
             if (!root.TryGetProperty("item", out var item) || item.ValueKind != JsonValueKind.Object)
             {
                 throw new JsonException("Output-item event is missing an item object.");
+            }
+
+            if (recordVerbatim)
+            {
+                // Reasoning items carry state this transport cannot rebuild from
+                // text and tool calls, so the finished turn is kept as sent.
+                _rawItems[RequireOutputIndex(root)] = item.GetRawText();
             }
 
             if (OptionalString(item, "type") != "function_call")

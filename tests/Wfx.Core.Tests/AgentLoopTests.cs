@@ -37,6 +37,35 @@ public sealed class AgentLoopTests
     }
 
     [Fact]
+    public async Task ReplaysProviderItemsFromTheAssistantTurnBackToTheModel()
+    {
+        using var workspace = new TemporaryDirectory();
+        const string providerItems = """[{"type":"reasoning","id":"rs-1","encrypted_content":"opaque-blob"}]""";
+        var model = new SequenceModelProvider([
+            new ModelMessage(
+                ModelRole.Assistant,
+                null,
+                [new ModelToolCall("call-1", "echo", "{\"value\":\"hello\"}")],
+                ProviderItemsJson: providerItems),
+            new ModelMessage(ModelRole.Assistant, "finished")
+        ]);
+        var agent = new Agent(
+            model,
+            new ToolRegistry([new EchoTool()]),
+            new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
+            new StaticContextProvider("test context"),
+            new SilentObserver(),
+            new AgentOptions("fake-model"),
+            workspace.Path);
+
+        await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        var assistant = model.Requests[1].Messages.First(static message => message.Role == ModelRole.Assistant);
+        Assert.Equal(providerItems, assistant.ProviderItemsJson);
+        Assert.Equal("call-1", Assert.Single(assistant.ToolCalls!).Id);
+    }
+
+    [Fact]
     public async Task ReportsToolArgumentsToTheObserver()
     {
         using var workspace = new TemporaryDirectory();

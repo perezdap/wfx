@@ -27,6 +27,102 @@ public sealed class OpenAiResponsesProviderTests
     }
 
     [Fact]
+    public async Task AsksForReasoningContentThatAStatelessClientMustReplay()
+    {
+        var handler = TextStream();
+        var provider = CreateProvider(handler);
+
+        await CollectAsync(provider.StreamAsync(
+            new ModelRequest("test-model", [new ModelMessage(ModelRole.User, "hi")], []),
+            TestContext.Current.CancellationToken));
+
+        using var body = JsonDocument.Parse(handler.RequestBody);
+        var include = body.RootElement.GetProperty("include").EnumerateArray().Select(static value => value.GetString()).ToArray();
+        Assert.Contains("reasoning.encrypted_content", include);
+    }
+
+    [Fact]
+    public async Task KeepsTheFinishedTurnAsTheEndpointSentIt()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, """
+            data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs-1","encrypted_content":"opaque-blob","summary":[]}}
+
+            data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc-1","call_id":"call-1","name":"read_file","arguments":"{\"path\":\"README.md\"}"}}
+
+            data: {"type":"response.completed","response":{"id":"resp-1"}}
+
+            """, "text/event-stream");
+        var provider = CreateProvider(handler);
+
+        var events = await CollectAsync(provider.StreamAsync(
+            new ModelRequest("test-model", [new ModelMessage(ModelRole.User, "inspect")], []),
+            TestContext.Current.CancellationToken));
+
+        var message = Assert.Single(events.OfType<ModelCompleted>()).Message;
+        using var items = JsonDocument.Parse(message.ProviderItemsJson!);
+        var recorded = items.RootElement.EnumerateArray().ToArray();
+        Assert.Equal(2, recorded.Length);
+        Assert.Equal("reasoning", recorded[0].GetProperty("type").GetString());
+        Assert.Equal("opaque-blob", recorded[0].GetProperty("encrypted_content").GetString());
+        Assert.Equal("function_call", recorded[1].GetProperty("type").GetString());
+        Assert.Equal("call-1", Assert.Single(message.ToolCalls!).Id);
+    }
+
+    [Fact]
+    public async Task ReplaysReasoningItemsOnTheFollowingTurn()
+    {
+        var handler = TextStream();
+        var provider = CreateProvider(handler);
+        var request = new ModelRequest(
+            "test-model",
+            [
+                new ModelMessage(ModelRole.User, "inspect"),
+                new ModelMessage(
+                    ModelRole.Assistant,
+                    null,
+                    [new ModelToolCall("call-1", "read_file", "{\"path\":\"README.md\"}")],
+                    ProviderItemsJson: """
+                        [{"type":"reasoning","id":"rs-1","encrypted_content":"opaque-blob","summary":[]},
+                         {"type":"function_call","id":"fc-1","call_id":"call-1","name":"read_file","arguments":"{\"path\":\"README.md\"}"}]
+                        """),
+                new ModelMessage(ModelRole.Tool, "# wfx", ToolCallId: "call-1")
+            ],
+            []);
+
+        await CollectAsync(provider.StreamAsync(request, TestContext.Current.CancellationToken));
+
+        using var body = JsonDocument.Parse(handler.RequestBody);
+        var input = body.RootElement.GetProperty("input").EnumerateArray().ToArray();
+        Assert.Equal(4, input.Length);
+        Assert.Equal("reasoning", input[1].GetProperty("type").GetString());
+        Assert.Equal("opaque-blob", input[1].GetProperty("encrypted_content").GetString());
+        Assert.Equal("fc-1", input[2].GetProperty("id").GetString());
+        Assert.Equal("function_call_output", input[3].GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task RebuildsTheTurnWhenNoProviderItemsWereRecorded()
+    {
+        var handler = TextStream();
+        var provider = CreateProvider(handler);
+        var request = new ModelRequest(
+            "test-model",
+            [
+                new ModelMessage(ModelRole.User, "inspect"),
+                new ModelMessage(ModelRole.Assistant, "on it", ProviderItemsJson: "[]")
+            ],
+            []);
+
+        await CollectAsync(provider.StreamAsync(request, TestContext.Current.CancellationToken));
+
+        using var body = JsonDocument.Parse(handler.RequestBody);
+        var input = body.RootElement.GetProperty("input").EnumerateArray().ToArray();
+        Assert.Equal(2, input.Length);
+        Assert.Equal("message", input[1].GetProperty("type").GetString());
+        Assert.Equal("on it", input[1].GetProperty("content")[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
     public async Task MapsConversationStateToInputItems()
     {
         var handler = TextStream();

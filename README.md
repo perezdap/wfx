@@ -92,7 +92,7 @@ Supported environment variables are `WFX_PROVIDER`, `WFX_PROTOCOL`, `WFX_PROFILE
 
 `protocol: responses` runs the agent over the OpenAI Responses API: conversation state is sent as Responses input items, text and tool-call arguments stream from the typed Responses events, and tool results round-trip as `function_call_output` items. Requests are stateless (`store: false`), so the full conversation is replayed each turn rather than kept server-side. A stream that fails, truncates (`response.incomplete`), or ends without a completion event fails the turn with an explicit protocol error rather than returning a partial answer.
 
-Known limitation: reasoning items are not replayed. OpenAI's stateless guidance expects a client to send every prior output item back, reasoning items included. WFX's conversation state carries text and tool calls only, so a reasoning model loses its reasoning chain between turns of one task — degraded quality on multi-step tool use, and some reasoning models may reject the continuation. Non-reasoning models are unaffected. Carrying opaque provider items needs a `Wfx.Core` contract change and is tracked separately.
+Reasoning models are supported. Because a stateless client must send every prior output item back, the transport records each finished turn exactly as the endpoint expressed it and replays those items verbatim on the following request, and asks for `reasoning.encrypted_content` so the reasoning chain survives a tool call. Turns the endpoint did not describe item-by-item are rebuilt from text and tool calls as before.
 
 ```powershell
 wfx run --protocol responses --model gpt-5.1 "Summarize this repo."
