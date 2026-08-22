@@ -314,7 +314,9 @@ internal static class Program
             approval,
             context,
             new ConsoleAgentObserver(arguments.Verbose, arguments.Debug, _unicodeConsole, secrets),
-            new AgentOptions(settings.Model, settings.MaxIterations),
+            new AgentOptions(
+                new EndpointIdentity(settings.Profile, settings.Provider, settings.Protocol, settings.Model),
+                settings.MaxIterations),
             workspace.Root,
             conversation);
     }
