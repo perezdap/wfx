@@ -83,9 +83,12 @@ internal static class Program
 
         var agent = CreateAgent(settings, workspace, arguments, httpClient);
         var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
-        if (!result.FinalResponse.EndsWith('\n'))
+        PrintTrailingNewline(result);
+
+        if (result.Status is AgentRunStatus.IterationLimitReached)
         {
-            Console.WriteLine();
+            WriteIterationLimitReached(result, "raise --max-iterations to let the run continue");
+            return 2;
         }
 
         if (arguments.Verbose)
@@ -134,9 +137,13 @@ internal static class Program
             {
                 var agent = CreateAgent(settings, workspace, arguments, httpClient);
                 var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
-                if (!result.FinalResponse.EndsWith('\n'))
+                PrintTrailingNewline(result);
+
+                if (result.Status is AgentRunStatus.IterationLimitReached)
                 {
-                    Console.WriteLine();
+                    WriteIterationLimitReached(
+                        result,
+                        "raise --max-iterations or restate the task to continue");
                 }
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -148,6 +155,23 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    private static void PrintTrailingNewline(AgentRunResult result)
+    {
+        var text = result.Status is AgentRunStatus.Completed
+            ? result.FinalResponse
+            : result.AccumulatedText;
+        if (!string.IsNullOrEmpty(text) && !text.EndsWith('\n'))
+        {
+            Console.WriteLine();
+        }
+    }
+
+    private static void WriteIterationLimitReached(AgentRunResult result, string hint)
+    {
+        Console.Error.WriteLine(
+            $"wfx: {result.Note ?? $"iteration limit reached after {result.Iterations} iteration(s)"}; {hint}");
     }
 
     private static Agent CreateAgent(
@@ -297,6 +321,12 @@ internal static class Program
 
             Configuration precedence: CLI > environment > project > user > defaults.
             Prefer WFX_API_KEY for credentials. WFX never prints API keys.
+
+            Exit codes:
+              0    success
+              1    error
+              2    run stopped at the iteration limit (--max-iterations)
+              130  cancelled
             """);
     }
 }

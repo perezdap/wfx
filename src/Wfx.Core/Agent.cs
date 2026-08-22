@@ -15,7 +15,19 @@ public sealed record AgentOptions
     public int MaxIterations { get; }
 }
 
-public sealed record AgentRunResult(string FinalResponse, int Iterations, IReadOnlyList<ModelMessage> Messages);
+public enum AgentRunStatus
+{
+    Completed,
+    IterationLimitReached
+}
+
+public sealed record AgentRunResult(
+    string FinalResponse,
+    int Iterations,
+    IReadOnlyList<ModelMessage> Messages,
+    AgentRunStatus Status,
+    string? Note = null,
+    string? AccumulatedText = null);
 
 public interface IAgentObserver
 {
@@ -96,6 +108,7 @@ public sealed class Agent : IAgent
             new(ModelRole.User, prompt)
         };
 
+        var assistantTexts = new List<string>();
         for (var iteration = 1; iteration <= _options.MaxIterations; iteration++)
         {
             ModelCompleted? completed = null;
@@ -126,9 +139,14 @@ public sealed class Agent : IAgent
             }
 
             messages.Add(assistant);
+            if (!string.IsNullOrEmpty(assistant.Content))
+            {
+                assistantTexts.Add(assistant.Content);
+            }
+
             if (assistant.ToolCalls is not { Count: > 0 })
             {
-                return new AgentRunResult(assistant.Content ?? string.Empty, iteration, messages);
+                return new AgentRunResult(assistant.Content ?? string.Empty, iteration, messages, AgentRunStatus.Completed);
             }
 
             foreach (var call in assistant.ToolCalls)
@@ -143,7 +161,14 @@ public sealed class Agent : IAgent
             }
         }
 
-        throw new InvalidOperationException($"The agent exceeded the maximum of {_options.MaxIterations} model iterations.");
+        var lastAssistant = messages.Last(static message => message.Role == ModelRole.Assistant);
+        return new AgentRunResult(
+            lastAssistant.Content ?? string.Empty,
+            _options.MaxIterations,
+            messages,
+            AgentRunStatus.IterationLimitReached,
+            Note: $"Iteration limit of {_options.MaxIterations} model iteration(s) reached.",
+            AccumulatedText: string.Join("\n", assistantTexts));
     }
 
     private async ValueTask<ToolResult> RejectAsync(

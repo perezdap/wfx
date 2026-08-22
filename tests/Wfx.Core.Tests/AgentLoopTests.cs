@@ -27,6 +27,7 @@ public sealed class AgentLoopTests
 
         var result = await agent.RunAsync("do it", TestContext.Current.CancellationToken);
 
+        Assert.Equal(AgentRunStatus.Completed, result.Status);
         Assert.Equal("finished", result.FinalResponse);
         Assert.Equal(2, result.Iterations);
         Assert.Equal(1, tool.ExecutionCount);
@@ -146,6 +147,68 @@ public sealed class AgentLoopTests
         var rejected = Assert.Single(observer.Rejected);
         Assert.Contains("denied", rejected.Reason, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public async Task IterationExhaustionReturnsPartialStateInsteadOfThrowing()
+    {
+        using var workspace = new TemporaryDirectory();
+        var model = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, "step one",
+            [new ModelToolCall("call-1", "echo", "{\"value\":\"a\"}")]),
+            new ModelMessage(ModelRole.Assistant, "step two",
+            [new ModelToolCall("call-2", "echo", "{\"value\":\"b\"}")])
+        ]);
+        var agent = CreateAgent(model, workspace.Path, maxIterations: 2);
+
+        var result = await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        Assert.Equal(AgentRunStatus.IterationLimitReached, result.Status);
+        Assert.Equal(2, result.Iterations);
+        Assert.Equal("step two", result.FinalResponse);
+        Assert.Equal("step one\nstep two", result.AccumulatedText);
+        Assert.NotNull(result.Note);
+        Assert.Contains("iteration limit", result.Note, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(2, result.Messages.Count(static message => message.Role == ModelRole.Tool));
+        Assert.Equal(2, result.Messages.Count(static message => message.Role == ModelRole.Assistant));
+    }
+
+    [Fact]
+    public async Task IterationExhaustionIsDistinguishableFromCompletionAtSameIterationCount()
+    {
+        using var workspace = new TemporaryDirectory();
+        var exhaustedModel = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("call-1", "echo", "{\"value\":\"a\"}")]),
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("call-2", "echo", "{\"value\":\"b\"}")])
+        ]);
+        var completedModel = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("call-1", "echo", "{\"value\":\"a\"}")]),
+            new ModelMessage(ModelRole.Assistant, "finished")
+        ]);
+
+        var exhausted = await CreateAgent(exhaustedModel, workspace.Path, maxIterations: 2)
+            .RunAsync("do it", TestContext.Current.CancellationToken);
+        var completed = await CreateAgent(completedModel, workspace.Path)
+            .RunAsync("do it", TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, exhausted.Iterations);
+        Assert.Equal(2, completed.Iterations);
+        Assert.Equal(AgentRunStatus.IterationLimitReached, exhausted.Status);
+        Assert.Equal(AgentRunStatus.Completed, completed.Status);
+        Assert.Equal(string.Empty, exhausted.AccumulatedText);
+        Assert.Null(completed.AccumulatedText);
+    }
+
+    private static Agent CreateAgent(IModelProvider model, string workspaceRoot, int maxIterations = 24) => new(
+        model,
+        new ToolRegistry([new EchoTool()]),
+        new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
+        new StaticContextProvider("test context"),
+        new SilentObserver(),
+        new AgentOptions("fake-model", maxIterations),
+        workspaceRoot);
 
     private sealed class SequenceModelProvider(IReadOnlyList<ModelMessage> responses) : IModelProvider
     {
