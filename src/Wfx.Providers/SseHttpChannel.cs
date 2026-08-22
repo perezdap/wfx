@@ -155,7 +155,7 @@ internal sealed class SseHttpChannel
     }
 
     private static bool IsTransient(HttpStatusCode statusCode) =>
-        (int)statusCode == 429 || (int)statusCode >= 500;
+        (int)statusCode == 429 || (int)statusCode is >= 500 and <= 599;
 
     /// <summary>
     /// The endpoint's requested wait, bounded only by the overall request

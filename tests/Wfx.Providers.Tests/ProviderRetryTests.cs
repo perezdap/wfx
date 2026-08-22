@@ -95,6 +95,24 @@ public sealed class ProviderRetryTests
     }
 
     [Fact]
+    public async Task DoesNotRetryStatusesBeyond599()
+    {
+        var handler = new QueueStubHandler([
+            QueuedResponse.Failure((HttpStatusCode)600),
+            Success
+        ]);
+        var provider = CreateProvider(handler, _ => throw new InvalidOperationException("A non-5xx status must not wait."));
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(async () =>
+            await CollectAsync(provider.StreamAsync(
+                new ModelRequest("model", [new ModelMessage(ModelRole.User, "x")], []),
+                TestContext.Current.CancellationToken)));
+
+        Assert.Equal((HttpStatusCode)600, exception.StatusCode);
+        Assert.Equal(1, handler.Attempts);
+    }
+
+    [Fact]
     public async Task FailsNonTransientClientErrorsImmediately()
     {
         var handler = new QueueStubHandler([QueuedResponse.Failure(HttpStatusCode.BadRequest)]);
