@@ -307,7 +307,7 @@ public sealed class SessionStartupTests
                   "provider": "local",
                   "protocol": "chat_completions",
                   "base_url": "https://recorded.example/v1",
-                  "model": "recorded-profile-model"
+                  "model": "configured-profile-model"
                 }
               }
             }
@@ -321,7 +321,7 @@ public sealed class SessionStartupTests
             created = store.Create(workspace);
             var recorder = new SessionRecorder(created);
             await recorder.OnTurnStartedAsync(
-                new EndpointIdentity("recorded", "local", "chat_completions", "recorded-profile-model"),
+                new EndpointIdentity("recorded", "local", "chat_completions", "recorded-model"),
                 CancellationToken.None);
             await recorder.OnMessageAsync(new ModelMessage(ModelRole.User, "previous"), CancellationToken.None);
             created.Dispose();
@@ -341,7 +341,7 @@ public sealed class SessionStartupTests
             Assert.Equal("recorded", turn.RootElement.GetProperty("profile").GetString());
             Assert.Equal("local", turn.RootElement.GetProperty("provider").GetString());
             Assert.Equal("chat_completions", turn.RootElement.GetProperty("protocol").GetString());
-            Assert.Equal("recorded-profile-model", turn.RootElement.GetProperty("model").GetString());
+            Assert.Equal("recorded-model", turn.RootElement.GetProperty("model").GetString());
         }
         finally
         {
@@ -372,7 +372,7 @@ public sealed class SessionStartupTests
                   "provider": "local",
                   "protocol": "chat_completions",
                   "base_url": "https://recorded.example/v1",
-                  "model": "recorded-model"
+                  "model": "configured-recorded-model"
                 },
                 "other": {
                   "provider": "local",
@@ -420,7 +420,9 @@ public sealed class SessionStartupTests
                 .Where(static line => line.Contains("\"type\":\"turn_started\"", StringComparison.Ordinal))
                 .ToArray();
             using var turn = JsonDocument.Parse(turnLines[^1]);
-            Assert.Equal(profile, turn.RootElement.GetProperty("profile").GetString());
+            Assert.Equal(
+                expectOverrideNotice ? profile : "recorded",
+                turn.RootElement.GetProperty("profile").GetString());
             Assert.Equal("local", turn.RootElement.GetProperty("provider").GetString());
             Assert.Equal("chat_completions", turn.RootElement.GetProperty("protocol").GetString());
             Assert.Equal(expectedModel, turn.RootElement.GetProperty("model").GetString());

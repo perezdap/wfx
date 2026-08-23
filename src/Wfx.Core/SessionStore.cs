@@ -84,13 +84,17 @@ public sealed class SessionStore : ISessionStore
     public SessionLog Open(string sessionId)
     {
         var path = ExistingSessionPath(sessionId);
+        FileStream? stream = null;
 
         try
         {
-            return new SessionLog(sessionId, path, new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read));
+            stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
+            TruncateIncompleteTail(stream);
+            return new SessionLog(sessionId, path, stream);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
+            stream?.Dispose();
             throw new IOException($"Could not reopen session '{sessionId}' for append: {exception.Message}", exception);
         }
     }
@@ -336,6 +340,36 @@ public sealed class SessionStore : ISessionStore
         return lines
             .Select(static line => line.EndsWith('\r') ? line[..^1] : line)
             .ToArray();
+    }
+
+    private static void TruncateIncompleteTail(FileStream stream)
+    {
+        var length = stream.Length;
+        if (length == 0)
+        {
+            return;
+        }
+
+        stream.Position = length - 1;
+        if (stream.ReadByte() == '\n')
+        {
+            stream.Position = length;
+            return;
+        }
+
+        for (var position = length - 2; position >= 0; position--)
+        {
+            stream.Position = position;
+            if (stream.ReadByte() == '\n')
+            {
+                stream.SetLength(position + 1);
+                stream.Position = position + 1;
+                return;
+            }
+        }
+
+        stream.SetLength(0);
+        stream.Position = 0;
     }
 
     private static EndpointIdentity ReadEndpoint(JsonElement root, string sessionId, int line)

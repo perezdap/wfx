@@ -91,7 +91,7 @@ internal static class Program
             return arguments.Command switch
             {
                 CliCommand.Models => PrintModels(settings, workspace),
-                CliCommand.Config => PrintConfig(settings, workspace),
+                CliCommand.Config => PrintConfig(settings, workspace, userProfile),
                 CliCommand.Run => await RunOnceAsync(
                     arguments.Prompt!, settings, workspace, arguments, httpClient, sessionStore, cancellationToken)
                     .ConfigureAwait(false),
@@ -285,10 +285,13 @@ internal static class Program
         {
             return WfxConfiguration.Load(workspaceRoot, layer, userProfile: userProfile);
         }
-        catch (UndefinedProfileException)
+        catch (UndefinedProfileException exception)
             when (recordedEndpoint?.Profile is not null &&
                   cliOnly.Profile is null &&
-                  layer.Profile == recordedEndpoint.Profile)
+                  string.Equals(
+                      exception.ProfileName,
+                      recordedEndpoint.Profile,
+                      StringComparison.OrdinalIgnoreCase))
         {
             Console.Error.WriteLine(
                 $"wfx: recorded profile '{recordedEndpoint.Profile}' is no longer configured; using current settings instead.");
@@ -300,14 +303,20 @@ internal static class Program
         WfxSettingsLayer cli,
         EndpointIdentity? recordedEndpoint)
     {
-        if (recordedEndpoint is null || cli.Profile is not null)
+        if (recordedEndpoint is null)
+        {
+            return cli;
+        }
+
+        if (cli.Profile is not null &&
+            !string.Equals(cli.Profile, recordedEndpoint.Profile, StringComparison.OrdinalIgnoreCase))
         {
             return cli;
         }
 
         return cli with
         {
-            Profile = cli.Profile ?? recordedEndpoint.Profile,
+            Profile = recordedEndpoint.Profile ?? cli.Profile,
             Provider = cli.Provider ?? recordedEndpoint.Provider,
             Protocol = cli.Protocol ?? recordedEndpoint.Protocol,
             Model = cli.Model ?? recordedEndpoint.Model
@@ -592,14 +601,15 @@ internal static class Program
         return 0;
     }
 
-    private static int PrintConfig(WfxSettings settings, WorkspaceInfo workspace)
+    private static int PrintConfig(WfxSettings settings, WorkspaceInfo workspace, string? userProfile)
     {
         PrintModels(settings, workspace);
         Console.WriteLine($"Approval: {settings.Approval.ToString().ToLowerInvariant()}");
         Console.WriteLine($"Timeout: {settings.Timeout.TotalSeconds:F0}s");
         Console.WriteLine($"Maximum iterations: {settings.MaxIterations}");
         Console.WriteLine($"Project config: {Path.Combine(workspace.Root, ".wfx", "config.json")}");
-        Console.WriteLine($"User config: {Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".wfx", "config.json")}");
+        Console.WriteLine(
+            $"User config: {Path.Combine(userProfile ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".wfx", "config.json")}");
         return 0;
     }
 

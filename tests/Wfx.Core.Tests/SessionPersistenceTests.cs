@@ -198,6 +198,37 @@ public sealed class SessionPersistenceTests
     }
 
     [Fact]
+    public async Task OpensSessionByDiscardingAnUnterminatedTailBeforeAppending()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var sessions = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        var log = store.Create(workspace.Path);
+        var sessionId = log.Id;
+        var sessionPath = log.FilePath;
+        log.Dispose();
+
+        var durablePrefix = Header(sessionId, Path.GetFullPath(workspace.Path)) + "\r\n";
+        var partial = """{"type":"message","role":"user","content":"partial"}""";
+        File.WriteAllText(
+            sessionPath,
+            durablePrefix + """{"type":"message","role":"user","content":"kept"}""" + "\r\n" + partial);
+
+        using var reopened = store.Open(sessionId);
+        await new SessionRecorder(reopened).OnMessageAsync(
+            new ModelMessage(ModelRole.User, "appended"),
+            TestContext.Current.CancellationToken);
+
+        var transcript = store.Read(sessionId);
+        Assert.Equal(["kept", "appended"], transcript.Messages.Select(static message => message.Content));
+        reopened.Dispose();
+        Assert.StartsWith(
+            durablePrefix + """{"type":"message","role":"user","content":"kept"}""" + "\r\n",
+            File.ReadAllText(sessionPath),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FindsLatestSessionOnlyForTheRequestedWorkspace()
     {
         using var sessions = new TemporaryDirectory();
