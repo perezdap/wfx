@@ -13,12 +13,7 @@ public sealed class SessionStartupTests
         var sessionsPath = Path.Combine(directory.FullName, "sessions");
         File.WriteAllText(sessionsPath, "not a directory");
         using var httpClient = CreateHttpClient();
-        var originalOut = Console.Out;
-        var originalError = Console.Error;
-        using var output = new StringWriter();
-        using var error = new StringWriter();
-        Console.SetOut(output);
-        Console.SetError(error);
+        using var console = new ConsoleCapture();
         try
         {
             var store = new SessionStore(sessionsPath);
@@ -29,15 +24,13 @@ public sealed class SessionStartupTests
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(0, exitCode);
-            Assert.Contains("finished", output.ToString());
-            Assert.Contains("wfx: warning: Could not create session:", error.ToString());
-            Assert.Contains("The invocation will continue without a session.", error.ToString());
+            Assert.Contains("finished", console.Output.ToString());
+            Assert.Contains("wfx: warning: Could not create session:", console.Error.ToString());
+            Assert.Contains("The invocation will continue without a session.", console.Error.ToString());
             Assert.True(File.Exists(sessionsPath));
         }
         finally
         {
-            Console.SetOut(originalOut);
-            Console.SetError(originalError);
             Directory.Delete(directory.FullName, recursive: true);
         }
     }
@@ -46,34 +39,51 @@ public sealed class SessionStartupTests
     public async Task InteractiveContinuesWhenSessionCreationIsUnauthorized()
     {
         using var httpClient = CreateHttpClient();
-        var originalIn = Console.In;
-        var originalOut = Console.Out;
-        var originalError = Console.Error;
-        using var input = new StringReader("do it\n/exit\n");
-        using var output = new StringWriter();
-        using var error = new StringWriter();
-        Console.SetIn(input);
-        Console.SetOut(output);
-        Console.SetError(error);
+        using var console = new ConsoleCapture("do it\n/exit\n");
+
+        var exitCode = await Program.RunAsync(
+            InteractiveArguments,
+            httpClient,
+            _ => throw new UnauthorizedAccessException("session ACL denied"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("finished", console.Output.ToString());
+        Assert.Contains(
+            "wfx: warning: Could not create session: session ACL denied. The invocation will continue without a session.",
+            console.Error.ToString());
+    }
+
+    [Fact]
+    public async Task SessionAnnouncementFailureDisposesSessionAndFailsRun()
+    {
+        var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");
+        using var httpClient = CreateHttpClient();
+        var error = new SessionAnnouncementFailingWriter();
+        using var console = new ConsoleCapture(error: error);
+        SessionLog? openedSession = null;
         try
         {
+            var store = new SessionStore(directory.FullName);
             var exitCode = await Program.RunAsync(
-                InteractiveArguments,
+                RunArguments,
                 httpClient,
-                _ => throw new UnauthorizedAccessException("session ACL denied"),
+                workspace => openedSession = store.Create(workspace),
                 TestContext.Current.CancellationToken);
 
-            Assert.Equal(0, exitCode);
-            Assert.Contains("finished", output.ToString());
-            Assert.Contains(
-                "wfx: warning: Could not create session: session ACL denied. The invocation will continue without a session.",
-                error.ToString());
+            Assert.Equal(1, exitCode);
+            Assert.Contains("wfx: session announcement failed", error.Text);
+            Assert.NotNull(openedSession);
+            using var exclusive = new FileStream(
+                openedSession.FilePath,
+                FileMode.Open,
+                FileAccess.ReadWrite,
+                FileShare.None);
         }
         finally
         {
-            Console.SetIn(originalIn);
-            Console.SetOut(originalOut);
-            Console.SetError(originalError);
+            openedSession?.Dispose();
+            Directory.Delete(directory.FullName, recursive: true);
         }
     }
 
@@ -82,12 +92,7 @@ public sealed class SessionStartupTests
     {
         var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");
         using var httpClient = CreateHttpClient();
-        var originalOut = Console.Out;
-        var originalError = Console.Error;
-        using var output = new StringWriter();
-        using var error = new StringWriter();
-        Console.SetOut(output);
-        Console.SetError(error);
+        using var console = new ConsoleCapture();
         try
         {
             var store = new SessionStore(directory.FullName);
@@ -98,14 +103,12 @@ public sealed class SessionStartupTests
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(0, exitCode);
-            Assert.Contains("wfx: session ", error.ToString());
-            Assert.DoesNotContain("wfx: warning: Could not create session", error.ToString());
+            Assert.Contains("wfx: session ", console.Error.ToString());
+            Assert.DoesNotContain("wfx: warning: Could not create session", console.Error.ToString());
             Assert.Single(Directory.GetFiles(directory.FullName, "*.jsonl"));
         }
         finally
         {
-            Console.SetOut(originalOut);
-            Console.SetError(originalError);
             Directory.Delete(directory.FullName, recursive: true);
         }
     }
@@ -114,34 +117,22 @@ public sealed class SessionStartupTests
     public async Task NoSessionDoesNotCreateOrAnnounceASession()
     {
         using var httpClient = CreateHttpClient();
-        var originalOut = Console.Out;
-        var originalError = Console.Error;
-        using var output = new StringWriter();
-        using var error = new StringWriter();
-        Console.SetOut(output);
-        Console.SetError(error);
+        using var console = new ConsoleCapture();
         var createCalled = false;
-        try
-        {
-            var exitCode = await Program.RunAsync(
-                NoSessionArguments,
-                httpClient,
-                _ =>
-                {
-                    createCalled = true;
-                    throw new InvalidOperationException("Session creation must be skipped.");
-                },
-                TestContext.Current.CancellationToken);
 
-            Assert.Equal(0, exitCode);
-            Assert.False(createCalled);
-            Assert.DoesNotContain("session ", error.ToString(), StringComparison.OrdinalIgnoreCase);
-        }
-        finally
-        {
-            Console.SetOut(originalOut);
-            Console.SetError(originalError);
-        }
+        var exitCode = await Program.RunAsync(
+            NoSessionArguments,
+            httpClient,
+            _ =>
+            {
+                createCalled = true;
+                throw new InvalidOperationException("Session creation must be skipped.");
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, exitCode);
+        Assert.False(createCalled);
+        Assert.DoesNotContain("session ", console.Error.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
     private static readonly string[] RunArguments =
@@ -177,6 +168,73 @@ public sealed class SessionStartupTests
     {
         Timeout = Timeout.InfiniteTimeSpan
     };
+
+    private sealed class ConsoleCapture : IDisposable
+    {
+        private readonly TextReader _originalInput = Console.In;
+        private readonly TextWriter _originalOutput = Console.Out;
+        private readonly TextWriter _originalError = Console.Error;
+        private readonly StringReader? _input;
+
+        public ConsoleCapture(string? input = null, TextWriter? error = null)
+        {
+            Output = new StringWriter();
+            Error = error ?? new StringWriter();
+            _input = input is null ? null : new StringReader(input);
+            if (_input is not null)
+            {
+                Console.SetIn(_input);
+            }
+
+            Console.SetOut(Output);
+            Console.SetError(Error);
+        }
+
+        public StringWriter Output { get; }
+
+        public TextWriter Error { get; }
+
+        public void Dispose()
+        {
+            Console.SetIn(_originalInput);
+            Console.SetOut(_originalOutput);
+            Console.SetError(_originalError);
+            _input?.Dispose();
+            Output.Dispose();
+            Error.Dispose();
+        }
+    }
+
+    private sealed class SessionAnnouncementFailingWriter : TextWriter
+    {
+        private readonly StringWriter _written = new();
+        private bool _failed;
+
+        public override Encoding Encoding => Encoding.UTF8;
+
+        public string Text => _written.ToString();
+
+        public override void WriteLine(string? value)
+        {
+            if (!_failed && value?.StartsWith("wfx: session ", StringComparison.Ordinal) == true)
+            {
+                _failed = true;
+                throw new IOException("session announcement failed");
+            }
+
+            _written.WriteLine(value);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _written.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
 
     private sealed class StubHandler : HttpMessageHandler
     {

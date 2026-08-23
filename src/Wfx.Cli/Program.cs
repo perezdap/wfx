@@ -328,17 +328,27 @@ internal static class Program
             return null;
         }
 
+        SessionLog session;
         try
         {
-            var session = createSession(workspace.Root);
-            output.WriteLine($"{prefix}{session.Id}");
-            return session;
+            session = createSession(workspace.Root);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             Console.Error.WriteLine(
                 $"wfx: warning: Could not create session: {exception.Message}. The invocation will continue without a session.");
             return null;
+        }
+
+        try
+        {
+            output.WriteLine($"{prefix}{session.Id}");
+            return session;
+        }
+        catch
+        {
+            session.Dispose();
+            throw;
         }
     }
 
