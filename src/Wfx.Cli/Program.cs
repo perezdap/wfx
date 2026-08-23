@@ -81,11 +81,7 @@ internal static class Program
             ? $"wfx: {settings.Provider}/{settings.Model}"
             : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
 
-        using var session = CreateSession(arguments, workspace);
-        if (session is not null)
-        {
-            Console.Error.WriteLine($"wfx: session {session.Id}");
-        }
+        using var session = OpenSession(arguments, workspace, Console.Error, "wfx: session ");
 
         var provider = CreateModelProvider(settings, httpClient);
         var agent = CreateAgent(settings, workspace, arguments, provider, [], session);
@@ -122,11 +118,7 @@ internal static class Program
         Console.WriteLine();
         PrintActiveModel(settings);
         Console.WriteLine($"Workspace: {workspace.Root}");
-        using var session = CreateSession(arguments, workspace);
-        if (session is not null)
-        {
-            Console.WriteLine($"Session: {session.Id}");
-        }
+        using var session = OpenSession(arguments, workspace, Console.Out, "Session: ");
 
         Console.WriteLine();
 
@@ -304,8 +296,21 @@ internal static class Program
             $"wfx: {result.Note ?? $"iteration limit reached after {result.Iterations} iteration(s)"}; {hint}");
     }
 
-    private static SessionLog? CreateSession(CliArguments arguments, WorkspaceInfo workspace) =>
-        arguments.NoSession ? null : new SessionStore().Create(workspace.Root);
+    private static SessionLog? OpenSession(
+        CliArguments arguments,
+        WorkspaceInfo workspace,
+        TextWriter output,
+        string prefix)
+    {
+        if (arguments.NoSession)
+        {
+            return null;
+        }
+
+        var session = new SessionStore().Create(workspace.Root);
+        output.WriteLine($"{prefix}{session.Id}");
+        return session;
+    }
 
     private static Agent CreateAgent(
         WfxSettings settings,

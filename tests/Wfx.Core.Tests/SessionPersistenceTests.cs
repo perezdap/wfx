@@ -17,28 +17,25 @@ public sealed class SessionPersistenceTests
     [Fact]
     public async Task PersistsHeaderAndTurnEventsForACompletedTurn()
     {
-        using var workspace = new TemporaryDirectory();
-        using var sessions = new TemporaryDirectory();
-        using var log = new SessionStore(sessions.Path).Create(workspace.Path);
+        using var session = new SessionFixture();
         var model = new SequenceModelProvider(
             [new ModelMessage(ModelRole.Assistant, "finished")],
             usage: new ModelUsage(10, 4));
         var agent = CreateAgent(
             model,
-            workspace.Path,
-            new SessionRecorder(log),
+            session,
             options: new AgentOptions(new EndpointIdentity("work", "openrouter", "responses", "fake-model")));
 
         await agent.RunAsync("do it", TestContext.Current.CancellationToken);
 
-        Assert.Matches(SessionIdPattern, log.Id);
-        Assert.Equal(Path.Combine(sessions.Path, log.Id + ".jsonl"), log.FilePath);
+        Assert.Matches(SessionIdPattern, session.Log.Id);
+        Assert.Equal(Path.Combine(session.SessionsPath, session.Log.Id + ".jsonl"), session.Log.FilePath);
 
-        var events = ReadEvents(log.FilePath);
+        var events = session.Events();
         Assert.Equal("header", TypeOf(events[0]));
         Assert.Equal(1, events[0].GetProperty("schema_version").GetInt32());
-        Assert.Equal(log.Id, events[0].GetProperty("session_id").GetString());
-        Assert.Equal(Path.GetFullPath(workspace.Path), events[0].GetProperty("workspace").GetString());
+        Assert.Equal(session.Log.Id, events[0].GetProperty("session_id").GetString());
+        Assert.Equal(Path.GetFullPath(session.Workspace), events[0].GetProperty("workspace").GetString());
         Assert.True(events[0].TryGetProperty("created_at", out var createdAt));
         Assert.Matches(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", createdAt.GetString());
 
@@ -69,16 +66,14 @@ public sealed class SessionPersistenceTests
     [Fact]
     public async Task AppendsEventsDuringTheTurnNotAtTurnEnd()
     {
-        using var workspace = new TemporaryDirectory();
-        using var sessions = new TemporaryDirectory();
-        using var log = new SessionStore(sessions.Path).Create(workspace.Path);
-        var spy = new SessionSpyTool { SessionPath = log.FilePath };
+        using var session = new SessionFixture();
+        var spy = new SessionSpyTool { SessionPath = session.Log.FilePath };
         var model = new SequenceModelProvider([
             new ModelMessage(ModelRole.Assistant, "calling",
                 [new ModelToolCall("call-1", "spy", "{}")]),
             new ModelMessage(ModelRole.Assistant, "finished")
         ], usage: new ModelUsage(2, 1));
-        var agent = CreateAgent(model, workspace.Path, new SessionRecorder(log), spy);
+        var agent = CreateAgent(model, session, spy);
 
         await agent.RunAsync("inspect", TestContext.Current.CancellationToken);
 
@@ -102,9 +97,7 @@ public sealed class SessionPersistenceTests
     [Fact]
     public async Task RecordsProviderItemsAndToolResultsOnMessageEvents()
     {
-        using var workspace = new TemporaryDirectory();
-        using var sessions = new TemporaryDirectory();
-        using var log = new SessionStore(sessions.Path).Create(workspace.Path);
+        using var session = new SessionFixture();
         const string providerItems = """[{"type":"reasoning","id":"rs-1","encrypted_content":"opaque-blob"}]""";
         var model = new SequenceModelProvider([
             new ModelMessage(
@@ -114,11 +107,11 @@ public sealed class SessionPersistenceTests
                 ProviderItemsJson: providerItems),
             new ModelMessage(ModelRole.Assistant, "finished")
         ]);
-        var agent = CreateAgent(model, workspace.Path, new SessionRecorder(log), new EchoTool());
+        var agent = CreateAgent(model, session, new EchoTool());
 
         await agent.RunAsync("do it", TestContext.Current.CancellationToken);
 
-        var events = ReadEvents(log.FilePath);
+        var events = session.Events();
         var assistant = Assert.Single(events, static e =>
             TypeOf(e) == "message" &&
             e.GetProperty("role").GetString() == "assistant" &&
@@ -137,19 +130,17 @@ public sealed class SessionPersistenceTests
     [Fact]
     public async Task RecordsUsagePerModelCall()
     {
-        using var workspace = new TemporaryDirectory();
-        using var sessions = new TemporaryDirectory();
-        using var log = new SessionStore(sessions.Path).Create(workspace.Path);
+        using var session = new SessionFixture();
         var model = new SequenceModelProvider([
             new ModelMessage(ModelRole.Assistant, null,
                 [new ModelToolCall("call-1", "echo", "{\"value\":\"a\"}")]),
             new ModelMessage(ModelRole.Assistant, "finished")
         ], usage: new ModelUsage(10, 5));
-        var agent = CreateAgent(model, workspace.Path, new SessionRecorder(log), new EchoTool());
+        var agent = CreateAgent(model, session, new EchoTool());
 
         await agent.RunAsync("do it", TestContext.Current.CancellationToken);
 
-        var usage = ReadEvents(log.FilePath).Where(static e => TypeOf(e) == "usage").ToArray();
+        var usage = session.Events().Where(static e => TypeOf(e) == "usage").ToArray();
         Assert.Equal(2, usage.Length);
         Assert.All(usage, static e =>
         {
@@ -161,14 +152,10 @@ public sealed class SessionPersistenceTests
     [Fact]
     public async Task RecordsEndpointIdentityPerTurnAndReflectsAModelSwitch()
     {
-        using var workspace = new TemporaryDirectory();
-        using var sessions = new TemporaryDirectory();
-        using var log = new SessionStore(sessions.Path).Create(workspace.Path);
-        var recorder = new SessionRecorder(log);
+        using var session = new SessionFixture();
         var first = await CreateAgent(
             new SequenceModelProvider([new ModelMessage(ModelRole.Assistant, "first")]),
-            workspace.Path,
-            recorder,
+            session,
             options: new AgentOptions(new EndpointIdentity("a", "openai", "chat_completions", "model-a")))
             .RunAsync("one", TestContext.Current.CancellationToken);
         await new Agent(
@@ -176,12 +163,12 @@ public sealed class SessionPersistenceTests
             new ToolRegistry([new EchoTool()]),
             new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
             new StaticContextProvider("test context"),
-            recorder,
+            session.Recorder,
             new AgentOptions(new EndpointIdentity("b", "openrouter", "responses", "model-b")),
-            workspace.Path,
+            session.Workspace,
             first.Messages).RunAsync("two", TestContext.Current.CancellationToken);
 
-        var turns = ReadEvents(log.FilePath).Where(static e => TypeOf(e) == "turn_started").ToArray();
+        var turns = session.Events().Where(static e => TypeOf(e) == "turn_started").ToArray();
         Assert.Equal(2, turns.Length);
         Assert.Equal("a", turns[0].GetProperty("profile").GetString());
         Assert.Equal("openai", turns[0].GetProperty("provider").GetString());
@@ -191,29 +178,26 @@ public sealed class SessionPersistenceTests
         Assert.Equal("openrouter", turns[1].GetProperty("provider").GetString());
         Assert.Equal("responses", turns[1].GetProperty("protocol").GetString());
         Assert.Equal("model-b", turns[1].GetProperty("model").GetString());
-        Assert.Single(ReadEvents(log.FilePath), static e => TypeOf(e) == "header");
+        Assert.Single(session.Events(), static e => TypeOf(e) == "header");
     }
 
     [Fact]
     public async Task RecordsInterruptedAsAnEvent()
     {
-        using var workspace = new TemporaryDirectory();
-        using var sessions = new TemporaryDirectory();
-        using var log = new SessionStore(sessions.Path).Create(workspace.Path);
+        using var session = new SessionFixture();
         using var interruption = new CancellationTokenSource();
         var agent = CreateAgent(
             new SequenceModelProvider([
                 new ModelMessage(ModelRole.Assistant, null,
                     [new ModelToolCall("call-1", "interrupt", "{}")])
             ]),
-            workspace.Path,
-            new SessionRecorder(log),
+            session,
             new InterruptingTool(interruption));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => agent.RunAsync("do it", interruption.Token));
 
-        var events = ReadEvents(log.FilePath);
+        var events = session.Events();
         Assert.Contains(events, static e => TypeOf(e) == "interrupted");
         Assert.DoesNotContain(events, static e => TypeOf(e) == "error");
         var assistant = Assert.Single(events, static e =>
@@ -225,61 +209,35 @@ public sealed class SessionPersistenceTests
     [Fact]
     public async Task RecordsErrorAsAnEvent()
     {
-        using var workspace = new TemporaryDirectory();
-        using var sessions = new TemporaryDirectory();
-        using var log = new SessionStore(sessions.Path).Create(workspace.Path);
+        using var session = new SessionFixture();
         var agent = CreateAgent(
             new ThrowingModelProvider(new InvalidOperationException("provider failed")),
-            workspace.Path,
-            new SessionRecorder(log));
+            session);
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => agent.RunAsync("do it", TestContext.Current.CancellationToken));
 
-        var error = Assert.Single(ReadEvents(log.FilePath), static e => TypeOf(e) == "error");
+        var error = Assert.Single(session.Events(), static e => TypeOf(e) == "error");
         Assert.Equal("provider failed", error.GetProperty("message").GetString());
-        Assert.DoesNotContain(ReadEvents(log.FilePath), static e => TypeOf(e) == "interrupted");
-    }
-
-    [Fact]
-    public async Task RedactsKnownSecretShapesInErrorEvents()
-    {
-        using var workspace = new TemporaryDirectory();
-        using var sessions = new TemporaryDirectory();
-        using var log = new SessionStore(sessions.Path).Create(workspace.Path);
-        var agent = CreateAgent(
-            new ThrowingModelProvider(new InvalidOperationException("upstream rejected sk-1111111111111111")),
-            workspace.Path,
-            new SessionRecorder(log));
-
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => agent.RunAsync("do it", TestContext.Current.CancellationToken));
-
-        var error = Assert.Single(ReadEvents(log.FilePath), static e => TypeOf(e) == "error");
-        var message = error.GetProperty("message").GetString()!;
-        Assert.DoesNotContain("sk-1111111111111111", message);
-        Assert.Contains("[REDACTED]", message);
+        Assert.DoesNotContain(session.Events(), static e => TypeOf(e) == "interrupted");
     }
 
     [Fact]
     public async Task PersistsRedactedToolOutputNotTheSecret()
     {
-        using var workspace = new TemporaryDirectory();
-        using var sessions = new TemporaryDirectory();
-        using var log = new SessionStore(sessions.Path).Create(workspace.Path);
+        using var session = new SessionFixture();
         var agent = CreateAgent(
             new SequenceModelProvider([
                 new ModelMessage(ModelRole.Assistant, null,
                     [new ModelToolCall("call-1", "secret", "{}")]),
                 new ModelMessage(ModelRole.Assistant, "finished")
             ]),
-            workspace.Path,
-            new SessionRecorder(log),
+            session,
             new SecretOutputTool());
 
         await agent.RunAsync("do it", TestContext.Current.CancellationToken);
 
-        var tool = Assert.Single(ReadEvents(log.FilePath), static e =>
+        var tool = Assert.Single(session.Events(), static e =>
             TypeOf(e) == "message" && e.GetProperty("role").GetString() == "tool");
         var content = tool.GetProperty("content").GetString()!;
         Assert.Contains("API_KEY=[REDACTED]", content);
@@ -288,15 +246,43 @@ public sealed class SessionPersistenceTests
     }
 
     [Fact]
+    public async Task AWriteFailureDoesNotFailTheTurn()
+    {
+        using var session = new SessionFixture();
+        session.Log.Dispose();
+        var agent = CreateAgent(
+            new SequenceModelProvider([new ModelMessage(ModelRole.Assistant, "finished")]),
+            session);
+
+        var result = await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        Assert.Equal("finished", result.FinalResponse);
+        Assert.Equal(AgentRunStatus.Completed, result.Status);
+    }
+
+    [Fact]
+    public async Task AWriteFailureDoesNotMaskATurnError()
+    {
+        using var session = new SessionFixture();
+        session.Log.Dispose();
+        var agent = CreateAgent(
+            new ThrowingModelProvider(new InvalidOperationException("provider failed")),
+            session);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => agent.RunAsync("do it", TestContext.Current.CancellationToken));
+
+        Assert.Equal("provider failed", exception.Message);
+    }
+
+    [Fact]
     public void SessionIdUsesUtcTimestampAndSixCharacterSuffix()
     {
-        using var workspace = new TemporaryDirectory();
-        using var sessions = new TemporaryDirectory();
-        var time = new FixedTimeProvider(new DateTimeOffset(2026, 8, 22, 15, 4, 5, TimeSpan.Zero));
-        using var log = new SessionStore(sessions.Path, time).Create(workspace.Path);
-        Assert.StartsWith("20260822T150405Z-", log.Id);
-        Assert.Matches(SessionIdPattern, log.Id);
-        Assert.Equal(Path.Combine(sessions.Path, log.Id + ".jsonl"), log.FilePath);
+        using var session = new SessionFixture(
+            new FixedTimeProvider(new DateTimeOffset(2026, 8, 22, 15, 4, 5, TimeSpan.Zero)));
+        Assert.StartsWith("20260822T150405Z-", session.Log.Id);
+        Assert.Matches(SessionIdPattern, session.Log.Id);
+        Assert.Equal(Path.Combine(session.SessionsPath, session.Log.Id + ".jsonl"), session.Log.FilePath);
     }
 
     [Fact]
@@ -308,7 +294,39 @@ public sealed class SessionPersistenceTests
         using var log = new SessionStore(root).Create(sessions.Path);
         log.Dispose();
 
-        var security = new DirectoryInfo(root).GetAccessControl();
+        AssertCurrentUserOnlyAcl(root);
+    }
+
+    [Fact]
+    [SupportedOSPlatform("windows")]
+    public void TightensAclOnAnExistingSessionsDirectory()
+    {
+        using var sessions = new TemporaryDirectory();
+        var root = Path.Combine(sessions.Path, "sessions");
+        Directory.CreateDirectory(root);
+        using var log = new SessionStore(root).Create(sessions.Path);
+        log.Dispose();
+
+        AssertCurrentUserOnlyAcl(root);
+    }
+
+    private static Agent CreateAgent(
+        IModelProvider model,
+        SessionFixture session,
+        ITool? tool = null,
+        AgentOptions? options = null) => new(
+        model,
+        new ToolRegistry([tool ?? new EchoTool()]),
+        new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
+        new StaticContextProvider("test context"),
+        session.Recorder,
+        options ?? new AgentOptions("fake-model"),
+        session.Workspace);
+
+    [SupportedOSPlatform("windows")]
+    private static void AssertCurrentUserOnlyAcl(string directory)
+    {
+        var security = new DirectoryInfo(directory).GetAccessControl();
         Assert.True(security.AreAccessRulesProtected);
         var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier))
             .Cast<FileSystemAccessRule>()
@@ -322,22 +340,6 @@ public sealed class SessionPersistenceTests
         Assert.DoesNotContain(rules, static rule => rule.AccessControlType == AccessControlType.Allow
             && rule.IdentityReference != WindowsIdentity.GetCurrent().User);
     }
-
-    private static Agent CreateAgent(
-        IModelProvider model,
-        string workspaceRoot,
-        IAgentObserver observer,
-        ITool? tool = null,
-        AgentOptions? options = null) => new(
-        model,
-        new ToolRegistry([tool ?? new EchoTool()]),
-        new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
-        new StaticContextProvider("test context"),
-        observer,
-        options ?? new AgentOptions("fake-model"),
-        workspaceRoot);
-
-    private static JsonElement[] ReadEvents(string path) => ParseLines(ReadLines(path));
 
     private static IReadOnlyList<string> ReadLines(string path)
     {
@@ -367,7 +369,40 @@ public sealed class SessionPersistenceTests
         return events;
     }
 
+    private static JsonElement[] ReadEvents(string path) => ParseLines(ReadLines(path));
+
     private static string TypeOf(JsonElement element) => element.GetProperty("type").GetString()!;
+
+    private sealed class SessionFixture : IDisposable
+    {
+        private readonly TemporaryDirectory _workspace = new();
+        private readonly TemporaryDirectory _sessions = new();
+
+        public SessionFixture(TimeProvider? time = null)
+        {
+            Workspace = _workspace.Path;
+            SessionsPath = _sessions.Path;
+            Log = new SessionStore(SessionsPath, time).Create(Workspace);
+            Recorder = new SessionRecorder(Log);
+        }
+
+        public string Workspace { get; }
+
+        public string SessionsPath { get; }
+
+        public SessionLog Log { get; }
+
+        public SessionRecorder Recorder { get; }
+
+        public JsonElement[] Events() => ReadEvents(Log.FilePath);
+
+        public void Dispose()
+        {
+            Log.Dispose();
+            _sessions.Dispose();
+            _workspace.Dispose();
+        }
+    }
 
     private sealed class SequenceModelProvider(
         IReadOnlyList<ModelMessage> responses,

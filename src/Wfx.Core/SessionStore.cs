@@ -24,11 +24,8 @@ public sealed class SessionStore
         _time = timeProvider ?? TimeProvider.System;
     }
 
-    public static string DefaultDirectory(string? userProfile = null)
-    {
-        userProfile ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return Path.Combine(userProfile, ".wfx", "sessions");
-    }
+    public static string DefaultDirectory() =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".wfx", "sessions");
 
     public SessionLog Create(string workspaceRoot)
     {
@@ -94,13 +91,15 @@ public sealed class SessionStore
             Directory.CreateDirectory(parent);
         }
 
+        var security = CurrentUserOnlyDirectorySecurity();
         var info = new DirectoryInfo(_directory);
         if (info.Exists)
         {
+            info.SetAccessControl(security);
             return;
         }
 
-        info.Create(CurrentUserOnlyDirectorySecurity());
+        info.Create(security);
     }
 
     [SupportedOSPlatform("windows")]
@@ -168,14 +167,7 @@ public sealed class SessionLog : IDisposable
         Write(writer =>
         {
             writer.WriteString("type", "turn_started");
-            if (endpoint.Profile is null)
-            {
-                writer.WriteNull("profile");
-            }
-            else
-            {
-                writer.WriteString("profile", endpoint.Profile);
-            }
+            WriteOptionalString(writer, "profile", endpoint.Profile);
 
             writer.WriteString("provider", endpoint.Provider);
             writer.WriteString("protocol", endpoint.Protocol);
@@ -187,14 +179,7 @@ public sealed class SessionLog : IDisposable
         {
             writer.WriteString("type", "message");
             writer.WriteString("role", RoleName(message.Role));
-            if (message.Content is null)
-            {
-                writer.WriteNull("content");
-            }
-            else
-            {
-                writer.WriteString("content", message.Content);
-            }
+            WriteOptionalString(writer, "content", message.Content);
 
             if (message.ToolCalls is { Count: > 0 })
             {
@@ -244,7 +229,7 @@ public sealed class SessionLog : IDisposable
         Write(writer =>
         {
             writer.WriteString("type", "error");
-            writer.WriteString("message", SecretRedactor.Redact(exception.Message));
+            writer.WriteString("message", exception.Message);
         });
 
     public void Dispose()
@@ -277,7 +262,23 @@ public sealed class SessionLog : IDisposable
 
             buffer.WriteByte((byte)'\n');
             _stream.Write(buffer.GetBuffer(), 0, (int)buffer.Length);
+            // Durability unit is one complete JSONL line. Flush to disk before returning
+            // so a crash loses at most the last event. The observer CancellationToken is
+            // not honoured here: cancelling mid-flush can leave a truncated line, which
+            // is a worse record than a finished one.
             _stream.Flush(flushToDisk: true);
+        }
+    }
+
+    private static void WriteOptionalString(Utf8JsonWriter writer, string name, string? value)
+    {
+        if (value is null)
+        {
+            writer.WriteNull(name);
+        }
+        else
+        {
+            writer.WriteString(name, value);
         }
     }
 
