@@ -63,7 +63,12 @@ internal static class Program
             if (arguments.Command == CliCommand.Resume)
             {
                 transcript = SelectTranscript(arguments, workspace, sessionStore);
-                if (arguments.Settings.Profile is not null && transcript.LastEndpoint is not null)
+                if (arguments.Settings.Profile is not null &&
+                    transcript.LastEndpoint is not null &&
+                    !string.Equals(
+                        arguments.Settings.Profile,
+                        transcript.LastEndpoint.Profile,
+                        StringComparison.OrdinalIgnoreCase))
                 {
                     Console.Error.WriteLine(
                         $"wfx: profile '{arguments.Settings.Profile}' overrides the recorded endpoint for this resumed session.");

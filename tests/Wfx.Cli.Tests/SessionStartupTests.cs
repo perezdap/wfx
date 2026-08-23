@@ -351,8 +351,13 @@ public sealed class SessionStartupTests
         }
     }
 
-    [Fact]
-    public async Task ResumeExplicitProfileOverridesRecordedEndpoint()
+    [Theory]
+    [InlineData("other", "other-model", true)]
+    [InlineData("RECORDED", "recorded-model", false)]
+    public async Task ResumeExplicitProfileOnlyReportsWhenItOverridesRecordedEndpoint(
+        string profile,
+        string expectedModel,
+        bool expectOverrideNotice)
     {
         using var httpClient = CreateHttpClient();
         using var console = new ConsoleCapture("next\n/exit\n");
@@ -393,24 +398,32 @@ public sealed class SessionStartupTests
             created.Dispose();
 
             var exitCode = await Program.RunAsync(
-                ["resume", "--id", created.Id, "--profile", "other"],
+                ["resume", "--id", created.Id, "--profile", profile],
                 httpClient,
                 new TestSessionStore(store),
                 TestContext.Current.CancellationToken,
                 userProfile.FullName);
 
             Assert.Equal(0, exitCode);
-            Assert.Contains(
-                "wfx: profile 'other' overrides the recorded endpoint for this resumed session.",
-                console.Error.ToString());
+            if (expectOverrideNotice)
+            {
+                Assert.Contains(
+                    $"wfx: profile '{profile}' overrides the recorded endpoint for this resumed session.",
+                    console.Error.ToString());
+            }
+            else
+            {
+                Assert.DoesNotContain("overrides the recorded endpoint", console.Error.ToString());
+            }
+
             var turnLines = File.ReadAllLines(created.FilePath)
                 .Where(static line => line.Contains("\"type\":\"turn_started\"", StringComparison.Ordinal))
                 .ToArray();
             using var turn = JsonDocument.Parse(turnLines[^1]);
-            Assert.Equal("other", turn.RootElement.GetProperty("profile").GetString());
+            Assert.Equal(profile, turn.RootElement.GetProperty("profile").GetString());
             Assert.Equal("local", turn.RootElement.GetProperty("provider").GetString());
             Assert.Equal("chat_completions", turn.RootElement.GetProperty("protocol").GetString());
-            Assert.Equal("other-model", turn.RootElement.GetProperty("model").GetString());
+            Assert.Equal(expectedModel, turn.RootElement.GetProperty("model").GetString());
         }
         finally
         {
