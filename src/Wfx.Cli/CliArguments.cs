@@ -16,6 +16,7 @@ internal sealed record CliArguments(
     WfxSettingsLayer Settings,
     bool Verbose,
     bool Debug,
+    bool NoSession,
     bool ShowHelp,
     bool ShowVersion)
 {
@@ -33,6 +34,7 @@ internal sealed record CliArguments(
         ApprovalMode? approval = null;
         var verbose = false;
         var debug = false;
+        var noSession = false;
         var showHelp = false;
         var showVersion = false;
         var commandSelected = false;
@@ -54,6 +56,9 @@ internal sealed record CliArguments(
                 case "--debug":
                     debug = true;
                     verbose = true;
+                    break;
+                case "--no-session":
+                    noSession = true;
                     break;
                 case "--provider":
                     provider = RequireValue(args, ref index, argument);
@@ -137,6 +142,7 @@ internal sealed record CliArguments(
             },
             verbose,
             debug,
+            noSession,
             showHelp,
             showVersion);
     }

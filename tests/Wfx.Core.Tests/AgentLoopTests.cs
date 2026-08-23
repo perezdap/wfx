@@ -216,18 +216,21 @@ public sealed class AgentLoopTests
 
         await agent.RunAsync("do it", TestContext.Current.CancellationToken);
 
-        Assert.Equal(3, observer.Messages.Count);
-        var first = observer.Messages[0];
+        Assert.Equal(5, observer.Messages.Count);
+        Assert.Equal(ModelRole.System, observer.Messages[0].Role);
+        Assert.Equal(ModelRole.User, observer.Messages[1].Role);
+        Assert.Equal("do it", observer.Messages[1].Content);
+        var first = observer.Messages[2];
         Assert.Equal(ModelRole.Assistant, first.Role);
         Assert.Equal("calling", first.Content);
         Assert.Equal("call-1", Assert.Single(first.ToolCalls!).Id);
         Assert.Equal(providerItems, first.ProviderItemsJson);
-        var toolResult = observer.Messages[1];
+        var toolResult = observer.Messages[3];
         Assert.Equal(ModelRole.Tool, toolResult.Role);
         Assert.Equal("call-1", toolResult.ToolCallId);
         Assert.Equal("echo", toolResult.Name);
         Assert.Contains("echo:hello", toolResult.Content!);
-        Assert.Equal("finished", observer.Messages[2].Content);
+        Assert.Equal("finished", observer.Messages[4].Content);
     }
 
     [Fact]

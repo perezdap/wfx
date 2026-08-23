@@ -81,8 +81,10 @@ internal static class Program
             ? $"wfx: {settings.Provider}/{settings.Model}"
             : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
 
+        using var session = OpenSession(arguments, workspace, Console.Error, "wfx: session ");
+
         var provider = CreateModelProvider(settings, httpClient);
-        var agent = CreateAgent(settings, workspace, arguments, provider, []);
+        var agent = CreateAgent(settings, workspace, arguments, provider, [], session);
         var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
         PrintTrailingNewline(result);
 
@@ -116,6 +118,8 @@ internal static class Program
         Console.WriteLine();
         PrintActiveModel(settings);
         Console.WriteLine($"Workspace: {workspace.Root}");
+        using var session = OpenSession(arguments, workspace, Console.Out, "Session: ");
+
         Console.WriteLine();
 
         var provider = CreateModelProvider(settings, httpClient);
@@ -177,7 +181,7 @@ internal static class Program
             try
             {
                 EnsureRunnable(settings);
-                var agent = CreateAgent(settings, workspace, arguments, provider, conversation);
+                var agent = CreateAgent(settings, workspace, arguments, provider, conversation, session);
                 var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
                 conversation = result.Messages;
                 PrintTrailingNewline(result);
@@ -292,12 +296,29 @@ internal static class Program
             $"wfx: {result.Note ?? $"iteration limit reached after {result.Iterations} iteration(s)"}; {hint}");
     }
 
+    private static SessionLog? OpenSession(
+        CliArguments arguments,
+        WorkspaceInfo workspace,
+        TextWriter output,
+        string prefix)
+    {
+        if (arguments.NoSession)
+        {
+            return null;
+        }
+
+        var session = new SessionStore().Create(workspace.Root);
+        output.WriteLine($"{prefix}{session.Id}");
+        return session;
+    }
+
     private static Agent CreateAgent(
         WfxSettings settings,
         WorkspaceInfo workspace,
         CliArguments arguments,
         IModelProvider provider,
-        IReadOnlyList<ModelMessage> conversation)
+        IReadOnlyList<ModelMessage> conversation,
+        SessionLog? session)
     {
         var tools = BuiltInTools.Create(workspace.Root);
         var context = new CompositeContextProvider([
@@ -308,12 +329,18 @@ internal static class Program
         var approval = new PolicyApprovalService(
             settings.Approval,
             (request, token) => PromptForApprovalAsync(request, secrets, token));
+        IAgentObserver observer = new ConsoleAgentObserver(arguments.Verbose, arguments.Debug, _unicodeConsole, secrets);
+        if (session is not null)
+        {
+            observer = new CompositeAgentObserver(new SessionRecorder(session), observer);
+        }
+
         return new Agent(
             provider,
             tools,
             approval,
             context,
-            new ConsoleAgentObserver(arguments.Verbose, arguments.Debug, _unicodeConsole, secrets),
+            observer,
             new AgentOptions(
                 new EndpointIdentity(settings.Profile, settings.Provider, settings.Protocol, settings.Model),
                 settings.MaxIterations),
@@ -459,6 +486,7 @@ internal static class Program
               --max-iterations <count>      Agent loop limit (1-100)
               --verbose                     Show timing and progress details
               --debug                       Show tool result diagnostics
+              --no-session                  Do not persist a session log for this invocation
               --help                        Show help
               --version                     Show version
 
@@ -470,6 +498,8 @@ internal static class Program
 
             Configuration precedence: CLI > environment > project > user > defaults.
             Prefer WFX_API_KEY for credentials. WFX never prints API keys.
+            Interactive mode and wfx run persist a JSONL session under %USERPROFILE%\.wfx\sessions\
+            unless --no-session is passed. Session files remain sensitive despite secret redaction.
 
             Exit codes:
               0    success
