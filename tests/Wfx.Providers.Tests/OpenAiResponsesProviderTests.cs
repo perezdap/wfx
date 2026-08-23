@@ -101,6 +101,182 @@ public sealed class OpenAiResponsesProviderTests
     }
 
     [Fact]
+    public async Task RetriesOnceWithoutProviderItemsWhenEncryptedContentIsRejected()
+    {
+        var handler = new SequenceStubHandler([
+            new StubResponse(
+                HttpStatusCode.BadRequest,
+                """{"error":{"code":"invalid_encrypted_content","message":"encrypted content is invalid"}}""",
+                "application/json"),
+            new StubResponse(HttpStatusCode.OK, """
+                data: {"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"delta":"recovered"}
+
+                data: {"type":"response.completed","response":{"id":"resp-1"}}
+
+                """, "text/event-stream")
+        ]);
+        var provider = CreateProvider(handler);
+        var request = new ModelRequest(
+            "test-model",
+            [
+                new ModelMessage(ModelRole.User, "before"),
+                new ModelMessage(
+                    ModelRole.Assistant,
+                    "previous answer",
+                    ProviderItemsJson: """[{"type":"reasoning","id":"rs-1","encrypted_content":"opaque"}]"""),
+                new ModelMessage(ModelRole.User, "continue")
+            ],
+            []);
+
+        var events = await CollectAsync(provider.StreamAsync(request, TestContext.Current.CancellationToken));
+
+        Assert.Equal("recovered", Assert.Single(events.OfType<ModelCompleted>()).Message.Content);
+        Assert.Equal(2, handler.RequestBodies.Count);
+        using var first = JsonDocument.Parse(handler.RequestBodies[0]);
+        using var second = JsonDocument.Parse(handler.RequestBodies[1]);
+        Assert.Contains(
+            first.RootElement.GetProperty("input").EnumerateArray(),
+            static item => item.TryGetProperty("encrypted_content", out _));
+        Assert.DoesNotContain(
+            second.RootElement.GetProperty("input").EnumerateArray(),
+            static item => item.TryGetProperty("encrypted_content", out _));
+        var rebuilt = Assert.Single(
+            second.RootElement.GetProperty("input").EnumerateArray(),
+            static item => item.TryGetProperty("role", out var role) && role.GetString() == "assistant");
+        Assert.Equal("previous answer", rebuilt.GetProperty("content")[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task DoesNotDowngradeOtherBadRequests()
+    {
+        var handler = new SequenceStubHandler([
+            new StubResponse(
+                HttpStatusCode.BadRequest,
+                """{"error":{"code":"invalid_request_error","message":"bad input"}}""",
+                "application/json"),
+            new StubResponse(HttpStatusCode.OK, string.Empty, "text/event-stream")
+        ]);
+        var provider = CreateProvider(handler);
+        var request = new ModelRequest(
+            "test-model",
+            [new ModelMessage(ModelRole.Assistant, "answer", ProviderItemsJson: """[{"type":"reasoning"}]""")],
+            []);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(async () =>
+            await CollectAsync(provider.StreamAsync(request, TestContext.Current.CancellationToken)));
+
+        Assert.Equal(HttpStatusCode.BadRequest, exception.StatusCode);
+        Assert.Single(handler.RequestBodies);
+    }
+
+    [Fact]
+    public async Task DoesNotDowngradeItemsNotPersistedErrors()
+    {
+        var handler = new SequenceStubHandler([
+            new StubResponse(
+                HttpStatusCode.NotFound,
+                """{"error":{"code":"not_found","message":"Items are not persisted when store is set to false"}}""",
+                "application/json"),
+            new StubResponse(HttpStatusCode.OK, string.Empty, "text/event-stream")
+        ]);
+        var provider = CreateProvider(handler);
+        var request = new ModelRequest(
+            "test-model",
+            [new ModelMessage(ModelRole.Assistant, "answer", ProviderItemsJson: """[{"type":"reasoning"}]""")],
+            []);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(async () =>
+            await CollectAsync(provider.StreamAsync(request, TestContext.Current.CancellationToken)));
+
+        Assert.Equal(HttpStatusCode.NotFound, exception.StatusCode);
+        Assert.Contains("Items are not persisted", exception.Message);
+        Assert.Single(handler.RequestBodies);
+    }
+
+    [Fact]
+    public async Task RetriesEncryptedContentRejectionOnlyOnce()
+    {
+        var rejection = new StubResponse(
+            HttpStatusCode.BadRequest,
+            """{"error":{"code":"invalid_encrypted_content","message":"encrypted content is invalid"}}""",
+            "application/json");
+        var handler = new SequenceStubHandler([
+            rejection,
+            rejection,
+            new StubResponse(HttpStatusCode.OK, string.Empty, "text/event-stream")
+        ]);
+        var provider = CreateProvider(handler);
+        var request = new ModelRequest(
+            "test-model",
+            [new ModelMessage(ModelRole.Assistant, "answer", ProviderItemsJson: """[{"type":"reasoning"}]""")],
+            []);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(async () =>
+            await CollectAsync(provider.StreamAsync(request, TestContext.Current.CancellationToken)));
+
+        Assert.Equal(HttpStatusCode.BadRequest, exception.StatusCode);
+        Assert.Equal(2, handler.RequestBodies.Count);
+    }
+
+    [Fact]
+    public async Task ResumedConversationUnderDifferentEndpointSurvivesProviderItemDowngrade()
+    {
+        const string providerItems = """[{"type":"reasoning","id":"rs-1","encrypted_content":"opaque"}]""";
+        var handler = new SequenceStubHandler([
+            new StubResponse(
+                HttpStatusCode.BadRequest,
+                """{"error":{"code":"invalid_encrypted_content","message":"encrypted content is invalid"}}""",
+                "application/json"),
+            new StubResponse(HttpStatusCode.OK, """
+                data: {"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"delta":"continued"}
+
+                data: {"type":"response.completed","response":{"id":"resp-1"}}
+
+                """, "text/event-stream")
+        ]);
+        var provider = CreateProvider(handler);
+        var recordedEndpoint = new EndpointIdentity("old-profile", "openai", "responses", "old-model");
+        var resumedEndpoint = new EndpointIdentity("new-profile", "openai", "responses", "new-model");
+        var transcript = new SessionTranscript(
+            "session-id",
+            "session.jsonl",
+            Path.GetTempPath(),
+            DateTimeOffset.UnixEpoch,
+            [
+                new ModelMessage(ModelRole.System, "instructions"),
+                new ModelMessage(ModelRole.User, "first question"),
+                new ModelMessage(ModelRole.Assistant, "first answer", ProviderItemsJson: providerItems)
+            ],
+            recordedEndpoint);
+        var agent = new Agent(
+            provider,
+            new ToolRegistry([]),
+            new PolicyApprovalService(ApprovalMode.Never, static (_, _) => ValueTask.FromResult(false)),
+            new StaticContextProvider("unused"),
+            new SilentObserver(),
+            new AgentOptions(resumedEndpoint),
+            transcript.Workspace,
+            transcript.Messages);
+
+        var result = await agent.RunAsync("second question", TestContext.Current.CancellationToken);
+
+        Assert.Equal(recordedEndpoint, transcript.LastEndpoint);
+        Assert.NotEqual(transcript.LastEndpoint, resumedEndpoint);
+        Assert.Equal("continued", result.FinalResponse);
+        Assert.Equal(providerItems, result.Messages[2].ProviderItemsJson);
+        Assert.Equal(2, handler.RequestBodies.Count);
+        using var first = JsonDocument.Parse(handler.RequestBodies[0]);
+        using var second = JsonDocument.Parse(handler.RequestBodies[1]);
+        Assert.Equal("new-model", first.RootElement.GetProperty("model").GetString());
+        Assert.Contains(
+            first.RootElement.GetProperty("input").EnumerateArray(),
+            static item => item.TryGetProperty("encrypted_content", out _));
+        Assert.DoesNotContain(
+            second.RootElement.GetProperty("input").EnumerateArray(),
+            static item => item.TryGetProperty("encrypted_content", out _));
+    }
+
+    [Fact]
     public async Task RebuildsTheTurnWhenNoProviderItemsWereRecorded()
     {
         var handler = TextStream();
@@ -606,6 +782,10 @@ public sealed class OpenAiResponsesProviderTests
                 }
             }
         });
+    }
+
+    private sealed class SilentObserver : IAgentObserver
+    {
     }
 
     private static StubHandler TextStream() => new(HttpStatusCode.OK, """

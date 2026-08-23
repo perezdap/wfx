@@ -30,11 +30,18 @@ public sealed record ModelSwitchResult(WfxSettings? Settings, bool TransportChan
     public IReadOnlyList<ModelMessage> MapConversation(IReadOnlyList<ModelMessage> conversation)
     {
         ArgumentNullException.ThrowIfNull(conversation);
-        if (!TransportChanged)
-        {
-            return conversation;
-        }
+        return TransportChanged ? ProviderItemDowngrade.Strip(conversation) : conversation;
+    }
+}
 
+/// <summary>
+/// Removes endpoint-bound provider items while preserving portable conversation content.
+/// </summary>
+public static class ProviderItemDowngrade
+{
+    public static IReadOnlyList<ModelMessage> Strip(IReadOnlyList<ModelMessage> conversation)
+    {
+        ArgumentNullException.ThrowIfNull(conversation);
         var mapped = new List<ModelMessage>(conversation.Count);
         foreach (var message in conversation)
         {
