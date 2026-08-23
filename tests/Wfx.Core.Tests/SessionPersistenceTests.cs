@@ -180,6 +180,12 @@ public sealed class SessionPersistenceTests
         session.Log.Dispose();
 
         var store = new SessionStore(session.SessionsPath);
+        var beforeOpen = File.ReadAllBytes(session.Log.FilePath);
+        using (store.Open(session.Log.Id))
+        {
+        }
+
+        Assert.Equal(beforeOpen, File.ReadAllBytes(session.Log.FilePath));
         using var reopened = store.Open(session.Log.Id);
         var transcript = store.Read(session.Log.Id);
         await CreateAgent(
@@ -209,7 +215,7 @@ public sealed class SessionPersistenceTests
         log.Dispose();
 
         var durablePrefix = Header(sessionId, Path.GetFullPath(workspace.Path)) + "\r\n";
-        var partial = """{"type":"message","role":"user","content":"partial"}""";
+        var partial = """{"type":"message","role":"user","content":""" + new string('x', 70_000);
         File.WriteAllText(
             sessionPath,
             durablePrefix + """{"type":"message","role":"user","content":"kept"}""" + "\r\n" + partial);
@@ -226,6 +232,23 @@ public sealed class SessionPersistenceTests
             durablePrefix + """{"type":"message","role":"user","content":"kept"}""" + "\r\n",
             File.ReadAllText(sessionPath),
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OpenRefusesASessionFileWithNoCompleteLine()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var sessions = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string sessionId = "20260822T150405Z-no-newline";
+        var path = Path.Combine(sessions.Path, sessionId + ".jsonl");
+        var content = Header(sessionId, workspace.Path);
+        File.WriteAllText(path, content);
+
+        var exception = Assert.Throws<IOException>(() => store.Open(sessionId));
+
+        Assert.Contains("no complete newline-terminated event", exception.Message);
+        Assert.Equal(content, File.ReadAllText(path));
     }
 
     [Fact]

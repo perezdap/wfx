@@ -67,6 +67,8 @@ public sealed record SessionTranscript(
 /// </summary>
 public sealed class SessionStore : ISessionStore
 {
+    private const int TailScanChunkSize = 64 * 1024;
+
     public const int SchemaVersion = 1;
 
     private readonly string _directory;
@@ -347,7 +349,7 @@ public sealed class SessionStore : ISessionStore
         var length = stream.Length;
         if (length == 0)
         {
-            return;
+            throw new IOException("Session file is empty and has no complete newline-terminated event.");
         }
 
         stream.Position = length - 1;
@@ -357,19 +359,40 @@ public sealed class SessionStore : ISessionStore
             return;
         }
 
-        for (var position = length - 2; position >= 0; position--)
+        var buffer = new byte[(int)Math.Min(TailScanChunkSize, length)];
+        var end = length;
+        while (end > 0)
         {
-            stream.Position = position;
-            if (stream.ReadByte() == '\n')
+            var start = Math.Max(0, end - buffer.Length);
+            var count = (int)(end - start);
+            stream.Position = start;
+            var offset = 0;
+            while (offset < count)
             {
-                stream.SetLength(position + 1);
-                stream.Position = position + 1;
-                return;
+                var read = stream.Read(buffer, offset, count - offset);
+                if (read == 0)
+                {
+                    throw new IOException("Session file could not be scanned for a complete event.");
+                }
+
+                offset += read;
             }
+
+            for (var index = count - 1; index >= 0; index--)
+            {
+                if (buffer[index] == '\n')
+                {
+                    var truncateAt = start + index + 1;
+                    stream.SetLength(truncateAt);
+                    stream.Position = truncateAt;
+                    return;
+                }
+            }
+
+            end = start;
         }
 
-        stream.SetLength(0);
-        stream.Position = 0;
+        throw new IOException("Session file has no complete newline-terminated event.");
     }
 
     private static EndpointIdentity ReadEndpoint(JsonElement root, string sessionId, int line)
