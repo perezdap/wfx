@@ -27,6 +27,17 @@ public sealed record WfxSettingsLayer
     public IReadOnlyDictionary<string, WfxSettingsLayer>? Profiles { get; init; }
 }
 
+public sealed class UndefinedProfileException : InvalidOperationException
+{
+    public UndefinedProfileException(string profileName, string message)
+        : base(message)
+    {
+        ProfileName = profileName;
+    }
+
+    public string ProfileName { get; }
+}
+
 public sealed record ConfiguredModel(string Profile, string Provider, string Model);
 
 internal sealed record ConfiguredModelResolution(
@@ -355,11 +366,13 @@ public static class WfxConfiguration
         var projectProfiles = ProfileNames(projectLayer);
         if (userProfiles.Count == 0 && projectProfiles.Count == 0)
         {
-            return new InvalidOperationException(
+            return new UndefinedProfileException(
+                name,
                 $"Profile '{name}' is not defined; no profiles exist in the user or project configuration files.");
         }
 
-        return new InvalidOperationException(
+        return new UndefinedProfileException(
+            name,
             $"Profile '{name}' is not defined. Available profiles — user: {FormatProfileNames(userProfiles)}; project: {FormatProfileNames(projectProfiles)}.");
     }
 

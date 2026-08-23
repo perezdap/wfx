@@ -209,6 +209,18 @@ List persisted sessions with workspace, timestamps, and size:
 wfx sessions
 ```
 
+Resume the most recently updated session for the current workspace:
+
+```powershell
+wfx resume
+```
+
+Resume a specific session by ID:
+
+```powershell
+wfx resume --id <session-id>
+```
+
 ## Approval modes
 
 | Mode | Read-only | Workspace write | System change | Dangerous |
