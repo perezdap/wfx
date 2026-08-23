@@ -25,20 +25,13 @@ internal static class Program
         };
 
         using var httpClient = CreateHttpClient();
-        var sessionStore = new SessionStore();
-        return await RunAsync(
-            args,
-            httpClient,
-            sessionStore.Create,
-            sessionStore.List,
-            shutdown.Token).ConfigureAwait(false);
+        return await RunAsync(args, httpClient, new SessionStore(), shutdown.Token).ConfigureAwait(false);
     }
 
     internal static async Task<int> RunAsync(
         string[] args,
         HttpClient httpClient,
-        Func<string, SessionLog> createSession,
-        Func<IReadOnlyList<SessionSummary>> listSessions,
+        ISessionStore sessionStore,
         CancellationToken cancellationToken)
     {
         try
@@ -60,7 +53,7 @@ internal static class Program
             // resolution, which can throw on an unconfigured endpoint.
             if (arguments.Command == CliCommand.Sessions)
             {
-                return PrintSessions(listSessions);
+                return PrintSessions(sessionStore);
             }
 
             var workspace = WorkspaceInfo.Discover();
@@ -75,10 +68,10 @@ internal static class Program
                 CliCommand.Models => PrintModels(settings, workspace),
                 CliCommand.Config => PrintConfig(settings, workspace),
                 CliCommand.Run => await RunOnceAsync(
-                    arguments.Prompt!, settings, workspace, arguments, httpClient, createSession, cancellationToken)
+                    arguments.Prompt!, settings, workspace, arguments, httpClient, sessionStore, cancellationToken)
                     .ConfigureAwait(false),
                 _ => await RunInteractiveAsync(
-                    settings, workspace, arguments, httpClient, createSession, cancellationToken).ConfigureAwait(false)
+                    settings, workspace, arguments, httpClient, sessionStore, cancellationToken).ConfigureAwait(false)
             };
         }
         catch (OperationCanceledException)
@@ -99,7 +92,7 @@ internal static class Program
         WorkspaceInfo workspace,
         CliArguments arguments,
         HttpClient httpClient,
-        Func<string, SessionLog> createSession,
+        ISessionStore sessionStore,
         CancellationToken cancellationToken)
     {
         EnsureRunnable(settings);
@@ -107,7 +100,7 @@ internal static class Program
             ? $"wfx: {settings.Provider}/{settings.Model}"
             : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
 
-        using var session = OpenSession(arguments, workspace, Console.Error, "wfx: session ", createSession);
+        using var session = OpenSession(arguments, workspace, Console.Error, "wfx: session ", sessionStore);
 
         var provider = CreateModelProvider(settings, httpClient);
         var agent = CreateAgent(settings, workspace, arguments, provider, [], session);
@@ -133,7 +126,7 @@ internal static class Program
         WorkspaceInfo workspace,
         CliArguments arguments,
         HttpClient httpClient,
-        Func<string, SessionLog> createSession,
+        ISessionStore sessionStore,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(settings.Model) && settings.ConfiguredModels.Count == 0)
@@ -145,7 +138,7 @@ internal static class Program
         Console.WriteLine();
         PrintActiveModel(settings);
         Console.WriteLine($"Workspace: {workspace.Root}");
-        using var session = OpenSession(arguments, workspace, Console.Out, "Session: ", createSession);
+        using var session = OpenSession(arguments, workspace, Console.Out, "Session: ", sessionStore);
 
         Console.WriteLine();
 
@@ -328,7 +321,7 @@ internal static class Program
         WorkspaceInfo workspace,
         TextWriter output,
         string prefix,
-        Func<string, SessionLog> createSession)
+        ISessionStore sessionStore)
     {
         if (arguments.NoSession)
         {
@@ -338,7 +331,7 @@ internal static class Program
         SessionLog session;
         try
         {
-            session = createSession(workspace.Root);
+            session = sessionStore.Create(workspace.Root);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -503,14 +496,15 @@ internal static class Program
         return 0;
     }
 
-    private static int PrintSessions(Func<IReadOnlyList<SessionSummary>> listSessions)
+    private static int PrintSessions(ISessionStore sessionStore)
     {
-        var sessions = listSessions();
+        var listing = sessionStore.List();
+        var sessions = listing.Sessions;
 
         if (sessions.Count == 0)
         {
             Console.WriteLine("No sessions.");
-            Console.WriteLine($"Total on disk: {FormatBytes(0)}");
+            Console.WriteLine($"Total on disk: {FormatBytes(listing.TotalSizeBytes)}");
             return 0;
         }
 
@@ -523,7 +517,7 @@ internal static class Program
         }
 
         Console.WriteLine();
-        Console.WriteLine($"{sessions.Count} session(s), {FormatBytes(sessions.Sum(session => session.SizeBytes))} total on disk");
+        Console.WriteLine($"{sessions.Count} session(s), {FormatBytes(listing.TotalSizeBytes)} total on disk");
         return 0;
     }
 
@@ -574,7 +568,7 @@ internal static class Program
               wfx run [options] <prompt>    Run one task
               wfx models [options]          Show provider/model configuration
               wfx config [options]          Inspect effective configuration
-              wfx sessions [options]        List sessions with workspace, timestamps, and size
+              wfx sessions [options]        List sessions with workspace, timestamps, sizes, and total
 
             Options:
               --model <model>               Model ID; openrouter/<id> selects OpenRouter

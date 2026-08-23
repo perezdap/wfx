@@ -7,11 +7,18 @@ using System.Text.Json;
 
 namespace Wfx.Core;
 
+public interface ISessionStore
+{
+    SessionLog Create(string workspaceRoot);
+
+    SessionListing List();
+}
+
 /// <summary>
 /// Creates append-only JSONL session logs under a per-user sessions directory.
 /// Line 1 is a <c>header</c>; every later line is one event.
 /// </summary>
-public sealed class SessionStore
+public sealed class SessionStore : ISessionStore
 {
     public const int SchemaVersion = 1;
 
@@ -75,11 +82,11 @@ public sealed class SessionStore
     /// Lock-free listing of every session under the store root. Reads no locks, so it succeeds
     /// while another process is appending to a session. Malformed or unreadable files are skipped.
     /// </summary>
-    public IReadOnlyList<SessionSummary> List()
+    public SessionListing List()
     {
         if (!Directory.Exists(_directory))
         {
-            return [];
+            return new SessionListing([], 0);
         }
 
         var summaries = new List<SessionSummary>();
@@ -93,19 +100,7 @@ public sealed class SessionStore
         }
 
         summaries.Sort(static (left, right) => right.UpdatedAt.CompareTo(left.UpdatedAt));
-        return summaries;
-    }
-
-    /// <summary>Total bytes on disk consumed by the session store.</summary>
-    public long TotalSizeBytes()
-    {
-        long total = 0;
-        foreach (var summary in List())
-        {
-            total += summary.SizeBytes;
-        }
-
-        return total;
+        return new SessionListing(summaries, summaries.Sum(summary => summary.SizeBytes));
     }
 
     private static SessionSummary? ReadSummary(string path)
@@ -400,6 +395,10 @@ public sealed class SessionLog : IDisposable
         _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown message role.")
     };
 }
+
+public sealed record SessionListing(
+    IReadOnlyList<SessionSummary> Sessions,
+    long TotalSizeBytes);
 
 /// <summary>
 /// One line of a session file, enough to list a session without loading its transcript.

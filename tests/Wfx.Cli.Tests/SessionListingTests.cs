@@ -8,67 +8,70 @@ public sealed class SessionListingTests
     [Fact]
     public async Task SessionsReportsAnEmptyStoreWithoutModelConfiguration()
     {
+        var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");
         using var httpClient = new HttpClient(new UnexpectedRequestHandler());
         using var console = new ConsoleCapture();
-        var listCalled = false;
+        try
+        {
+            var store = new SessionStore(Path.Combine(directory.FullName, "sessions"));
+            var exitCode = await Program.RunAsync(
+                ["sessions"],
+                httpClient,
+                store,
+                TestContext.Current.CancellationToken);
 
-        var exitCode = await Program.RunAsync(
-            ["sessions"],
-            httpClient,
-            _ => throw new InvalidOperationException("Session creation must be skipped."),
-            () =>
-            {
-                listCalled = true;
-                return [];
-            },
-            TestContext.Current.CancellationToken);
-
-        Assert.Equal(0, exitCode);
-        Assert.True(listCalled);
-        Assert.Contains("No sessions.", console.Output.ToString());
-        Assert.Contains("Total on disk: 0 B", console.Output.ToString());
-        Assert.Empty(console.ErrorText);
+            Assert.Equal(0, exitCode);
+            Assert.Contains("No sessions.", console.Output.ToString());
+            Assert.Contains("Total on disk: 0 B", console.Output.ToString());
+            Assert.Empty(console.ErrorText);
+        }
+        finally
+        {
+            Directory.Delete(directory.FullName, recursive: true);
+        }
     }
 
     [Fact]
-    public async Task SessionsPrintsWorkspaceTimestampsSizeAndTotalFromOneSnapshot()
+    public async Task SessionsPrintsRealStoreWorkspaceTimestampsSizeAndTotal()
     {
+        var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");
         using var httpClient = new HttpClient(new UnexpectedRequestHandler());
         using var console = new ConsoleCapture();
-        var listCalls = 0;
-        IReadOnlyList<SessionSummary> sessions =
-        [
-            new(
-                "20260823T010203Z-abc123",
-                @"C:\src\wfx",
-                new DateTime(2026, 8, 23, 1, 2, 3, DateTimeKind.Utc),
-                new DateTime(2026, 8, 23, 4, 5, 6, DateTimeKind.Utc),
-                512)
-        ];
-
-        var exitCode = await Program.RunAsync(
-            ["sessions"],
-            httpClient,
-            _ => throw new InvalidOperationException("Session creation must be skipped."),
-            () =>
+        try
+        {
+            var store = new SessionStore(Path.Combine(directory.FullName, "sessions"));
+            const string workspace = @"C:\wfx";
+            using (store.Create(workspace))
             {
-                listCalls++;
-                return sessions;
-            },
-            TestContext.Current.CancellationToken);
+            }
 
-        var output = console.Output.ToString();
-        Assert.Equal(0, exitCode);
-        Assert.Equal(1, listCalls);
-        Assert.Contains("SESSION", output);
-        Assert.Contains("WORKSPACE", output);
-        Assert.Contains("20260823T010203Z-abc123", output);
-        Assert.Contains(@"C:\src\wfx", output);
-        Assert.Contains("2026-08-23 01:02:03", output);
-        Assert.Contains("2026-08-23 04:05:06", output);
-        Assert.Contains("512 B", output);
-        Assert.Contains("1 session(s), 512 B total on disk", output);
-        Assert.Empty(console.ErrorText);
+            var listing = store.List();
+            var summary = Assert.Single(listing.Sessions);
+            Assert.NotNull(summary.CreatedAt);
+            Assert.InRange(summary.SizeBytes, 1, 1023);
+
+            var exitCode = await Program.RunAsync(
+                ["sessions"],
+                httpClient,
+                store,
+                TestContext.Current.CancellationToken);
+
+            var output = console.Output.ToString();
+            Assert.Equal(0, exitCode);
+            Assert.Contains("SESSION", output);
+            Assert.Contains("WORKSPACE", output);
+            Assert.Contains(summary.SessionId, output);
+            Assert.Contains(workspace, output);
+            Assert.Contains(summary.CreatedAt.Value.ToString("yyyy-MM-dd HH:mm:ss"), output);
+            Assert.Contains(summary.UpdatedAt.ToString("yyyy-MM-dd HH:mm:ss"), output);
+            Assert.Contains($"{summary.SizeBytes} B", output);
+            Assert.Contains($"1 session(s), {listing.TotalSizeBytes} B total on disk", output);
+            Assert.Empty(console.ErrorText);
+        }
+        finally
+        {
+            Directory.Delete(directory.FullName, recursive: true);
+        }
     }
 
     [Fact]
@@ -80,12 +83,12 @@ public sealed class SessionListingTests
         var exitCode = await Program.RunAsync(
             ["--help"],
             httpClient,
-            _ => throw new InvalidOperationException("Session creation must be skipped."),
-            () => throw new InvalidOperationException("Session listing must be skipped."),
+            new TestSessionStore(),
             TestContext.Current.CancellationToken);
 
         Assert.Equal(0, exitCode);
         Assert.Contains("wfx sessions [options]", console.Output.ToString());
+        Assert.Contains("sizes, and total", console.Output.ToString());
         Assert.Empty(console.ErrorText);
     }
 

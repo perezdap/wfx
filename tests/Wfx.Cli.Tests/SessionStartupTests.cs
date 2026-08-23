@@ -21,14 +21,13 @@ public sealed class SessionStartupTests
             var exitCode = await Program.RunAsync(
                 RunArguments,
                 httpClient,
-                store.Create,
-                static () => [],
+                store,
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(0, exitCode);
             Assert.Contains("finished", console.Output.ToString());
-            Assert.Contains("wfx: warning: Could not create session:", console.Error.ToString());
-            Assert.Contains("The invocation will continue without a session.", console.Error.ToString());
+            Assert.Contains("wfx: warning: Could not create session:", console.ErrorText);
+            Assert.Contains("The invocation will continue without a session.", console.ErrorText);
             Assert.True(File.Exists(sessionsPath));
         }
         finally
@@ -46,15 +45,14 @@ public sealed class SessionStartupTests
         var exitCode = await Program.RunAsync(
             InteractiveArguments,
             httpClient,
-            _ => throw new UnauthorizedAccessException("session ACL denied"),
-            static () => [],
+            new TestSessionStore(create: _ => throw new UnauthorizedAccessException("session ACL denied")),
             TestContext.Current.CancellationToken);
 
         Assert.Equal(0, exitCode);
         Assert.Contains("finished", console.Output.ToString());
         Assert.Contains(
             "wfx: warning: Could not create session: session ACL denied. The invocation will continue without a session.",
-            console.Error.ToString());
+            console.ErrorText);
     }
 
     [Fact]
@@ -68,11 +66,11 @@ public sealed class SessionStartupTests
         try
         {
             var store = new SessionStore(directory.FullName);
+            var testStore = new TestSessionStore(create: workspace => openedSession = store.Create(workspace));
             var exitCode = await Program.RunAsync(
                 RunArguments,
                 httpClient,
-                workspace => openedSession = store.Create(workspace),
-                static () => [],
+                testStore,
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(1, exitCode);
@@ -103,13 +101,12 @@ public sealed class SessionStartupTests
             var exitCode = await Program.RunAsync(
                 RunArguments,
                 httpClient,
-                store.Create,
-                static () => [],
+                store,
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(0, exitCode);
-            Assert.Contains("wfx: session ", console.Error.ToString());
-            Assert.DoesNotContain("wfx: warning: Could not create session", console.Error.ToString());
+            Assert.Contains("wfx: session ", console.ErrorText);
+            Assert.DoesNotContain("wfx: warning: Could not create session", console.ErrorText);
             Assert.Single(Directory.GetFiles(directory.FullName, "*.jsonl"));
         }
         finally
@@ -125,20 +122,20 @@ public sealed class SessionStartupTests
         using var console = new ConsoleCapture();
         var createCalled = false;
 
+        var store = new TestSessionStore(create: _ =>
+        {
+            createCalled = true;
+            throw new InvalidOperationException("Session creation must be skipped.");
+        });
         var exitCode = await Program.RunAsync(
             NoSessionArguments,
             httpClient,
-            _ =>
-            {
-                createCalled = true;
-                throw new InvalidOperationException("Session creation must be skipped.");
-            },
-            static () => [],
+            store,
             TestContext.Current.CancellationToken);
 
         Assert.Equal(0, exitCode);
         Assert.False(createCalled);
-        Assert.DoesNotContain("session ", console.Error.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("session ", console.ErrorText, StringComparison.OrdinalIgnoreCase);
     }
 
     private static readonly string[] RunArguments =
