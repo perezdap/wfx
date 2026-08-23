@@ -219,7 +219,7 @@ public sealed class OpenAiResponsesProviderTests
     }
 
     [Fact]
-    public async Task ResumedConversationUnderAnotherModelDowngradesAtTheAgentLoopSeam()
+    public async Task ResumedConversationUnderDifferentEndpointSurvivesProviderItemDowngrade()
     {
         const string providerItems = """[{"type":"reasoning","id":"rs-1","encrypted_content":"opaque"}]""";
         var handler = new SequenceStubHandler([
@@ -235,24 +235,33 @@ public sealed class OpenAiResponsesProviderTests
                 """, "text/event-stream")
         ]);
         var provider = CreateProvider(handler);
-        var resumedMessages = new ModelMessage[]
-        {
-            new(ModelRole.System, "instructions"),
-            new(ModelRole.User, "first question"),
-            new(ModelRole.Assistant, "first answer", ProviderItemsJson: providerItems)
-        };
+        var recordedEndpoint = new EndpointIdentity("old-profile", "openai", "responses", "old-model");
+        var resumedEndpoint = new EndpointIdentity("new-profile", "openai", "responses", "new-model");
+        var transcript = new SessionTranscript(
+            "session-id",
+            "session.jsonl",
+            Path.GetTempPath(),
+            DateTimeOffset.UnixEpoch,
+            [
+                new ModelMessage(ModelRole.System, "instructions"),
+                new ModelMessage(ModelRole.User, "first question"),
+                new ModelMessage(ModelRole.Assistant, "first answer", ProviderItemsJson: providerItems)
+            ],
+            recordedEndpoint);
         var agent = new Agent(
             provider,
             new ToolRegistry([]),
             new PolicyApprovalService(ApprovalMode.Never, static (_, _) => ValueTask.FromResult(false)),
             new StaticContextProvider("unused"),
             new SilentObserver(),
-            new AgentOptions(new EndpointIdentity("new-profile", "openai", "responses", "new-model")),
-            Path.GetTempPath(),
-            resumedMessages);
+            new AgentOptions(resumedEndpoint),
+            transcript.Workspace,
+            transcript.Messages);
 
         var result = await agent.RunAsync("second question", TestContext.Current.CancellationToken);
 
+        Assert.Equal(recordedEndpoint, transcript.LastEndpoint);
+        Assert.NotEqual(transcript.LastEndpoint, resumedEndpoint);
         Assert.Equal("continued", result.FinalResponse);
         Assert.Equal(providerItems, result.Messages[2].ProviderItemsJson);
         Assert.Equal(2, handler.RequestBodies.Count);

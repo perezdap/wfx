@@ -71,7 +71,8 @@ internal sealed class SseHttpChannel
     /// Transient statuses (429 and 5xx) are retried with bounded, jittered
     /// backoff, honoring <c>Retry-After</c> when the endpoint sends one. The
     /// request factory runs once per attempt because sent messages cannot be
-    /// replayed. The configured timeout bounds each wait, not the whole stream:
+    /// replayed. A caller-approved rejected response is retried at most once.
+    /// The configured timeout bounds each wait, not the whole stream:
     /// each attempt (headers plus any backoff) gets a fresh window, and so does
     /// every subsequent line read.
     /// </summary>
@@ -144,6 +145,7 @@ internal sealed class SseHttpChannel
         Func<HttpStatusCode, string, bool>? retryRejectedResponse)
     {
         var transientAttempts = 0;
+        var rejectedResponseRetried = false;
         while (true)
         {
             timeoutSource.CancelAfter(_options.Timeout);
@@ -182,8 +184,9 @@ internal sealed class SseHttpChannel
                 }
 
                 var error = await ReadBoundedAsync(response.Content, 64 * 1024, linkedToken).ConfigureAwait(false);
-                if (retryRejectedResponse?.Invoke(response.StatusCode, error) is true)
+                if (!rejectedResponseRetried && retryRejectedResponse?.Invoke(response.StatusCode, error) is true)
                 {
+                    rejectedResponseRetried = true;
                     continue;
                 }
 

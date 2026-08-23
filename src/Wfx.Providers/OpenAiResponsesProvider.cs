@@ -32,19 +32,17 @@ public sealed class OpenAiResponsesProvider : IModelProvider
         var accumulator = new ResponseAccumulator();
         var body = BuildBody(request);
         var canDowngrade = request.Messages.Any(static message => message.ProviderItemsJson is not null);
-        var downgraded = false;
         await foreach (var data in _channel.ReadDataEventsAsync(
                            () => _channel.CreateRequest("/responses", body),
                            cancellationToken,
                            (statusCode, error) =>
                            {
-                               if (downgraded || !canDowngrade || !IsInvalidEncryptedContent(statusCode, error))
+                               if (!canDowngrade || !IsInvalidEncryptedContent(statusCode, error))
                                {
                                    return false;
                                }
 
                                body = BuildBody(request with { Messages = ProviderItemDowngrade.Strip(request.Messages) });
-                               downgraded = true;
                                return true;
                            }).ConfigureAwait(false))
         {

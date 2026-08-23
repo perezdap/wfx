@@ -34,6 +34,9 @@ public sealed record ModelSwitchResult(WfxSettings? Settings, bool TransportChan
     }
 }
 
+/// <summary>
+/// Removes endpoint-bound provider items while preserving portable conversation content.
+/// </summary>
 public static class ProviderItemDowngrade
 {
     public static IReadOnlyList<ModelMessage> Strip(IReadOnlyList<ModelMessage> conversation)
