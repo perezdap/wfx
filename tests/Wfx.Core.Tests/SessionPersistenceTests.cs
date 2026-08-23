@@ -269,6 +269,25 @@ public sealed class SessionPersistenceTests
     }
 
     [Fact]
+    public void ReaderSkipsWhitespaceOnlyLinesBetweenEvents()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string id = "20260822T150405Z-whitespace";
+        var path = Path.Combine(sessions.Path, id + ".jsonl");
+        File.WriteAllText(
+            path,
+            Header(id, workspace.Path) + "\n" +
+            """{"type":"message","role":"user","content":"first"}""" + "\n" +
+            "  \t  \n" +
+            """{"type":"message","role":"user","content":"second"}""" + "\n");
+
+        var transcript = store.Read(id);
+        Assert.Equal(["first", "second"], transcript.Messages.Select(static message => message.Content));
+    }
+
+    [Fact]
     public void ReaderDiscardsAnUnterminatedFinalEvent()
     {
         using var sessions = new TemporaryDirectory();

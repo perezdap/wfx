@@ -32,7 +32,8 @@ internal static class Program
         string[] args,
         HttpClient httpClient,
         ISessionStore sessionStore,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? userProfile = null)
     {
         try
         {
@@ -62,10 +63,21 @@ internal static class Program
             if (arguments.Command == CliCommand.Resume)
             {
                 transcript = SelectTranscript(arguments, workspace, sessionStore);
+                if (arguments.Settings.Profile is not null && transcript.LastEndpoint is not null)
+                {
+                    Console.Error.WriteLine(
+                        $"wfx: profile '{arguments.Settings.Profile}' overrides the recorded endpoint for this resumed session.");
+                }
+
                 settingsLayer = ResumeSettingsLayer(arguments.Settings, transcript.LastEndpoint);
             }
 
-            var settings = LoadSettings(workspace.Root, settingsLayer, arguments.Settings, transcript?.LastEndpoint);
+            var settings = LoadSettings(
+                workspace.Root,
+                settingsLayer,
+                arguments.Settings,
+                transcript?.LastEndpoint,
+                userProfile);
             foreach (var warning in settings.Warnings)
             {
                 Console.Error.WriteLine($"wfx: warning: {warning}");
@@ -261,11 +273,12 @@ internal static class Program
         string workspaceRoot,
         WfxSettingsLayer layer,
         WfxSettingsLayer cliOnly,
-        EndpointIdentity? recordedEndpoint)
+        EndpointIdentity? recordedEndpoint,
+        string? userProfile)
     {
         try
         {
-            return WfxConfiguration.Load(workspaceRoot, layer);
+            return WfxConfiguration.Load(workspaceRoot, layer, userProfile: userProfile);
         }
         catch (UndefinedProfileException)
             when (recordedEndpoint?.Profile is not null &&
@@ -274,7 +287,7 @@ internal static class Program
         {
             Console.Error.WriteLine(
                 $"wfx: recorded profile '{recordedEndpoint.Profile}' is no longer configured; using current settings instead.");
-            return WfxConfiguration.Load(workspaceRoot, cliOnly);
+            return WfxConfiguration.Load(workspaceRoot, cliOnly, userProfile: userProfile);
         }
     }
 
@@ -282,7 +295,7 @@ internal static class Program
         WfxSettingsLayer cli,
         EndpointIdentity? recordedEndpoint)
     {
-        if (recordedEndpoint is null)
+        if (recordedEndpoint is null || cli.Profile is not null)
         {
             return cli;
         }

@@ -291,6 +291,135 @@ public sealed class SessionStartupTests
         }
     }
 
+    [Fact]
+    public async Task ResumeResolvesRecordedProfileAndRestoresItsEndpointIdentity()
+    {
+        using var httpClient = CreateHttpClient();
+        using var console = new ConsoleCapture("next\n/exit\n");
+        var userProfile = Directory.CreateTempSubdirectory("wfx-cli-profile-");
+        var configDirectory = Directory.CreateDirectory(Path.Combine(userProfile.FullName, ".wfx"));
+        File.WriteAllText(
+            Path.Combine(configDirectory.FullName, "config.json"),
+            """
+            {
+              "profiles": {
+                "recorded": {
+                  "provider": "local",
+                  "protocol": "chat_completions",
+                  "base_url": "https://recorded.example/v1",
+                  "model": "recorded-profile-model"
+                }
+              }
+            }
+            """);
+        var sessions = Directory.CreateTempSubdirectory("wfx-cli-tests-");
+        var store = new SessionStore(sessions.FullName);
+        var workspace = WorkspaceInfo.Discover().Root;
+        SessionLog? created = null;
+        try
+        {
+            created = store.Create(workspace);
+            var recorder = new SessionRecorder(created);
+            await recorder.OnTurnStartedAsync(
+                new EndpointIdentity("recorded", "local", "chat_completions", "recorded-profile-model"),
+                CancellationToken.None);
+            await recorder.OnMessageAsync(new ModelMessage(ModelRole.User, "previous"), CancellationToken.None);
+            created.Dispose();
+
+            var exitCode = await Program.RunAsync(
+                ["resume", "--id", created.Id],
+                httpClient,
+                new TestSessionStore(store),
+                TestContext.Current.CancellationToken,
+                userProfile.FullName);
+
+            Assert.Equal(0, exitCode);
+            var turnLines = File.ReadAllLines(created.FilePath)
+                .Where(static line => line.Contains("\"type\":\"turn_started\"", StringComparison.Ordinal))
+                .ToArray();
+            using var turn = JsonDocument.Parse(turnLines[^1]);
+            Assert.Equal("recorded", turn.RootElement.GetProperty("profile").GetString());
+            Assert.Equal("local", turn.RootElement.GetProperty("provider").GetString());
+            Assert.Equal("chat_completions", turn.RootElement.GetProperty("protocol").GetString());
+            Assert.Equal("recorded-profile-model", turn.RootElement.GetProperty("model").GetString());
+        }
+        finally
+        {
+            created?.Dispose();
+            Directory.Delete(sessions.FullName, recursive: true);
+            Directory.Delete(userProfile.FullName, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ResumeExplicitProfileOverridesRecordedEndpoint()
+    {
+        using var httpClient = CreateHttpClient();
+        using var console = new ConsoleCapture("next\n/exit\n");
+        var userProfile = Directory.CreateTempSubdirectory("wfx-cli-profile-");
+        var configDirectory = Directory.CreateDirectory(Path.Combine(userProfile.FullName, ".wfx"));
+        File.WriteAllText(
+            Path.Combine(configDirectory.FullName, "config.json"),
+            """
+            {
+              "profiles": {
+                "recorded": {
+                  "provider": "local",
+                  "protocol": "chat_completions",
+                  "base_url": "https://recorded.example/v1",
+                  "model": "recorded-model"
+                },
+                "other": {
+                  "provider": "local",
+                  "protocol": "chat_completions",
+                  "base_url": "https://other.example/v1",
+                  "model": "other-model"
+                }
+              }
+            }
+            """);
+        var sessions = Directory.CreateTempSubdirectory("wfx-cli-tests-");
+        var store = new SessionStore(sessions.FullName);
+        var workspace = WorkspaceInfo.Discover().Root;
+        SessionLog? created = null;
+        try
+        {
+            created = store.Create(workspace);
+            var recorder = new SessionRecorder(created);
+            await recorder.OnTurnStartedAsync(
+                new EndpointIdentity("recorded", "local", "chat_completions", "recorded-model"),
+                CancellationToken.None);
+            await recorder.OnMessageAsync(new ModelMessage(ModelRole.User, "previous"), CancellationToken.None);
+            created.Dispose();
+
+            var exitCode = await Program.RunAsync(
+                ["resume", "--id", created.Id, "--profile", "other"],
+                httpClient,
+                new TestSessionStore(store),
+                TestContext.Current.CancellationToken,
+                userProfile.FullName);
+
+            Assert.Equal(0, exitCode);
+            Assert.Contains(
+                "wfx: profile 'other' overrides the recorded endpoint for this resumed session.",
+                console.Error.ToString());
+            var turnLines = File.ReadAllLines(created.FilePath)
+                .Where(static line => line.Contains("\"type\":\"turn_started\"", StringComparison.Ordinal))
+                .ToArray();
+            using var turn = JsonDocument.Parse(turnLines[^1]);
+            Assert.Equal("other", turn.RootElement.GetProperty("profile").GetString());
+            Assert.Equal("local", turn.RootElement.GetProperty("provider").GetString());
+            Assert.Equal("chat_completions", turn.RootElement.GetProperty("protocol").GetString());
+            Assert.Equal("other-model", turn.RootElement.GetProperty("model").GetString());
+        }
+        finally
+        {
+            created?.Dispose();
+            Directory.Delete(sessions.FullName, recursive: true);
+            Directory.Delete(userProfile.FullName, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData(false, "recorded-model")]
     [InlineData(true, "explicit-model")]

@@ -7,6 +7,37 @@ using System.Text.Json;
 
 namespace Wfx.Core;
 
+internal static class SessionMessageRoles
+{
+    private static readonly IReadOnlyDictionary<ModelRole, string> Names = new Dictionary<ModelRole, string>
+    {
+        [ModelRole.System] = "system",
+        [ModelRole.User] = "user",
+        [ModelRole.Assistant] = "assistant",
+        [ModelRole.Tool] = "tool"
+    };
+
+    public static string Name(ModelRole role) =>
+        Names.TryGetValue(role, out var name)
+            ? name
+            : throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown message role.");
+
+    public static bool TryParse(string name, out ModelRole role)
+    {
+        foreach (var pair in Names)
+        {
+            if (string.Equals(pair.Value, name, StringComparison.Ordinal))
+            {
+                role = pair.Key;
+                return true;
+            }
+        }
+
+        role = default;
+        return false;
+    }
+}
+
 public interface ISessionStore
 {
     SessionLog Create(string workspaceRoot);
@@ -52,11 +83,7 @@ public sealed class SessionStore : ISessionStore
 
     public SessionLog Open(string sessionId)
     {
-        var path = SessionPath(sessionId);
-        if (!File.Exists(path))
-        {
-            throw new FileNotFoundException($"No session with ID '{sessionId}'.", path);
-        }
+        var path = ExistingSessionPath(sessionId);
 
         try
         {
@@ -70,11 +97,7 @@ public sealed class SessionStore : ISessionStore
 
     public SessionTranscript Read(string sessionId)
     {
-        var path = SessionPath(sessionId);
-        if (!File.Exists(path))
-        {
-            throw new FileNotFoundException($"No session with ID '{sessionId}'.", path);
-        }
+        var path = ExistingSessionPath(sessionId);
 
         var lines = ReadCompleteLines(path);
         if (lines.Count == 0)
@@ -129,6 +152,11 @@ public sealed class SessionStore : ISessionStore
             EndpointIdentity? lastEndpoint = null;
             for (var index = 1; index < lines.Count; index++)
             {
+                if (string.IsNullOrWhiteSpace(lines[index]))
+                {
+                    continue;
+                }
+
                 JsonDocument document;
                 try
                 {
@@ -163,9 +191,6 @@ public sealed class SessionStore : ISessionStore
                         case "header":
                             throw new InvalidDataException(
                                 $"Session '{sessionId}' contains a second header on line {index + 1}.");
-                        case "usage":
-                        case "interrupted":
-                        case "error":
                         default:
                             // Version 1 vocabulary: turn_started, message, usage, interrupted, error.
                             // Unknown event types are ignored for forward-compatible reads.
@@ -284,6 +309,17 @@ public sealed class SessionStore : ISessionStore
         return Path.Combine(_directory, sessionId + ".jsonl");
     }
 
+    private string ExistingSessionPath(string sessionId)
+    {
+        var path = SessionPath(sessionId);
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException($"No session with ID '{sessionId}'.", path);
+        }
+
+        return path;
+    }
+
     private static IReadOnlyList<string> ReadCompleteLines(string path)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -313,15 +349,12 @@ public sealed class SessionStore : ISessionStore
 
     private static ModelMessage ReadMessage(JsonElement root, string sessionId, int line)
     {
-        var role = RequiredString(root, "role", sessionId, "message", line) switch
+        var roleName = RequiredString(root, "role", sessionId, "message", line);
+        if (!SessionMessageRoles.TryParse(roleName, out var role))
         {
-            "system" => ModelRole.System,
-            "user" => ModelRole.User,
-            "assistant" => ModelRole.Assistant,
-            "tool" => ModelRole.Tool,
-            var value => throw new InvalidDataException(
-                $"Session '{sessionId}' has unknown message role '{value}' on line {line}.")
-        };
+            throw new InvalidDataException(
+                $"Session '{sessionId}' has unknown message role '{roleName}' on line {line}.");
+        }
 
         List<ModelToolCall>? toolCalls = null;
         if (root.TryGetProperty("tool_calls", out var toolCallsElement))
@@ -679,14 +712,7 @@ public sealed class SessionLog : IDisposable
         }
     }
 
-    private static string RoleName(ModelRole role) => role switch
-    {
-        ModelRole.System => "system",
-        ModelRole.User => "user",
-        ModelRole.Assistant => "assistant",
-        ModelRole.Tool => "tool",
-        _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown message role.")
-    };
+    private static string RoleName(ModelRole role) => SessionMessageRoles.Name(role);
 }
 
 /// <summary>
