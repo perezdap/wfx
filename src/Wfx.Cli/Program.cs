@@ -39,6 +39,13 @@ internal static class Program
                 return 0;
             }
 
+            // Session listing needs no model or workspace config, so it runs before settings
+            // resolution, which can throw on an unconfigured endpoint.
+            if (arguments.Command == CliCommand.Sessions)
+            {
+                return PrintSessions();
+            }
+
             var workspace = WorkspaceInfo.Discover();
             var settings = WfxConfiguration.Load(workspace.Root, arguments.Settings);
             foreach (var warning in settings.Warnings)
@@ -456,6 +463,60 @@ internal static class Program
         return 0;
     }
 
+    private static int PrintSessions()
+    {
+        var store = new SessionStore();
+        var sessions = store.List();
+
+        if (sessions.Count == 0)
+        {
+            Console.WriteLine("No sessions.");
+            Console.WriteLine($"Total on disk: {FormatBytes(0)}");
+            return 0;
+        }
+
+        Console.WriteLine($"{"SESSION",-22} {"WORKSPACE",-40} {"CREATED (UTC)",-21} {"UPDATED (UTC)",-21} {"SIZE"}");
+        foreach (var session in sessions)
+        {
+            Console.WriteLine(
+                $"{session.SessionId,-22} {Truncate(session.Workspace ?? "(unknown)", 40),-40} " +
+                $"{FormatTimestamp(session.CreatedAt),-21} {FormatTimestamp(session.UpdatedAt),-21} {FormatBytes(session.SizeBytes)}");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"{sessions.Count} session(s), {FormatBytes(store.TotalSizeBytes())} total on disk");
+        return 0;
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024)
+        {
+            return $"{bytes} B";
+        }
+
+        var value = bytes / 1024.0;
+        if (value < 1024)
+        {
+            return $"{value:F1} KB";
+        }
+
+        value /= 1024;
+        if (value < 1024)
+        {
+            return $"{value:F1} MB";
+        }
+
+        value /= 1024;
+        return $"{value:F1} GB";
+    }
+
+    private static string FormatTimestamp(DateTime? timestamp) =>
+        timestamp?.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "unknown";
+
+    private static string Truncate(string value, int width) =>
+        value.Length <= width ? value : value[..(width - 1)] + "...";
+
     private static void EnsureRunnable(WfxSettings settings)
     {
         if (string.IsNullOrWhiteSpace(settings.Model))
@@ -474,6 +535,7 @@ internal static class Program
               wfx run [options] <prompt>    Run one task
               wfx models [options]          Show provider/model configuration
               wfx config [options]          Inspect effective configuration
+              wfx sessions [options]        List sessions with workspace, timestamps, and size
 
             Options:
               --model <model>               Model ID; openrouter/<id> selects OpenRouter

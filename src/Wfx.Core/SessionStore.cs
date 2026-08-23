@@ -71,6 +71,103 @@ public sealed class SessionStore
         throw new IOException($"Could not create a unique session file under '{_directory}'.", lastCollision);
     }
 
+    /// <summary>
+    /// Lock-free listing of every session under the store root. Reads no locks, so it succeeds
+    /// while another process is appending to a session. Malformed or unreadable files are skipped.
+    /// </summary>
+    public IReadOnlyList<SessionSummary> List()
+    {
+        if (!Directory.Exists(_directory))
+        {
+            return [];
+        }
+
+        var summaries = new List<SessionSummary>();
+        foreach (var file in Directory.EnumerateFiles(_directory, "*.jsonl"))
+        {
+            var summary = ReadSummary(file);
+            if (summary is not null)
+            {
+                summaries.Add(summary);
+            }
+        }
+
+        summaries.Sort(static (left, right) => right.UpdatedAt.CompareTo(left.UpdatedAt));
+        return summaries;
+    }
+
+    /// <summary>Total bytes on disk consumed by the session store.</summary>
+    public long TotalSizeBytes()
+    {
+        long total = 0;
+        foreach (var summary in List())
+        {
+            total += summary.SizeBytes;
+        }
+
+        return total;
+    }
+
+    private static SessionSummary? ReadSummary(string path)
+    {
+        // The header is always line 1 and is written once before any event, so reading just the
+        // first line is safe even while another process appends to the same file. An open log
+        // holds the file with FileShare.Read + FileAccess.Write, so a reader must share Write
+        // (FileShare.ReadWrite) or the open is refused; reads stay lock-free.
+        try
+        {
+            using var reader = new StreamReader(
+                new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite));
+            var headerLine = reader.ReadLine();
+            if (string.IsNullOrWhiteSpace(headerLine))
+            {
+                return null;
+            }
+
+            using var document = JsonDocument.Parse(headerLine);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("type", out var type) || type.GetString() != "header")
+            {
+                return null;
+            }
+
+            var info = new FileInfo(path);
+            var sessionId = root.TryGetProperty("session_id", out var sessionIdProperty)
+                ? sessionIdProperty.GetString()
+                : null;
+            var workspace = root.TryGetProperty("workspace", out var workspaceProperty)
+                ? workspaceProperty.GetString()
+                : null;
+            var createdAt = root.TryGetProperty("created_at", out var createdProperty)
+                && DateTimeOffset.TryParse(
+                    createdProperty.GetString(),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal,
+                    out var createdOffset)
+                    ? (DateTime?)createdOffset.UtcDateTime
+                    : null;
+
+            return new SessionSummary(
+                sessionId ?? Path.GetFileNameWithoutExtension(path),
+                workspace,
+                createdAt,
+                info.LastWriteTimeUtc,
+                info.Length);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     private void EnsureDirectory()
     {
         if (OperatingSystem.IsWindows())
@@ -303,3 +400,13 @@ public sealed class SessionLog : IDisposable
         _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown message role.")
     };
 }
+
+/// <summary>
+/// One line of a session file, enough to list a session without loading its transcript.
+/// </summary>
+public sealed record SessionSummary(
+    string SessionId,
+    string? Workspace,
+    DateTime? CreatedAt,
+    DateTime UpdatedAt,
+    long SizeBytes);
