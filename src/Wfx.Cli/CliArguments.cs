@@ -8,13 +8,15 @@ internal enum CliCommand
     Run,
     Models,
     Config,
-    Sessions
+    Sessions,
+    Resume
 }
 
 internal sealed record CliArguments(
     CliCommand Command,
     string? Prompt,
     WfxSettingsLayer Settings,
+    string? SessionId,
     bool Verbose,
     bool Debug,
     bool NoSession,
@@ -30,6 +32,7 @@ internal sealed record CliArguments(
         string? baseUrl = null;
         string? model = null;
         string? profile = null;
+        string? sessionId = null;
         int? timeout = null;
         int? maxIterations = null;
         ApprovalMode? approval = null;
@@ -60,6 +63,9 @@ internal sealed record CliArguments(
                     break;
                 case "--no-session":
                     noSession = true;
+                    break;
+                case "--id":
+                    sessionId = RequireValue(args, ref index, argument);
                     break;
                 case "--provider":
                     provider = RequireValue(args, ref index, argument);
@@ -109,6 +115,10 @@ internal sealed record CliArguments(
                     command = CliCommand.Sessions;
                     commandSelected = true;
                     break;
+                case "resume" when !commandSelected:
+                    command = CliCommand.Resume;
+                    commandSelected = true;
+                    break;
                 default:
                     if (argument.StartsWith("-", StringComparison.Ordinal))
                     {
@@ -131,6 +141,16 @@ internal sealed record CliArguments(
             throw new ArgumentException("The run command requires a prompt.");
         }
 
+        if (sessionId is not null && command != CliCommand.Resume)
+        {
+            throw new ArgumentException("--id is only valid with 'wfx resume'.");
+        }
+
+        if (command == CliCommand.Resume && noSession)
+        {
+            throw new ArgumentException("'resume' cannot be combined with --no-session.");
+        }
+
         return new CliArguments(
             command,
             prompt,
@@ -145,6 +165,7 @@ internal sealed record CliArguments(
                 MaxIterations = maxIterations,
                 Approval = approval
             },
+            sessionId,
             verbose,
             debug,
             noSession,

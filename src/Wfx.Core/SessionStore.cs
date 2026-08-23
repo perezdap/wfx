@@ -7,12 +7,68 @@ using System.Text.Json;
 
 namespace Wfx.Core;
 
+internal static class SessionMessageRoles
+{
+    private static readonly IReadOnlyDictionary<ModelRole, string> Names = new Dictionary<ModelRole, string>
+    {
+        [ModelRole.System] = "system",
+        [ModelRole.User] = "user",
+        [ModelRole.Assistant] = "assistant",
+        [ModelRole.Tool] = "tool"
+    };
+
+    public static string Name(ModelRole role) =>
+        Names.TryGetValue(role, out var name)
+            ? name
+            : throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown message role.");
+
+    public static bool TryParse(string name, out ModelRole role)
+    {
+        foreach (var pair in Names)
+        {
+            if (string.Equals(pair.Value, name, StringComparison.Ordinal))
+            {
+                role = pair.Key;
+                return true;
+            }
+        }
+
+        role = default;
+        return false;
+    }
+}
+
+public interface ISessionStore
+{
+    SessionLog Create(string workspaceRoot);
+
+    SessionLog Open(string sessionId);
+
+    SessionTranscript Read(string sessionId);
+
+    IReadOnlyList<SessionSummary> List();
+
+    long TotalSizeBytes();
+
+    SessionSummary? FindLatest(string workspaceRoot);
+}
+
+public sealed record SessionTranscript(
+    string SessionId,
+    string FilePath,
+    string Workspace,
+    DateTimeOffset CreatedAt,
+    IReadOnlyList<ModelMessage> Messages,
+    EndpointIdentity? LastEndpoint);
+
 /// <summary>
 /// Creates append-only JSONL session logs under a per-user sessions directory.
 /// Line 1 is a <c>header</c>; every later line is one event.
 /// </summary>
-public sealed class SessionStore
+public sealed class SessionStore : ISessionStore
 {
+    private const int TailScanChunkSize = 64 * 1024;
+
     public const int SchemaVersion = 1;
 
     private readonly string _directory;
@@ -26,6 +82,145 @@ public sealed class SessionStore
 
     public static string DefaultDirectory() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".wfx", "sessions");
+
+    public SessionLog Open(string sessionId)
+    {
+        var path = ExistingSessionPath(sessionId);
+        FileStream? stream = null;
+
+        try
+        {
+            stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
+            TruncateIncompleteTail(stream);
+            return new SessionLog(sessionId, path, stream);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            stream?.Dispose();
+            throw new IOException($"Could not reopen session '{sessionId}' for append: {exception.Message}", exception);
+        }
+    }
+
+    public SessionTranscript Read(string sessionId)
+    {
+        var path = ExistingSessionPath(sessionId);
+
+        var lines = ReadCompleteLines(path);
+        if (lines.Count == 0)
+        {
+            throw new InvalidDataException($"Session '{sessionId}' is empty; a header is required.");
+        }
+
+        JsonDocument headerDocument;
+        try
+        {
+            headerDocument = JsonDocument.Parse(lines[0]);
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException($"Session '{sessionId}' has an invalid header: {exception.Message}", exception);
+        }
+
+        using (headerDocument)
+        {
+            var header = headerDocument.RootElement;
+            if (header.ValueKind != JsonValueKind.Object ||
+                !header.TryGetProperty("type", out var type) ||
+                type.GetString() != "header")
+            {
+                throw new InvalidDataException($"Session '{sessionId}' must begin with a header event.");
+            }
+
+            if (!header.TryGetProperty("schema_version", out var schemaVersionProperty) ||
+                !schemaVersionProperty.TryGetInt32(out var schemaVersion))
+            {
+                throw new InvalidDataException($"Session '{sessionId}' header has no valid schema_version.");
+            }
+
+            if (schemaVersion > SchemaVersion)
+            {
+                throw new InvalidDataException(
+                    $"Session '{sessionId}' uses schema_version {schemaVersion}, but this build supports version {SchemaVersion}. Upgrade WFX to resume it.");
+            }
+
+            var workspace = RequiredString(header, "workspace", sessionId, "header");
+            var createdAtText = RequiredString(header, "created_at", sessionId, "header");
+            if (!DateTimeOffset.TryParse(
+                    createdAtText,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal,
+                    out var createdAt))
+            {
+                throw new InvalidDataException($"Session '{sessionId}' header has an invalid created_at value.");
+            }
+
+            var messages = new List<ModelMessage>();
+            EndpointIdentity? lastEndpoint = null;
+            for (var index = 1; index < lines.Count; index++)
+            {
+                if (string.IsNullOrWhiteSpace(lines[index]))
+                {
+                    continue;
+                }
+
+                JsonDocument document;
+                try
+                {
+                    document = JsonDocument.Parse(lines[index]);
+                }
+                catch (JsonException exception)
+                {
+                    throw new InvalidDataException(
+                        $"Session '{sessionId}' has malformed JSON on line {index + 1}: {exception.Message}",
+                        exception);
+                }
+
+                using (document)
+                {
+                    var eventRoot = document.RootElement;
+                    if (eventRoot.ValueKind != JsonValueKind.Object ||
+                        !eventRoot.TryGetProperty("type", out var eventType) ||
+                        eventType.ValueKind != JsonValueKind.String)
+                    {
+                        throw new InvalidDataException(
+                            $"Session '{sessionId}' has an event without a valid type on line {index + 1}.");
+                    }
+
+                    switch (eventType.GetString())
+                    {
+                        case "turn_started":
+                            lastEndpoint = ReadEndpoint(eventRoot, sessionId, index + 1);
+                            break;
+                        case "message":
+                            messages.Add(ReadMessage(eventRoot, sessionId, index + 1));
+                            break;
+                        case "header":
+                            throw new InvalidDataException(
+                                $"Session '{sessionId}' contains a second header on line {index + 1}.");
+                        default:
+                            // Version 1 vocabulary: turn_started, message, usage, interrupted, error.
+                            // Unknown event types are ignored for forward-compatible reads.
+                            break;
+                    }
+                }
+            }
+
+            return new SessionTranscript(
+                sessionId,
+                path,
+                workspace,
+                createdAt,
+                messages,
+                lastEndpoint);
+        }
+    }
+
+    public SessionSummary? FindLatest(string workspaceRoot)
+    {
+        var workspace = Path.GetFullPath(workspaceRoot);
+        return List().FirstOrDefault(summary =>
+            summary.Workspace is not null && IsSameWorkspace(summary.Workspace, workspace));
+    }
 
     public SessionLog Create(string workspaceRoot)
     {
@@ -106,6 +301,190 @@ public sealed class SessionStore
         }
 
         return total;
+    }
+
+    private string SessionPath(string sessionId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        if (sessionId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+            !string.Equals(Path.GetFileName(sessionId), sessionId, StringComparison.Ordinal))
+        {
+            throw new FileNotFoundException($"No session with ID '{sessionId}'.");
+        }
+
+        return Path.Combine(_directory, sessionId + ".jsonl");
+    }
+
+    private string ExistingSessionPath(string sessionId)
+    {
+        var path = SessionPath(sessionId);
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException($"No session with ID '{sessionId}'.", path);
+        }
+
+        return path;
+    }
+
+    private static IReadOnlyList<string> ReadCompleteLines(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+        var text = reader.ReadToEnd();
+        if (text.Length == 0)
+        {
+            return [];
+        }
+
+        var lines = text.Split('\n').ToList();
+        lines.RemoveAt(lines.Count - 1);
+
+        return lines
+            .Select(static line => line.EndsWith('\r') ? line[..^1] : line)
+            .ToArray();
+    }
+
+    private static void TruncateIncompleteTail(FileStream stream)
+    {
+        var length = stream.Length;
+        if (length == 0)
+        {
+            throw new IOException("Session file is empty and has no complete newline-terminated event.");
+        }
+
+        stream.Position = length - 1;
+        if (stream.ReadByte() == '\n')
+        {
+            stream.Position = length;
+            return;
+        }
+
+        var buffer = new byte[(int)Math.Min(TailScanChunkSize, length)];
+        var end = length;
+        while (end > 0)
+        {
+            var start = Math.Max(0, end - buffer.Length);
+            var count = (int)(end - start);
+            stream.Position = start;
+            var offset = 0;
+            while (offset < count)
+            {
+                var read = stream.Read(buffer, offset, count - offset);
+                if (read == 0)
+                {
+                    throw new IOException("Session file could not be scanned for a complete event.");
+                }
+
+                offset += read;
+            }
+
+            for (var index = count - 1; index >= 0; index--)
+            {
+                if (buffer[index] == '\n')
+                {
+                    var truncateAt = start + index + 1;
+                    stream.SetLength(truncateAt);
+                    stream.Position = truncateAt;
+                    return;
+                }
+            }
+
+            end = start;
+        }
+
+        throw new IOException("Session file has no complete newline-terminated event.");
+    }
+
+    private static EndpointIdentity ReadEndpoint(JsonElement root, string sessionId, int line)
+    {
+        return new EndpointIdentity(
+            OptionalString(root, "profile", sessionId, line),
+            RequiredString(root, "provider", sessionId, "turn_started", line),
+            RequiredString(root, "protocol", sessionId, "turn_started", line),
+            RequiredString(root, "model", sessionId, "turn_started", line));
+    }
+
+    private static ModelMessage ReadMessage(JsonElement root, string sessionId, int line)
+    {
+        var roleName = RequiredString(root, "role", sessionId, "message", line);
+        if (!SessionMessageRoles.TryParse(roleName, out var role))
+        {
+            throw new InvalidDataException(
+                $"Session '{sessionId}' has unknown message role '{roleName}' on line {line}.");
+        }
+
+        List<ModelToolCall>? toolCalls = null;
+        if (root.TryGetProperty("tool_calls", out var toolCallsElement))
+        {
+            if (toolCallsElement.ValueKind != JsonValueKind.Array)
+            {
+                throw new InvalidDataException($"Session '{sessionId}' has invalid tool_calls on line {line}.");
+            }
+
+            toolCalls = [];
+            foreach (var call in toolCallsElement.EnumerateArray())
+            {
+                toolCalls.Add(new ModelToolCall(
+                    RequiredString(call, "id", sessionId, "tool call", line),
+                    RequiredString(call, "name", sessionId, "tool call", line),
+                    RequiredString(call, "arguments", sessionId, "tool call", line)));
+            }
+        }
+
+        string? providerItems = null;
+        if (root.TryGetProperty("provider_items", out var providerItemsElement))
+        {
+            providerItems = providerItemsElement.GetRawText();
+        }
+
+        return new ModelMessage(
+            role,
+            OptionalString(root, "content", sessionId, line),
+            toolCalls,
+            OptionalString(root, "tool_call_id", sessionId, line),
+            OptionalString(root, "name", sessionId, line),
+            providerItems);
+    }
+
+    private static string RequiredString(JsonElement root, string name, string sessionId, string eventName, int? line = null)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.String ||
+            string.IsNullOrEmpty(value.GetString()))
+        {
+            var location = line is null ? "header" : $"line {line}";
+            throw new InvalidDataException($"Session '{sessionId}' has an invalid {name} in {eventName} on {location}.");
+        }
+
+        return value.GetString()!;
+    }
+
+    private static string? OptionalString(JsonElement root, string name, string sessionId, int line) =>
+        root.ValueKind != JsonValueKind.Object ||
+        !root.TryGetProperty(name, out var value) || value.ValueKind == JsonValueKind.Null
+            ? null
+            : value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : throw new InvalidDataException(
+                    $"Session '{sessionId}' event property '{name}' must be a string or null on line {line}.");
+
+    private static bool IsSameWorkspace(string recordedWorkspace, string workspace)
+    {
+        try
+        {
+            return string.Equals(
+                Path.GetFullPath(recordedWorkspace),
+                workspace,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (NotSupportedException)
+        {
+            return false;
+        }
     }
 
     private static SessionSummary? ReadSummary(string path)
@@ -306,8 +685,7 @@ public sealed class SessionLog : IDisposable
             if (!string.IsNullOrEmpty(message.ProviderItemsJson))
             {
                 writer.WritePropertyName("provider_items");
-                using var items = JsonDocument.Parse(message.ProviderItemsJson);
-                items.RootElement.WriteTo(writer);
+                writer.WriteRawValue(message.ProviderItemsJson);
             }
         });
 
@@ -391,14 +769,7 @@ public sealed class SessionLog : IDisposable
         }
     }
 
-    private static string RoleName(ModelRole role) => role switch
-    {
-        ModelRole.System => "system",
-        ModelRole.User => "user",
-        ModelRole.Assistant => "assistant",
-        ModelRole.Tool => "tool",
-        _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown message role.")
-    };
+    private static string RoleName(ModelRole role) => SessionMessageRoles.Name(role);
 }
 
 /// <summary>

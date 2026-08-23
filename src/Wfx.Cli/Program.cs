@@ -25,14 +25,15 @@ internal static class Program
         };
 
         using var httpClient = CreateHttpClient();
-        return await RunAsync(args, httpClient, new SessionStore().Create, shutdown.Token).ConfigureAwait(false);
+        return await RunAsync(args, httpClient, new SessionStore(), shutdown.Token).ConfigureAwait(false);
     }
 
     internal static async Task<int> RunAsync(
         string[] args,
         HttpClient httpClient,
-        Func<string, SessionLog> createSession,
-        CancellationToken cancellationToken)
+        ISessionStore sessionStore,
+        CancellationToken cancellationToken,
+        string? userProfile = null)
     {
         try
         {
@@ -53,11 +54,35 @@ internal static class Program
             // resolution, which can throw on an unconfigured endpoint.
             if (arguments.Command == CliCommand.Sessions)
             {
-                return PrintSessions();
+                return PrintSessions(sessionStore);
             }
 
             var workspace = WorkspaceInfo.Discover();
-            var settings = WfxConfiguration.Load(workspace.Root, arguments.Settings);
+            SessionTranscript? transcript = null;
+            var settingsLayer = arguments.Settings;
+            if (arguments.Command == CliCommand.Resume)
+            {
+                transcript = SelectTranscript(arguments, workspace, sessionStore);
+                if (arguments.Settings.Profile is not null &&
+                    transcript.LastEndpoint is not null &&
+                    !string.Equals(
+                        arguments.Settings.Profile,
+                        transcript.LastEndpoint.Profile,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.Error.WriteLine(
+                        $"wfx: profile '{arguments.Settings.Profile}' overrides the recorded endpoint for this resumed session.");
+                }
+
+                settingsLayer = ResumeSettingsLayer(arguments.Settings, transcript.LastEndpoint);
+            }
+
+            var settings = LoadSettings(
+                workspace.Root,
+                settingsLayer,
+                arguments.Settings,
+                transcript?.LastEndpoint,
+                userProfile);
             foreach (var warning in settings.Warnings)
             {
                 Console.Error.WriteLine($"wfx: warning: {warning}");
@@ -66,12 +91,14 @@ internal static class Program
             return arguments.Command switch
             {
                 CliCommand.Models => PrintModels(settings, workspace),
-                CliCommand.Config => PrintConfig(settings, workspace),
+                CliCommand.Config => PrintConfig(settings, workspace, userProfile),
                 CliCommand.Run => await RunOnceAsync(
-                    arguments.Prompt!, settings, workspace, arguments, httpClient, createSession, cancellationToken)
+                    arguments.Prompt!, settings, workspace, arguments, httpClient, sessionStore, cancellationToken)
                     .ConfigureAwait(false),
+                CliCommand.Resume => await RunInteractiveAsync(
+                    settings, workspace, arguments, httpClient, sessionStore, transcript, cancellationToken).ConfigureAwait(false),
                 _ => await RunInteractiveAsync(
-                    settings, workspace, arguments, httpClient, createSession, cancellationToken).ConfigureAwait(false)
+                    settings, workspace, arguments, httpClient, sessionStore, null, cancellationToken).ConfigureAwait(false)
             };
         }
         catch (OperationCanceledException)
@@ -92,7 +119,7 @@ internal static class Program
         WorkspaceInfo workspace,
         CliArguments arguments,
         HttpClient httpClient,
-        Func<string, SessionLog> createSession,
+        ISessionStore sessionStore,
         CancellationToken cancellationToken)
     {
         EnsureRunnable(settings);
@@ -100,7 +127,7 @@ internal static class Program
             ? $"wfx: {settings.Provider}/{settings.Model}"
             : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
 
-        using var session = OpenSession(arguments, workspace, Console.Error, "wfx: session ", createSession);
+        using var session = OpenSession(arguments, workspace, Console.Error, "wfx: session ", sessionStore);
 
         var provider = CreateModelProvider(settings, httpClient);
         var agent = CreateAgent(settings, workspace, arguments, provider, [], session);
@@ -126,7 +153,8 @@ internal static class Program
         WorkspaceInfo workspace,
         CliArguments arguments,
         HttpClient httpClient,
-        Func<string, SessionLog> createSession,
+        ISessionStore sessionStore,
+        SessionTranscript? transcript,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(settings.Model) && settings.ConfiguredModels.Count == 0)
@@ -138,12 +166,14 @@ internal static class Program
         Console.WriteLine();
         PrintActiveModel(settings);
         Console.WriteLine($"Workspace: {workspace.Root}");
-        using var session = OpenSession(arguments, workspace, Console.Out, "Session: ", createSession);
+        using var session = transcript is null
+            ? OpenSession(arguments, workspace, Console.Out, "Session: ", sessionStore)
+            : OpenResumedSession(transcript, sessionStore);
 
         Console.WriteLine();
 
         var provider = CreateModelProvider(settings, httpClient);
-        IReadOnlyList<ModelMessage> conversation = [];
+        IReadOnlyList<ModelMessage> conversation = transcript?.Messages ?? [];
         while (!cancellationToken.IsCancellationRequested)
         {
             Console.Write("> ");
@@ -224,6 +254,75 @@ internal static class Program
         return 0;
     }
 
+    private static SessionTranscript SelectTranscript(
+        CliArguments arguments,
+        WorkspaceInfo workspace,
+        ISessionStore sessionStore)
+    {
+        if (arguments.SessionId is not null)
+        {
+            return sessionStore.Read(arguments.SessionId);
+        }
+
+        var latest = sessionStore.FindLatest(workspace.Root);
+        if (latest is null)
+        {
+            throw new InvalidOperationException(
+                "No session for this workspace yet. Start one with 'wfx'.");
+        }
+
+        return sessionStore.Read(latest.SessionId);
+    }
+
+    private static WfxSettings LoadSettings(
+        string workspaceRoot,
+        WfxSettingsLayer layer,
+        WfxSettingsLayer cliOnly,
+        EndpointIdentity? recordedEndpoint,
+        string? userProfile)
+    {
+        try
+        {
+            return WfxConfiguration.Load(workspaceRoot, layer, userProfile: userProfile);
+        }
+        catch (UndefinedProfileException exception)
+            when (recordedEndpoint?.Profile is not null &&
+                  cliOnly.Profile is null &&
+                  string.Equals(
+                      exception.ProfileName,
+                      recordedEndpoint.Profile,
+                      StringComparison.OrdinalIgnoreCase))
+        {
+            Console.Error.WriteLine(
+                $"wfx: recorded profile '{recordedEndpoint.Profile}' is no longer configured; using current settings instead.");
+            return WfxConfiguration.Load(workspaceRoot, cliOnly, userProfile: userProfile);
+        }
+    }
+
+    private static WfxSettingsLayer ResumeSettingsLayer(
+        WfxSettingsLayer cli,
+        EndpointIdentity? recordedEndpoint)
+    {
+        if (recordedEndpoint is null)
+        {
+            return cli;
+        }
+
+        if (cli.Profile is not null &&
+            !string.Equals(cli.Profile, recordedEndpoint.Profile, StringComparison.OrdinalIgnoreCase))
+        {
+            return cli;
+        }
+
+        return cli with
+        {
+            Profile = recordedEndpoint.Profile ?? cli.Profile,
+            Provider = cli.Provider ?? recordedEndpoint.Provider,
+            Protocol = cli.Protocol ?? recordedEndpoint.Protocol,
+            Model = cli.Model ?? recordedEndpoint.Model
+        };
+    }
+
     private static bool IsModelCommand(string prompt) =>
         prompt.Equals("/model", StringComparison.OrdinalIgnoreCase) ||
         (prompt.Length > "/model".Length &&
@@ -297,6 +396,8 @@ internal static class Program
         Console.WriteLine("  /model <id>        Use a model ID on the current connection");
         Console.WriteLine("  /help              Show interactive commands");
         Console.WriteLine("  /exit, /quit       End the session");
+        Console.WriteLine();
+        Console.WriteLine("Resume this session later with 'wfx resume' (or 'wfx resume --id <session-id>').");
     }
 
     private static void PrintTrailingNewline(AgentRunResult result)
@@ -321,7 +422,7 @@ internal static class Program
         WorkspaceInfo workspace,
         TextWriter output,
         string prefix,
-        Func<string, SessionLog> createSession)
+        ISessionStore sessionStore)
     {
         if (arguments.NoSession)
         {
@@ -331,7 +432,7 @@ internal static class Program
         SessionLog session;
         try
         {
-            session = createSession(workspace.Root);
+            session = sessionStore.Create(workspace.Root);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -343,6 +444,21 @@ internal static class Program
         try
         {
             output.WriteLine($"{prefix}{session.Id}");
+            return session;
+        }
+        catch
+        {
+            session.Dispose();
+            throw;
+        }
+    }
+
+    private static SessionLog OpenResumedSession(SessionTranscript transcript, ISessionStore sessionStore)
+    {
+        var session = sessionStore.Open(transcript.SessionId);
+        try
+        {
+            Console.WriteLine($"Resumed session: {session.Id}");
             return session;
         }
         catch
@@ -485,21 +601,21 @@ internal static class Program
         return 0;
     }
 
-    private static int PrintConfig(WfxSettings settings, WorkspaceInfo workspace)
+    private static int PrintConfig(WfxSettings settings, WorkspaceInfo workspace, string? userProfile)
     {
         PrintModels(settings, workspace);
         Console.WriteLine($"Approval: {settings.Approval.ToString().ToLowerInvariant()}");
         Console.WriteLine($"Timeout: {settings.Timeout.TotalSeconds:F0}s");
         Console.WriteLine($"Maximum iterations: {settings.MaxIterations}");
         Console.WriteLine($"Project config: {Path.Combine(workspace.Root, ".wfx", "config.json")}");
-        Console.WriteLine($"User config: {Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".wfx", "config.json")}");
+        Console.WriteLine(
+            $"User config: {Path.Combine(userProfile ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".wfx", "config.json")}");
         return 0;
     }
 
-    private static int PrintSessions()
+    private static int PrintSessions(ISessionStore sessionStore)
     {
-        var store = new SessionStore();
-        var sessions = store.List();
+        var sessions = sessionStore.List();
 
         if (sessions.Count == 0)
         {
@@ -517,7 +633,7 @@ internal static class Program
         }
 
         Console.WriteLine();
-        Console.WriteLine($"{sessions.Count} session(s), {FormatBytes(store.TotalSizeBytes())} total on disk");
+        Console.WriteLine($"{sessions.Count} session(s), {FormatBytes(sessionStore.TotalSizeBytes())} total on disk");
         return 0;
     }
 
@@ -569,6 +685,7 @@ internal static class Program
               wfx models [options]          Show provider/model configuration
               wfx config [options]          Inspect effective configuration
               wfx sessions [options]        List sessions with workspace, timestamps, and size
+              wfx resume [options]          Resume the latest session for this workspace
 
             Options:
               --model <model>               Model ID; openrouter/<id> selects OpenRouter
@@ -582,6 +699,7 @@ internal static class Program
               --verbose                     Show timing and progress details
               --debug                       Show tool result diagnostics
               --no-session                  Do not persist a session log for this invocation
+              --id <session-id>             Resume a specific session (only with wfx resume)
               --help                        Show help
               --version                     Show version
 
@@ -590,6 +708,8 @@ internal static class Program
               /model <id>                   Use a model ID on the current connection
               /help                         Show interactive commands
               /exit, /quit                  End the session
+
+            Resume a session in a new process with wfx resume, or wfx resume --id <session-id>.
 
             Configuration precedence: CLI > environment > project > user > defaults.
             Prefer WFX_API_KEY for credentials. WFX never prints API keys.
