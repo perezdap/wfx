@@ -24,6 +24,16 @@ internal static class Program
             shutdown.Cancel();
         };
 
+        using var httpClient = CreateHttpClient();
+        return await RunAsync(args, httpClient, new SessionStore().Create, shutdown.Token).ConfigureAwait(false);
+    }
+
+    internal static async Task<int> RunAsync(
+        string[] args,
+        HttpClient httpClient,
+        Func<string, SessionLog> createSession,
+        CancellationToken cancellationToken)
+    {
         try
         {
             var arguments = CliArguments.Parse(args);
@@ -53,14 +63,15 @@ internal static class Program
                 Console.Error.WriteLine($"wfx: warning: {warning}");
             }
 
-            using var httpClient = CreateHttpClient();
             return arguments.Command switch
             {
                 CliCommand.Models => PrintModels(settings, workspace),
                 CliCommand.Config => PrintConfig(settings, workspace),
-                CliCommand.Run => await RunOnceAsync(arguments.Prompt!, settings, workspace, arguments, httpClient, shutdown.Token)
+                CliCommand.Run => await RunOnceAsync(
+                    arguments.Prompt!, settings, workspace, arguments, httpClient, createSession, cancellationToken)
                     .ConfigureAwait(false),
-                _ => await RunInteractiveAsync(settings, workspace, arguments, httpClient, shutdown.Token).ConfigureAwait(false)
+                _ => await RunInteractiveAsync(
+                    settings, workspace, arguments, httpClient, createSession, cancellationToken).ConfigureAwait(false)
             };
         }
         catch (OperationCanceledException)
@@ -81,6 +92,7 @@ internal static class Program
         WorkspaceInfo workspace,
         CliArguments arguments,
         HttpClient httpClient,
+        Func<string, SessionLog> createSession,
         CancellationToken cancellationToken)
     {
         EnsureRunnable(settings);
@@ -88,7 +100,7 @@ internal static class Program
             ? $"wfx: {settings.Provider}/{settings.Model}"
             : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
 
-        using var session = OpenSession(arguments, workspace, Console.Error, "wfx: session ");
+        using var session = OpenSession(arguments, workspace, Console.Error, "wfx: session ", createSession);
 
         var provider = CreateModelProvider(settings, httpClient);
         var agent = CreateAgent(settings, workspace, arguments, provider, [], session);
@@ -114,6 +126,7 @@ internal static class Program
         WorkspaceInfo workspace,
         CliArguments arguments,
         HttpClient httpClient,
+        Func<string, SessionLog> createSession,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(settings.Model) && settings.ConfiguredModels.Count == 0)
@@ -125,7 +138,7 @@ internal static class Program
         Console.WriteLine();
         PrintActiveModel(settings);
         Console.WriteLine($"Workspace: {workspace.Root}");
-        using var session = OpenSession(arguments, workspace, Console.Out, "Session: ");
+        using var session = OpenSession(arguments, workspace, Console.Out, "Session: ", createSession);
 
         Console.WriteLine();
 
@@ -307,16 +320,26 @@ internal static class Program
         CliArguments arguments,
         WorkspaceInfo workspace,
         TextWriter output,
-        string prefix)
+        string prefix,
+        Func<string, SessionLog> createSession)
     {
         if (arguments.NoSession)
         {
             return null;
         }
 
-        var session = new SessionStore().Create(workspace.Root);
-        output.WriteLine($"{prefix}{session.Id}");
-        return session;
+        try
+        {
+            var session = createSession(workspace.Root);
+            output.WriteLine($"{prefix}{session.Id}");
+            return session;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine(
+                $"wfx: warning: Could not create session: {exception.Message}. The invocation will continue without a session.");
+            return null;
+        }
     }
 
     private static Agent CreateAgent(

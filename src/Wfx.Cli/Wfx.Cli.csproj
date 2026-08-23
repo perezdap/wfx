@@ -12,6 +12,9 @@
     <Version>0.1.0</Version>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Wfx.Cli.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../Wfx.Core/Wfx.Core.csproj" />
     <ProjectReference Include="../Wfx.PowerShell/Wfx.PowerShell.csproj" />
     <ProjectReference Include="../Wfx.Providers/Wfx.Providers.csproj" />
