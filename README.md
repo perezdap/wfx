@@ -203,6 +203,12 @@ wfx config
 wfx --help
 ```
 
+List persisted sessions with workspace, timestamps, and size:
+
+```powershell
+wfx sessions
+```
+
 ## Approval modes
 
 | Mode | Read-only | Workspace write | System change | Dangerous |

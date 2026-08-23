@@ -7,7 +7,8 @@ internal enum CliCommand
     Interactive,
     Run,
     Models,
-    Config
+    Config,
+    Sessions
 }
 
 internal sealed record CliArguments(
@@ -102,6 +103,10 @@ internal sealed record CliArguments(
                     break;
                 case "config" when !commandSelected:
                     command = CliCommand.Config;
+                    commandSelected = true;
+                    break;
+                case "sessions" when !commandSelected:
+                    command = CliCommand.Sessions;
                     commandSelected = true;
                     break;
                 default:
