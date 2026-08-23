@@ -25,13 +25,20 @@ internal static class Program
         };
 
         using var httpClient = CreateHttpClient();
-        return await RunAsync(args, httpClient, new SessionStore().Create, shutdown.Token).ConfigureAwait(false);
+        var sessionStore = new SessionStore();
+        return await RunAsync(
+            args,
+            httpClient,
+            sessionStore.Create,
+            sessionStore.List,
+            shutdown.Token).ConfigureAwait(false);
     }
 
     internal static async Task<int> RunAsync(
         string[] args,
         HttpClient httpClient,
         Func<string, SessionLog> createSession,
+        Func<IReadOnlyList<SessionSummary>> listSessions,
         CancellationToken cancellationToken)
     {
         try
@@ -53,7 +60,7 @@ internal static class Program
             // resolution, which can throw on an unconfigured endpoint.
             if (arguments.Command == CliCommand.Sessions)
             {
-                return PrintSessions();
+                return PrintSessions(listSessions);
             }
 
             var workspace = WorkspaceInfo.Discover();
@@ -496,10 +503,9 @@ internal static class Program
         return 0;
     }
 
-    private static int PrintSessions()
+    private static int PrintSessions(Func<IReadOnlyList<SessionSummary>> listSessions)
     {
-        var store = new SessionStore();
-        var sessions = store.List();
+        var sessions = listSessions();
 
         if (sessions.Count == 0)
         {
@@ -517,7 +523,7 @@ internal static class Program
         }
 
         Console.WriteLine();
-        Console.WriteLine($"{sessions.Count} session(s), {FormatBytes(store.TotalSizeBytes())} total on disk");
+        Console.WriteLine($"{sessions.Count} session(s), {FormatBytes(sessions.Sum(session => session.SizeBytes))} total on disk");
         return 0;
     }
 

@@ -4,6 +4,7 @@ using Wfx.Core;
 
 namespace Wfx.Cli.Tests;
 
+[Collection("Console")]
 public sealed class SessionStartupTests
 {
     [Fact]
@@ -21,6 +22,7 @@ public sealed class SessionStartupTests
                 RunArguments,
                 httpClient,
                 store.Create,
+                static () => [],
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(0, exitCode);
@@ -45,6 +47,7 @@ public sealed class SessionStartupTests
             InteractiveArguments,
             httpClient,
             _ => throw new UnauthorizedAccessException("session ACL denied"),
+            static () => [],
             TestContext.Current.CancellationToken);
 
         Assert.Equal(0, exitCode);
@@ -69,6 +72,7 @@ public sealed class SessionStartupTests
                 RunArguments,
                 httpClient,
                 workspace => openedSession = store.Create(workspace),
+                static () => [],
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(1, exitCode);
@@ -100,6 +104,7 @@ public sealed class SessionStartupTests
                 RunArguments,
                 httpClient,
                 store.Create,
+                static () => [],
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(0, exitCode);
@@ -128,6 +133,7 @@ public sealed class SessionStartupTests
                 createCalled = true;
                 throw new InvalidOperationException("Session creation must be skipped.");
             },
+            static () => [],
             TestContext.Current.CancellationToken);
 
         Assert.Equal(0, exitCode);
@@ -168,42 +174,6 @@ public sealed class SessionStartupTests
     {
         Timeout = Timeout.InfiniteTimeSpan
     };
-
-    private sealed class ConsoleCapture : IDisposable
-    {
-        private readonly TextReader _originalInput = Console.In;
-        private readonly TextWriter _originalOutput = Console.Out;
-        private readonly TextWriter _originalError = Console.Error;
-        private readonly StringReader? _input;
-
-        public ConsoleCapture(string? input = null, TextWriter? error = null)
-        {
-            Output = new StringWriter();
-            Error = error ?? new StringWriter();
-            _input = input is null ? null : new StringReader(input);
-            if (_input is not null)
-            {
-                Console.SetIn(_input);
-            }
-
-            Console.SetOut(Output);
-            Console.SetError(Error);
-        }
-
-        public StringWriter Output { get; }
-
-        public TextWriter Error { get; }
-
-        public void Dispose()
-        {
-            Console.SetIn(_originalInput);
-            Console.SetOut(_originalOutput);
-            Console.SetError(_originalError);
-            _input?.Dispose();
-            Output.Dispose();
-            Error.Dispose();
-        }
-    }
 
     private sealed class SessionAnnouncementFailingWriter : TextWriter
     {
