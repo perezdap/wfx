@@ -1,4 +1,3 @@
-using System.Net;
 using System.Text;
 using System.Text.Json;
 using Wfx.Core;
@@ -19,7 +18,7 @@ public sealed class SessionStartupTests
         try
         {
             var store = new SessionStore(sessionsPath);
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 RunArguments,
                 httpClient,
                 store,
@@ -43,7 +42,7 @@ public sealed class SessionStartupTests
         using var httpClient = CreateHttpClient();
         using var console = new ConsoleCapture("do it\n/exit\n");
 
-        var exitCode = await Program.RunAsync(
+        var exitCode = await CliRunner.RunAsync(
             InteractiveArguments,
             httpClient,
             new TestSessionStore(create: _ => throw new UnauthorizedAccessException("session ACL denied")),
@@ -68,7 +67,7 @@ public sealed class SessionStartupTests
         {
             var store = new SessionStore(directory.FullName);
             var testStore = new TestSessionStore(create: workspace => openedSession = store.Create(workspace));
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 RunArguments,
                 httpClient,
                 testStore,
@@ -99,7 +98,7 @@ public sealed class SessionStartupTests
         try
         {
             var store = new SessionStore(directory.FullName);
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 RunArguments,
                 httpClient,
                 store,
@@ -128,7 +127,7 @@ public sealed class SessionStartupTests
             createCalled = true;
             throw new InvalidOperationException("Session creation must be skipped.");
         });
-        var exitCode = await Program.RunAsync(
+        var exitCode = await CliRunner.RunAsync(
             NoSessionArguments,
             httpClient,
             store,
@@ -147,7 +146,7 @@ public sealed class SessionStartupTests
         var sessions = Directory.CreateTempSubdirectory("wfx-cli-tests-");
         try
         {
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 ["resume", "--provider", "local", "--model", "fake-model"],
                 httpClient,
                 new TestSessionStore(new SessionStore(sessions.FullName)),
@@ -170,7 +169,7 @@ public sealed class SessionStartupTests
         using var httpClient = CreateHttpClient();
         using var console = new ConsoleCapture();
 
-        var exitCode = await Program.RunAsync(
+        var exitCode = await CliRunner.RunAsync(
             ["resume", "--force"],
             httpClient,
             new TestSessionStore(new SessionStore()),
@@ -188,7 +187,7 @@ public sealed class SessionStartupTests
         var sessions = Directory.CreateTempSubdirectory("wfx-cli-tests-");
         try
         {
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 ["resume", "--id", "missing-session", "--provider", "local", "--model", "fake-model"],
                 httpClient,
                 new TestSessionStore(new SessionStore(sessions.FullName)),
@@ -220,7 +219,7 @@ public sealed class SessionStartupTests
             created.Dispose();
             created = null;
 
-            var refused = await Program.RunAsync(
+            var refused = await CliRunner.RunAsync(
                 ["resume", "--id", sessionId, "--provider", "local", "--model", "fake-model"],
                 httpClient,
                 new TestSessionStore(store),
@@ -230,7 +229,7 @@ public sealed class SessionStartupTests
             Assert.Contains(Path.GetFullPath(recordedWorkspace.FullName), console.Error.ToString());
             Assert.DoesNotContain("workspace_rebound", File.ReadAllText(sessionPath), StringComparison.Ordinal);
 
-            var forced = await Program.RunAsync(
+            var forced = await CliRunner.RunAsync(
                 [
                     "resume",
                     "--id", sessionId,
@@ -268,12 +267,12 @@ public sealed class SessionStartupTests
         try
         {
             using var held = SessionResume.Open(store, WorkspaceInfo.Discover(), sessionId);
-            var resumeExitCode = await Program.RunAsync(
+            var resumeExitCode = await CliRunner.RunAsync(
                 ["resume", "--id", sessionId, "--provider", "local", "--model", "fake-model"],
                 httpClient,
                 new TestSessionStore(store),
                 TestContext.Current.CancellationToken);
-            var sessionsExitCode = await Program.RunAsync(
+            var sessionsExitCode = await CliRunner.RunAsync(
                 ["sessions"],
                 httpClient,
                 new TestSessionStore(store),
@@ -329,7 +328,7 @@ public sealed class SessionStartupTests
                     "--base-url", "https://example.test/v1",
                     "--model", "fake-model"
                 ];
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 resumeArguments,
                 httpClient,
                 new TestSessionStore(store),
@@ -369,7 +368,7 @@ public sealed class SessionStartupTests
             await recorder.OnMessageAsync(new ModelMessage(ModelRole.User, "previous"), CancellationToken.None);
             created.Dispose();
 
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 [
                     "resume",
                     "--id", created.Id,
@@ -429,7 +428,7 @@ public sealed class SessionStartupTests
             await recorder.OnMessageAsync(new ModelMessage(ModelRole.User, "previous"), CancellationToken.None);
             created.Dispose();
 
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 ["resume", "--id", created.Id],
                 httpClient,
                 new TestSessionStore(store),
@@ -500,7 +499,7 @@ public sealed class SessionStartupTests
             await recorder.OnMessageAsync(new ModelMessage(ModelRole.User, "previous"), CancellationToken.None);
             created.Dispose();
 
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 ["resume", "--id", created.Id, "--profile", profile],
                 httpClient,
                 new TestSessionStore(store),
@@ -564,7 +563,7 @@ public sealed class SessionStartupTests
             string[] resumeArguments = useExplicitModel
                 ? ["resume", "--id", created.Id, "--model", "explicit-model"]
                 : ["resume", "--id", created.Id];
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 resumeArguments,
                 httpClient,
                 new TestSessionStore(store),
@@ -592,7 +591,7 @@ public sealed class SessionStartupTests
         using var httpClient = CreateHttpClient();
         using var console = new ConsoleCapture();
 
-        var exitCode = await Program.RunAsync(
+        var exitCode = await CliRunner.RunAsync(
             ["--help"],
             httpClient,
             new TestSessionStore(new SessionStore()),
@@ -610,7 +609,7 @@ public sealed class SessionStartupTests
         using var httpClient = CreateHttpClient();
         using var console = new ConsoleCapture("/help\n/exit\n");
 
-        var exitCode = await Program.RunAsync(
+        var exitCode = await CliRunner.RunAsync(
             [
                 "--provider", "local",
                 "--protocol", "chat_completions",
@@ -631,7 +630,7 @@ public sealed class SessionStartupTests
     {
         using var httpClient = CreateHttpClient();
         using var console = new ConsoleCapture();
-        var exitCode = await Program.RunAsync(
+        var exitCode = await CliRunner.RunAsync(
             [
                 "run",
                 "--provider", "local",
@@ -711,10 +710,7 @@ public sealed class SessionStartupTests
         "do it"
     ];
 
-    private static HttpClient CreateHttpClient() => new(new StubHandler())
-    {
-        Timeout = Timeout.InfiniteTimeSpan
-    };
+    private static HttpClient CreateHttpClient() => CliRunner.CreateCompletedHttpClient();
 
     private sealed class SessionAnnouncementFailingWriter : TextWriter
     {
@@ -747,17 +743,4 @@ public sealed class SessionStartupTests
         }
     }
 
-    private sealed class StubHandler : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(
-                    "data: {\"choices\":[{\"delta\":{\"content\":\"finished\"}}]}\n\ndata: [DONE]\n\n",
-                    Encoding.UTF8,
-                    "text/event-stream")
-            });
-    }
 }

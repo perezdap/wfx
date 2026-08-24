@@ -9,12 +9,13 @@ public sealed class SessionListingTests
     public async Task SessionsReportsAnEmptyStoreWithoutModelConfiguration()
     {
         var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");
-        using var httpClient = new HttpClient(new UnexpectedRequestHandler());
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient(
+            "The sessions command must not call a model endpoint.");
         using var console = new ConsoleCapture();
         try
         {
             var store = new SessionStore(Path.Combine(directory.FullName, "sessions"));
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 ["sessions"],
                 httpClient,
                 store,
@@ -35,7 +36,8 @@ public sealed class SessionListingTests
     public async Task SessionsPrintsRealStoreWorkspaceTimestampsSizeAndTotal()
     {
         var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");
-        using var httpClient = new HttpClient(new UnexpectedRequestHandler());
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient(
+            "The sessions command must not call a model endpoint.");
         using var console = new ConsoleCapture();
         try
         {
@@ -50,7 +52,7 @@ public sealed class SessionListingTests
             Assert.NotNull(summary.CreatedAt);
             Assert.InRange(summary.SizeBytes, 1, 1023);
 
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 ["sessions"],
                 httpClient,
                 store,
@@ -77,10 +79,11 @@ public sealed class SessionListingTests
     [Fact]
     public async Task HelpDocumentsTheSessionsCommand()
     {
-        using var httpClient = new HttpClient(new UnexpectedRequestHandler());
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient(
+            "The sessions command must not call a model endpoint.");
         using var console = new ConsoleCapture();
 
-        var exitCode = await Program.RunAsync(
+        var exitCode = await CliRunner.RunAsync(
             ["--help"],
             httpClient,
             new TestSessionStore(),
@@ -90,13 +93,5 @@ public sealed class SessionListingTests
         Assert.Contains("wfx sessions [options]", console.Output.ToString());
         Assert.Contains("sizes, and total", console.Output.ToString());
         Assert.Empty(console.ErrorText);
-    }
-
-    private sealed class UnexpectedRequestHandler : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("The sessions command must not call a model endpoint.");
     }
 }

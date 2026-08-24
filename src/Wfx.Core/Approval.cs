@@ -8,6 +8,16 @@ public enum ApprovalMode
     AllowAll
 }
 
+public static class ApprovalPolicy
+{
+    public static bool CanPrompt(ApprovalMode mode) => mode switch
+    {
+        ApprovalMode.Always or ApprovalMode.Workspace => true,
+        ApprovalMode.Never or ApprovalMode.AllowAll => false,
+        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown approval mode.")
+    };
+}
+
 public sealed record ApprovalRequest(
     string ToolName,
     string ArgumentsJson,
@@ -34,15 +44,19 @@ public sealed class PolicyApprovalService : IApprovalService
 
     public ValueTask<bool> ApproveAsync(ApprovalRequest request, CancellationToken cancellationToken = default)
     {
-        if (request.Level == ApprovalLevel.ReadOnly || _mode == ApprovalMode.AllowAll)
+        if (request.Level == ApprovalLevel.ReadOnly)
         {
             return ValueTask.FromResult(true);
         }
 
-        return _mode switch
+        if (!ApprovalPolicy.CanPrompt(_mode))
         {
-            ApprovalMode.Workspace when request.Level == ApprovalLevel.WorkspaceWrite => ValueTask.FromResult(true),
-            ApprovalMode.Never => ValueTask.FromResult(false),
+            return ValueTask.FromResult(_mode == ApprovalMode.AllowAll);
+        }
+
+        return request.Level switch
+        {
+            ApprovalLevel.WorkspaceWrite when _mode == ApprovalMode.Workspace => ValueTask.FromResult(true),
             _ => _prompt(request, cancellationToken)
         };
     }
