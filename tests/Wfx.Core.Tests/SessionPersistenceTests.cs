@@ -264,17 +264,26 @@ public sealed class SessionPersistenceTests
         created.Dispose();
 
         var exception = Assert.Throws<SessionWorkspaceMismatchException>(
-            () => SessionResume.Open(store, currentWorkspace.Path, sessionId));
+            () => SessionResume.Open(store, Workspace(currentWorkspace.Path), sessionId));
         Assert.Equal(Path.GetFullPath(recordedWorkspace.Path), exception.RecordedWorkspace);
         Assert.Equal(Path.GetFullPath(currentWorkspace.Path), exception.CurrentWorkspace);
         Assert.Contains(Path.GetFullPath(recordedWorkspace.Path), exception.Message);
         Assert.DoesNotContain("workspace_rebound", File.ReadAllText(sessionPath), StringComparison.Ordinal);
 
-        using (var resumed = SessionResume.Open(store, currentWorkspace.Path, sessionId, force: true))
+        using (var resumed = SessionResume.Open(
+            store,
+            Workspace(currentWorkspace.Path),
+            sessionId,
+            force: true))
         {
             Assert.Equal(Path.GetFullPath(currentWorkspace.Path), resumed.Transcript.Workspace);
             Assert.Equal(Path.GetFullPath(currentWorkspace.Path), store.Read(sessionId).Workspace);
+            Assert.Equal(
+                Path.GetFullPath(currentWorkspace.Path),
+                Assert.Single(store.List()).Workspace);
         }
+
+        Assert.Equal(1, new FileInfo(Path.ChangeExtension(sessionPath, ".lock")).Length);
 
         var events = ReadEvents(sessionPath);
         Assert.Single(events, static e => TypeOf(e) == "header");
@@ -300,10 +309,35 @@ public sealed class SessionPersistenceTests
 
         using var resumed = SessionResume.Open(
             store,
-            workspace.Path + Path.DirectorySeparatorChar,
+            Workspace(workspace.Path + Path.DirectorySeparatorChar),
             sessionId);
 
         Assert.Equal(sessionId, resumed.Transcript.SessionId);
+        Assert.DoesNotContain(
+            ReadLines(sessionPath),
+            static line => line.Contains("workspace_rebound", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ResumeUsesThePlatformCaseRuleForWorkspaceRoots()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        var created = store.Create(workspace.Path);
+        var sessionId = created.Id;
+        var sessionPath = created.FilePath;
+        created.Dispose();
+        var differentCase = workspace.Path.ToUpperInvariant();
+        Assert.False(string.Equals(workspace.Path, differentCase, StringComparison.Ordinal));
+
+        using var resumed = SessionResume.Open(store, Workspace(differentCase), sessionId);
+
         Assert.DoesNotContain(
             ReadLines(sessionPath),
             static line => line.Contains("workspace_rebound", StringComparison.Ordinal));
@@ -319,17 +353,17 @@ public sealed class SessionPersistenceTests
         var sessionId = created.Id;
         created.Dispose();
 
-        using (SessionResume.Open(store, workspace.Path, sessionId))
+        using (SessionResume.Open(store, Workspace(workspace.Path), sessionId))
         {
             var exception = Assert.Throws<IOException>(
-                () => SessionResume.Open(store, workspace.Path, sessionId));
+                () => SessionResume.Open(store, Workspace(workspace.Path), sessionId));
             Assert.Contains("session", exception.Message, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("in use", exception.Message, StringComparison.OrdinalIgnoreCase);
             Assert.Equal(sessionId, Assert.Single(store.List()).SessionId);
             Assert.True(store.TotalSizeBytes() > 0);
         }
 
-        using var reopened = SessionResume.Open(store, workspace.Path, sessionId);
+        using var reopened = SessionResume.Open(store, Workspace(workspace.Path), sessionId);
         Assert.Equal(sessionId, reopened.Transcript.SessionId);
     }
 
@@ -357,7 +391,7 @@ public sealed class SessionPersistenceTests
                 """{"type":"interrupted"}"""
             ]) + "\n");
 
-        using var resumed = SessionResume.Open(store, workspace.Path, sessionId);
+        using var resumed = SessionResume.Open(store, Workspace(workspace.Path), sessionId);
         var capture = new CapturingModelProvider(new ModelMessage(ModelRole.Assistant, "finished"));
         await CreateAgent(
             capture,
@@ -386,6 +420,33 @@ public sealed class SessionPersistenceTests
         Assert.Contains(replayed, static message =>
             message.Role == ModelRole.System &&
             message.Content!.Contains("previous turn was cancelled", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ReadDoesNotRewriteAnUnmarkedNonTrailingToolCallBatch()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string sessionId = "20260822T150405Z-historical";
+        var path = Path.Combine(sessions.Path, sessionId + ".jsonl");
+        File.WriteAllText(
+            path,
+            string.Join('\n',
+            [
+                Header(sessionId, workspace.Path),
+                """{"type":"message","role":"assistant","content":"calling","tool_calls":[{"id":"call-a","name":"echo","arguments":"{}"}]}""",
+                """{"type":"message","role":"user","content":"continued"}""",
+                """{"type":"message","role":"assistant","content":"done"}"""
+            ]) + "\n");
+
+        var transcript = store.Read(sessionId);
+
+        Assert.Equal(3, transcript.Messages.Count);
+        Assert.Single(transcript.Messages[0].ToolCalls!);
+        Assert.DoesNotContain(
+            transcript.Messages,
+            static message => message.Content == SessionStore.InterruptedMarker);
     }
 
     [Fact]
@@ -787,6 +848,9 @@ public sealed class SessionPersistenceTests
     }
 
     private static JsonElement[] ReadEvents(string path) => ParseLines(ReadLines(path));
+
+    private static WorkspaceInfo Workspace(string root) =>
+        new(Path.GetFullPath(root), Path.GetFullPath(root), false);
 
     private static string TypeOf(JsonElement element) => element.GetProperty("type").GetString()!;
 

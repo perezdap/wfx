@@ -161,6 +161,11 @@ internal sealed record CliArguments(
             throw new ArgumentException("--force is only valid with 'wfx resume'.");
         }
 
+        if (force && sessionId is null)
+        {
+            throw new ArgumentException("--force requires --id to select the session to rebind.");
+        }
+
         return new CliArguments(
             command,
             prompt,

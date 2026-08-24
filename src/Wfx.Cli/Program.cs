@@ -59,7 +59,7 @@ internal static class Program
 
             var workspace = WorkspaceInfo.Discover();
             using var resumedSession = arguments.Command == CliCommand.Resume
-                ? SessionResume.Open(sessionStore, workspace.Root, arguments.SessionId, arguments.Force)
+                ? SessionResume.Open(sessionStore, workspace, arguments.SessionId, arguments.Force)
                 : null;
             var transcript = resumedSession?.Transcript;
             var settingsLayer = arguments.Settings;
@@ -98,8 +98,7 @@ internal static class Program
                     arguments,
                     httpClient,
                     sessionStore,
-                    transcript,
-                    resumedSession?.Log,
+                    resumedSession,
                     cancellationToken).ConfigureAwait(false),
                 _ => await RunInteractiveAsync(
                     settings,
@@ -107,7 +106,6 @@ internal static class Program
                     arguments,
                     httpClient,
                     sessionStore,
-                    null,
                     null,
                     cancellationToken).ConfigureAwait(false)
             };
@@ -165,8 +163,7 @@ internal static class Program
         CliArguments arguments,
         HttpClient httpClient,
         ISessionStore sessionStore,
-        SessionTranscript? transcript,
-        SessionLog? resumedLog,
+        SessionResume? resumedSession,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(settings.Model) && settings.ConfiguredModels.Count == 0)
@@ -178,13 +175,14 @@ internal static class Program
         Console.WriteLine();
         PrintActiveModel(settings);
         Console.WriteLine($"Workspace: {workspace.Root}");
-        using var createdSession = transcript is null
+        using var createdSession = resumedSession is null
             ? OpenSession(arguments, workspace, Console.Out, "Session: ", sessionStore)
             : null;
-        var session = resumedLog ?? createdSession;
-        if (transcript is not null)
+        var session = resumedSession?.Log ?? createdSession;
+        var transcript = resumedSession?.Transcript;
+        if (resumedSession is not null)
         {
-            Console.WriteLine($"Resumed session: {transcript.SessionId}");
+            Console.WriteLine($"Resumed session: {resumedSession.Transcript.SessionId}");
         }
 
         Console.WriteLine();
@@ -658,7 +656,7 @@ internal static class Program
               --debug                       Show tool result diagnostics
               --no-session                  Do not persist a session log for this invocation
               --id <session-id>             Resume a specific session (only with wfx resume)
-              --force                       Rebind a resumed session to the current workspace
+              --force                       Rebind the session selected with --id
               --help                        Show help
               --version                     Show version
 

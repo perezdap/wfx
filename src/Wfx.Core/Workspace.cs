@@ -26,6 +26,25 @@ public sealed record WorkspaceInfo(string Root, string WorkingDirectory, bool Is
     }
 }
 
+internal static class WorkspacePath
+{
+    public static StringComparison Comparison => OperatingSystem.IsWindows()
+        ? StringComparison.OrdinalIgnoreCase
+        : StringComparison.Ordinal;
+
+    public static string NormalizeRoot(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var root = Path.GetPathRoot(fullPath);
+        if (root is not null && fullPath.Equals(root, Comparison))
+        {
+            return fullPath;
+        }
+
+        return Path.TrimEndingDirectorySeparator(fullPath);
+    }
+}
+
 public sealed class WorkspacePathPolicy
 {
     private readonly string _root;
@@ -35,16 +54,14 @@ public sealed class WorkspacePathPolicy
     public WorkspacePathPolicy(string root)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
-        _comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-        _root = TrimEndingSeparator(Path.GetFullPath(root));
+        _comparison = WorkspacePath.Comparison;
+        _root = WorkspacePath.NormalizeRoot(root);
         if (!Directory.Exists(_root))
         {
             throw new DirectoryNotFoundException($"Workspace root does not exist: {_root}");
         }
 
-        _resolvedRoot = TrimEndingSeparator(ResolveLinks(_root));
+        _resolvedRoot = WorkspacePath.NormalizeRoot(ResolveLinks(_root));
     }
 
     public string Root => _root;
@@ -85,7 +102,7 @@ public sealed class WorkspacePathPolicy
 
     private void EnsureInside(string candidate, string root, string message)
     {
-        var normalizedCandidate = TrimEndingSeparator(Path.GetFullPath(candidate));
+        var normalizedCandidate = WorkspacePath.NormalizeRoot(candidate);
         if (normalizedCandidate.Equals(root, _comparison))
         {
             return;
@@ -132,16 +149,4 @@ public sealed class WorkspacePathPolicy
         return Path.GetFullPath(current);
     }
 
-    private static string TrimEndingSeparator(string path)
-    {
-        var root = Path.GetPathRoot(path);
-        if (root is not null && path.Equals(root, OperatingSystem.IsWindows()
-                ? StringComparison.OrdinalIgnoreCase
-                : StringComparison.Ordinal))
-        {
-            return path;
-        }
-
-        return Path.TrimEndingDirectorySeparator(path);
-    }
 }

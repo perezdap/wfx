@@ -4,7 +4,7 @@ public sealed class SessionWorkspaceMismatchException(
     string sessionId,
     string recordedWorkspace,
     string currentWorkspace) : InvalidOperationException(
-        $"Session '{sessionId}' is bound to workspace '{recordedWorkspace}', not '{currentWorkspace}'. Use --force to rebind it.")
+        $"Session '{sessionId}' is bound to workspace '{recordedWorkspace}', not '{currentWorkspace}'. Use --id '{sessionId}' --force to rebind it.")
 {
     public string RecordedWorkspace { get; } = recordedWorkspace;
 
@@ -34,13 +34,13 @@ public sealed class SessionResume : IDisposable
 
     public static SessionResume Open(
         ISessionStore store,
-        string currentWorkspace,
+        WorkspaceInfo currentWorkspace,
         string? sessionId = null,
         bool force = false)
     {
         ArgumentNullException.ThrowIfNull(store);
-        ArgumentException.ThrowIfNullOrWhiteSpace(currentWorkspace);
-        var workspace = Path.GetFullPath(currentWorkspace);
+        ArgumentNullException.ThrowIfNull(currentWorkspace);
+        var workspace = WorkspacePath.NormalizeRoot(currentWorkspace.Root);
         var selectedId = sessionId;
         if (selectedId is null)
         {
@@ -50,14 +50,13 @@ public sealed class SessionResume : IDisposable
         }
 
         var selectedTranscript = store.Read(selectedId);
-        if (!force && !SessionWorkspace.IsSame(selectedTranscript.Workspace, workspace))
+        if (!force)
         {
-            throw new SessionWorkspaceMismatchException(
-                selectedId,
-                selectedTranscript.Workspace,
-                workspace);
+            ThrowIfWorkspaceMismatch(selectedId, selectedTranscript.Workspace, workspace);
         }
 
+        // Re-read after acquiring the lease because another owner may have rebound the session
+        // between the optimistic mismatch check and the fail-fast lease attempt.
         var log = store.Open(selectedId);
         try
         {
@@ -66,10 +65,7 @@ public sealed class SessionResume : IDisposable
             {
                 if (!force)
                 {
-                    throw new SessionWorkspaceMismatchException(
-                        selectedId,
-                        transcript.Workspace,
-                        workspace);
+                    ThrowIfWorkspaceMismatch(selectedId, transcript.Workspace, workspace);
                 }
 
                 log.WriteWorkspaceRebound(workspace);
@@ -82,6 +78,20 @@ public sealed class SessionResume : IDisposable
         {
             log.Dispose();
             throw;
+        }
+    }
+
+    private static void ThrowIfWorkspaceMismatch(
+        string sessionId,
+        string recordedWorkspace,
+        string currentWorkspace)
+    {
+        if (!SessionWorkspace.IsSame(recordedWorkspace, currentWorkspace))
+        {
+            throw new SessionWorkspaceMismatchException(
+                sessionId,
+                recordedWorkspace,
+                currentWorkspace);
         }
     }
 
@@ -130,11 +140,9 @@ internal static class SessionWorkspace
         try
         {
             return string.Equals(
-                Path.TrimEndingDirectorySeparator(Path.GetFullPath(recordedWorkspace)),
-                Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspace)),
-                OperatingSystem.IsWindows()
-                    ? StringComparison.OrdinalIgnoreCase
-                    : StringComparison.Ordinal);
+                WorkspacePath.NormalizeRoot(recordedWorkspace),
+                WorkspacePath.NormalizeRoot(workspace),
+                WorkspacePath.Comparison);
         }
         catch (ArgumentException)
         {

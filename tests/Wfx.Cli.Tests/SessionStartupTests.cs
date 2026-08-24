@@ -166,6 +166,22 @@ public sealed class SessionStartupTests
     }
 
     [Fact]
+    public async Task ForceWithoutSessionIdReturnsClearError()
+    {
+        using var httpClient = CreateHttpClient();
+        using var console = new ConsoleCapture();
+
+        var exitCode = await Program.RunAsync(
+            ["resume", "--force"],
+            httpClient,
+            new TestSessionStore(new SessionStore()),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("--force requires --id", console.Error.ToString());
+    }
+
+    [Fact]
     public async Task ResumeUnknownIdReturnsClearError()
     {
         using var httpClient = CreateHttpClient();
@@ -252,7 +268,7 @@ public sealed class SessionStartupTests
         created.Dispose();
         try
         {
-            using var held = SessionResume.Open(store, WorkspaceInfo.Discover().Root, sessionId);
+            using var held = SessionResume.Open(store, WorkspaceInfo.Discover(), sessionId);
             var resumeExitCode = await Program.RunAsync(
                 ["resume", "--id", sessionId, "--provider", "local", "--model", "fake-model"],
                 httpClient,
@@ -630,13 +646,16 @@ public sealed class SessionStartupTests
     }
 
     [Fact]
-    public void ForceIsOnlyAcceptedByResume()
+    public void ForceRequiresResumeWithAnExplicitSessionId()
     {
-        var exception = Assert.Throws<ArgumentException>(
+        var wrongCommand = Assert.Throws<ArgumentException>(
             () => CliArguments.Parse(["run", "--force", "prompt"]));
+        var missingId = Assert.Throws<ArgumentException>(
+            () => CliArguments.Parse(["resume", "--force"]));
 
-        Assert.Contains("--force is only valid with 'wfx resume'", exception.Message);
-        Assert.True(CliArguments.Parse(["resume", "--force"]).Force);
+        Assert.Contains("--force is only valid with 'wfx resume'", wrongCommand.Message);
+        Assert.Contains("--force requires --id", missingId.Message);
+        Assert.True(CliArguments.Parse(["resume", "--id", "session-1", "--force"]).Force);
     }
 
     private static readonly string[] RunArguments =
