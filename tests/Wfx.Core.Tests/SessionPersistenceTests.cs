@@ -294,7 +294,7 @@ public sealed class SessionPersistenceTests
             Assert.Equal(Path.GetFullPath(currentWorkspace.Path), store.Read(sessionId).Workspace);
             Assert.Equal(
                 Path.GetFullPath(currentWorkspace.Path),
-                Assert.Single(store.List()).Workspace);
+                Assert.Single(store.List().Sessions).Workspace);
         }
 
         Assert.Equal(1, new FileInfo(Path.ChangeExtension(sessionPath, ".lock")).Length);
@@ -373,7 +373,7 @@ public sealed class SessionPersistenceTests
                 () => SessionResume.Open(store, Workspace(workspace.Path), sessionId));
             Assert.Contains("session", exception.Message, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("in use", exception.Message, StringComparison.OrdinalIgnoreCase);
-            Assert.Equal(sessionId, Assert.Single(store.List()).SessionId);
+            Assert.Equal(sessionId, Assert.Single(store.List().Sessions).SessionId);
             Assert.True(store.TotalSizeBytes() > 0);
         }
 

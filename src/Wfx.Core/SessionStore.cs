@@ -46,7 +46,7 @@ public interface ISessionStore
 
     SessionTranscript Read(string sessionId);
 
-    IReadOnlyList<SessionSummary> List();
+    SessionListing List();
 
     long TotalSizeBytes();
 
@@ -237,7 +237,7 @@ public sealed class SessionStore : ISessionStore
     public SessionSummary? FindLatest(string workspaceRoot)
     {
         var workspace = Path.GetFullPath(workspaceRoot);
-        return List().FirstOrDefault(summary =>
+        return List().Sessions.FirstOrDefault(summary =>
             summary.Workspace is not null && SessionWorkspace.IsSame(summary.Workspace, workspace));
     }
 
@@ -294,11 +294,11 @@ public sealed class SessionStore : ISessionStore
     /// Lock-free listing of every session under the store root. Reads no locks, so it succeeds
     /// while another process is appending to a session. Malformed or unreadable files are skipped.
     /// </summary>
-    public IReadOnlyList<SessionSummary> List()
+    public SessionListing List()
     {
         if (!Directory.Exists(_directory))
         {
-            return [];
+            return new SessionListing([], 0);
         }
 
         var summaries = new List<SessionSummary>();
@@ -312,11 +312,16 @@ public sealed class SessionStore : ISessionStore
         }
 
         summaries.Sort(static (left, right) => right.UpdatedAt.CompareTo(left.UpdatedAt));
-        return summaries;
+        return new SessionListing(summaries, SessionFileBytes(summaries) + LeaseSidecarBytes());
     }
 
     /// <summary>Total logical bytes consumed by session logs and their lease sidecars.</summary>
-    public long TotalSizeBytes()
+    public long TotalSizeBytes() => List().TotalSizeBytes;
+
+    private static long SessionFileBytes(IReadOnlyList<SessionSummary> summaries) =>
+        summaries.Sum(summary => summary.SizeBytes);
+
+    private long LeaseSidecarBytes()
     {
         if (!Directory.Exists(_directory))
         {
@@ -324,20 +329,17 @@ public sealed class SessionStore : ISessionStore
         }
 
         long total = 0;
-        foreach (var pattern in new[] { "*.jsonl", "*.lock" })
+        foreach (var path in Directory.EnumerateFiles(_directory, "*.lock"))
         {
-            foreach (var path in Directory.EnumerateFiles(_directory, pattern))
+            try
             {
-                try
-                {
-                    total += new FileInfo(path).Length;
-                }
-                catch (IOException)
-                {
-                }
-                catch (UnauthorizedAccessException)
-                {
-                }
+                total += new FileInfo(path).Length;
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
             }
         }
 
@@ -938,6 +940,10 @@ public sealed class SessionLog : IDisposable
 
     private static string RoleName(ModelRole role) => SessionMessageRoles.Name(role);
 }
+
+public sealed record SessionListing(
+    IReadOnlyList<SessionSummary> Sessions,
+    long TotalSizeBytes);
 
 /// <summary>
 /// One line of a session file, enough to list a session without loading its transcript.

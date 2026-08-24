@@ -571,12 +571,13 @@ internal static class Program
 
     private static int PrintSessions(ISessionStore sessionStore)
     {
-        var sessions = sessionStore.List();
+        var listing = sessionStore.List();
+        var sessions = listing.Sessions;
 
         if (sessions.Count == 0)
         {
             Console.WriteLine("No sessions.");
-            Console.WriteLine($"Total on disk: {FormatBytes(0)}");
+            Console.WriteLine($"Total on disk: {FormatBytes(listing.TotalSizeBytes)}");
             return 0;
         }
 
@@ -589,7 +590,7 @@ internal static class Program
         }
 
         Console.WriteLine();
-        Console.WriteLine($"{sessions.Count} session(s), {FormatBytes(sessionStore.TotalSizeBytes())} total on disk");
+        Console.WriteLine($"{sessions.Count} session(s), {FormatBytes(listing.TotalSizeBytes)} total on disk");
         return 0;
     }
 
@@ -640,7 +641,7 @@ internal static class Program
               wfx run [options] <prompt>    Run one task
               wfx models [options]          Show provider/model configuration
               wfx config [options]          Inspect effective configuration
-              wfx sessions [options]        List sessions with workspace, timestamps, and size
+              wfx sessions [options]        List sessions with workspace, timestamps, sizes, and total
               wfx resume [options]          Resume the latest session for this workspace
 
             Options:

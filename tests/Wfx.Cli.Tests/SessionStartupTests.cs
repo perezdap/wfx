@@ -5,6 +5,7 @@ using Wfx.Core;
 
 namespace Wfx.Cli.Tests;
 
+[Collection("Console")]
 public sealed class SessionStartupTests
 {
     [Fact]
@@ -21,13 +22,13 @@ public sealed class SessionStartupTests
             var exitCode = await Program.RunAsync(
                 RunArguments,
                 httpClient,
-                new TestSessionStore(store),
+                store,
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(0, exitCode);
             Assert.Contains("finished", console.Output.ToString());
-            Assert.Contains("wfx: warning: Could not create session:", console.Error.ToString());
-            Assert.Contains("The invocation will continue without a session.", console.Error.ToString());
+            Assert.Contains("wfx: warning: Could not create session:", console.ErrorText);
+            Assert.Contains("The invocation will continue without a session.", console.ErrorText);
             Assert.True(File.Exists(sessionsPath));
         }
         finally
@@ -45,16 +46,14 @@ public sealed class SessionStartupTests
         var exitCode = await Program.RunAsync(
             InteractiveArguments,
             httpClient,
-            new TestSessionStore(
-                new SessionStore(),
-                _ => throw new UnauthorizedAccessException("session ACL denied")),
+            new TestSessionStore(create: _ => throw new UnauthorizedAccessException("session ACL denied")),
             TestContext.Current.CancellationToken);
 
         Assert.Equal(0, exitCode);
         Assert.Contains("finished", console.Output.ToString());
         Assert.Contains(
             "wfx: warning: Could not create session: session ACL denied. The invocation will continue without a session.",
-            console.Error.ToString());
+            console.ErrorText);
     }
 
     [Fact]
@@ -68,10 +67,11 @@ public sealed class SessionStartupTests
         try
         {
             var store = new SessionStore(directory.FullName);
+            var testStore = new TestSessionStore(create: workspace => openedSession = store.Create(workspace));
             var exitCode = await Program.RunAsync(
                 RunArguments,
                 httpClient,
-                new TestSessionStore(store, workspace => openedSession = store.Create(workspace)),
+                testStore,
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(1, exitCode);
@@ -102,12 +102,12 @@ public sealed class SessionStartupTests
             var exitCode = await Program.RunAsync(
                 RunArguments,
                 httpClient,
-                new TestSessionStore(store),
+                store,
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(0, exitCode);
-            Assert.Contains("wfx: session ", console.Error.ToString());
-            Assert.DoesNotContain("wfx: warning: Could not create session", console.Error.ToString());
+            Assert.Contains("wfx: session ", console.ErrorText);
+            Assert.DoesNotContain("wfx: warning: Could not create session", console.ErrorText);
             Assert.Single(Directory.GetFiles(directory.FullName, "*.jsonl"));
         }
         finally
@@ -123,21 +123,20 @@ public sealed class SessionStartupTests
         using var console = new ConsoleCapture();
         var createCalled = false;
 
+        var store = new TestSessionStore(create: _ =>
+        {
+            createCalled = true;
+            throw new InvalidOperationException("Session creation must be skipped.");
+        });
         var exitCode = await Program.RunAsync(
             NoSessionArguments,
             httpClient,
-            new TestSessionStore(
-                new SessionStore(),
-                _ =>
-                {
-                    createCalled = true;
-                    throw new InvalidOperationException("Session creation must be skipped.");
-                }),
+            store,
             TestContext.Current.CancellationToken);
 
         Assert.Equal(0, exitCode);
         Assert.False(createCalled);
-        Assert.DoesNotContain("session ", console.Error.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("session ", console.ErrorText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -692,42 +691,6 @@ public sealed class SessionStartupTests
         Timeout = Timeout.InfiniteTimeSpan
     };
 
-    private sealed class ConsoleCapture : IDisposable
-    {
-        private readonly TextReader _originalInput = Console.In;
-        private readonly TextWriter _originalOutput = Console.Out;
-        private readonly TextWriter _originalError = Console.Error;
-        private readonly StringReader? _input;
-
-        public ConsoleCapture(string? input = null, TextWriter? error = null)
-        {
-            Output = new StringWriter();
-            Error = error ?? new StringWriter();
-            _input = input is null ? null : new StringReader(input);
-            if (_input is not null)
-            {
-                Console.SetIn(_input);
-            }
-
-            Console.SetOut(Output);
-            Console.SetError(Error);
-        }
-
-        public StringWriter Output { get; }
-
-        public TextWriter Error { get; }
-
-        public void Dispose()
-        {
-            Console.SetIn(_originalInput);
-            Console.SetOut(_originalOutput);
-            Console.SetError(_originalError);
-            _input?.Dispose();
-            Output.Dispose();
-            Error.Dispose();
-        }
-    }
-
     private sealed class SessionAnnouncementFailingWriter : TextWriter
     {
         private readonly StringWriter _written = new();
@@ -757,23 +720,6 @@ public sealed class SessionStartupTests
 
             base.Dispose(disposing);
         }
-    }
-
-    private sealed class TestSessionStore(
-        ISessionStore inner,
-        Func<string, SessionLog>? create = null) : ISessionStore
-    {
-        public SessionLog Create(string workspaceRoot) => create?.Invoke(workspaceRoot) ?? inner.Create(workspaceRoot);
-
-        public SessionLog Open(string sessionId) => inner.Open(sessionId);
-
-        public SessionTranscript Read(string sessionId) => inner.Read(sessionId);
-
-        public IReadOnlyList<SessionSummary> List() => inner.List();
-
-        public long TotalSizeBytes() => inner.TotalSizeBytes();
-
-        public SessionSummary? FindLatest(string workspaceRoot) => inner.FindLatest(workspaceRoot);
     }
 
     private sealed class StubHandler : HttpMessageHandler

@@ -22,7 +22,8 @@ public sealed class SessionListingTests
             log.WriteMessage(new ModelMessage(ModelRole.Assistant, "second"));
         }
 
-        var sessions = store.List();
+        var listing = store.List();
+        var sessions = listing.Sessions;
         Assert.Equal(2, sessions.Count);
         Assert.All(sessions, session =>
         {
@@ -40,7 +41,7 @@ public sealed class SessionListingTests
                 System.IO.Path.Combine(temp.Path, "sessions"),
                 "*.lock")
             .Sum(path => new FileInfo(path).Length);
-        Assert.Equal(sessions.Sum(session => session.SizeBytes) + leaseBytes, store.TotalSizeBytes());
+        Assert.Equal(sessions.Sum(session => session.SizeBytes) + leaseBytes, listing.TotalSizeBytes);
     }
 
     [Fact]
@@ -48,8 +49,9 @@ public sealed class SessionListingTests
     {
         using var temp = new TemporaryDirectory();
         var store = new SessionStore(System.IO.Path.Combine(temp.Path, "sessions"));
-        Assert.Empty(store.List());
-        Assert.Equal(0, store.TotalSizeBytes());
+        var listing = store.List();
+        Assert.Empty(listing.Sessions);
+        Assert.Equal(0, listing.TotalSizeBytes);
     }
 
     [Fact]
@@ -62,7 +64,7 @@ public sealed class SessionListingTests
             System.IO.Path.Combine(sessionsRoot, "20260822T000000Z-aaaaaa.jsonl"),
             "{not header");
         var store = new SessionStore(sessionsRoot);
-        Assert.Empty(store.List());
+        Assert.Empty(store.List().Sessions);
     }
 
     [Fact]
@@ -78,8 +80,8 @@ public sealed class SessionListingTests
 
             // The log is still open (FileShare.Read + FileAccess.Write). Listing must not block
             // or fail under that share arrangement.
-            var sessions = store.List();
-            var session = Assert.Single(sessions);
+            var listing = store.List();
+            var session = Assert.Single(listing.Sessions);
             Assert.Equal(log.Id, session.SessionId);
             Assert.Equal(Path.GetFullPath(workspace), session.Workspace);
             Assert.True(session.SizeBytes > 0);
@@ -107,7 +109,7 @@ public sealed class SessionListingTests
             []);
         var store = new SessionStore(sessionsRoot);
 
-        var session = Assert.Single(store.List());
+        var session = Assert.Single(store.List().Sessions);
 
         Assert.Equal(System.IO.Path.Combine(temp.Path, "rebound"), session.Workspace);
     }
@@ -123,7 +125,7 @@ public sealed class SessionListingTests
         log.Dispose();
         System.IO.File.AppendAllText(path, "{malformed later history}\n");
 
-        var session = Assert.Single(store.List());
+        var session = Assert.Single(store.List().Sessions);
 
         Assert.Equal(Path.GetFullPath(workspace), session.Workspace);
     }
@@ -149,7 +151,7 @@ public sealed class SessionListingTests
         using var document = JsonDocument.Parse(headerLine!);
         var root = document.RootElement;
 
-        var summary = Assert.Single(store.List());
+        var summary = Assert.Single(store.List().Sessions);
         Assert.Equal(root.GetProperty("session_id").GetString(), summary.SessionId);
         Assert.Equal(root.GetProperty("workspace").GetString(), summary.Workspace);
         Assert.Equal(new FileInfo(path).Length, summary.SizeBytes);
