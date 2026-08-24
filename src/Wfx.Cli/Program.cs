@@ -12,7 +12,7 @@ internal static class Program
 
     private const int ApprovalSummaryLength = 400;
 
-    private const int HelpLineWidth = 80;
+    private const int RemediationWrapWidth = 80;
 
     private static bool _unicodeConsole;
 
@@ -717,7 +717,7 @@ internal static class Program
             """);
         // Wrap the shared remediation wording to the help layout; the stderr refusal keeps the
         // same string as one unbroken sentence.
-        foreach (var line in HelpText.Wrap(StartupApprovalGate.Remediation, HelpLineWidth))
+        foreach (var line in HelpText.Wrap(StartupApprovalGate.Remediation, RemediationWrapWidth))
         {
             Console.WriteLine(line);
         }
