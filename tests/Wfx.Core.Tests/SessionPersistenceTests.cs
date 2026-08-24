@@ -252,6 +252,143 @@ public sealed class SessionPersistenceTests
     }
 
     [Fact]
+    public void ResumeRefusesWorkspaceMismatchAndForceRebindsPersistently()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var recordedWorkspace = new TemporaryDirectory();
+        using var currentWorkspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        var created = store.Create(recordedWorkspace.Path);
+        var sessionId = created.Id;
+        var sessionPath = created.FilePath;
+        created.Dispose();
+
+        var exception = Assert.Throws<SessionWorkspaceMismatchException>(
+            () => SessionResume.Open(store, currentWorkspace.Path, sessionId));
+        Assert.Equal(Path.GetFullPath(recordedWorkspace.Path), exception.RecordedWorkspace);
+        Assert.Equal(Path.GetFullPath(currentWorkspace.Path), exception.CurrentWorkspace);
+        Assert.Contains(Path.GetFullPath(recordedWorkspace.Path), exception.Message);
+        Assert.DoesNotContain("workspace_rebound", File.ReadAllText(sessionPath), StringComparison.Ordinal);
+
+        using (var resumed = SessionResume.Open(store, currentWorkspace.Path, sessionId, force: true))
+        {
+            Assert.Equal(Path.GetFullPath(currentWorkspace.Path), resumed.Transcript.Workspace);
+            Assert.Equal(Path.GetFullPath(currentWorkspace.Path), store.Read(sessionId).Workspace);
+        }
+
+        var events = ReadEvents(sessionPath);
+        Assert.Single(events, static e => TypeOf(e) == "header");
+        Assert.Equal(
+            Path.GetFullPath(recordedWorkspace.Path),
+            events[0].GetProperty("workspace").GetString());
+        var rebound = Assert.Single(events, static e => TypeOf(e) == "workspace_rebound");
+        Assert.Equal(Path.GetFullPath(currentWorkspace.Path), rebound.GetProperty("workspace").GetString());
+        Assert.Equal(sessionId, store.FindLatest(currentWorkspace.Path)?.SessionId);
+        Assert.Null(store.FindLatest(recordedWorkspace.Path));
+    }
+
+    [Fact]
+    public void ResumeTreatsATrailingDirectorySeparatorAsTheSameWorkspace()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        var created = store.Create(workspace.Path);
+        var sessionId = created.Id;
+        var sessionPath = created.FilePath;
+        created.Dispose();
+
+        using var resumed = SessionResume.Open(
+            store,
+            workspace.Path + Path.DirectorySeparatorChar,
+            sessionId);
+
+        Assert.Equal(sessionId, resumed.Transcript.SessionId);
+        Assert.DoesNotContain(
+            ReadLines(sessionPath),
+            static line => line.Contains("workspace_rebound", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ResumeLeaseFailsFastWhenSessionIsInUseWhileListingRemainsAvailable()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        var created = store.Create(workspace.Path);
+        var sessionId = created.Id;
+        created.Dispose();
+
+        using (SessionResume.Open(store, workspace.Path, sessionId))
+        {
+            var exception = Assert.Throws<IOException>(
+                () => SessionResume.Open(store, workspace.Path, sessionId));
+            Assert.Contains("session", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("in use", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(sessionId, Assert.Single(store.List()).SessionId);
+            Assert.True(store.TotalSizeBytes() > 0);
+        }
+
+        using var reopened = SessionResume.Open(store, workspace.Path, sessionId);
+        Assert.Equal(sessionId, reopened.Transcript.SessionId);
+    }
+
+    [Fact]
+    public async Task ResumeRepairsInterruptedToolCallsAtTheAgentLoopSeam()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string sessionId = "20260822T150405Z-repair1";
+        var path = Path.Combine(sessions.Path, sessionId + ".jsonl");
+        File.WriteAllText(
+            path,
+            string.Join('\n',
+            [
+                Header(sessionId, workspace.Path),
+                """{"type":"turn_started","profile":null,"provider":"local","protocol":"chat_completions","model":"fake-model"}""",
+                """{"type":"message","role":"system","content":"system"}""",
+                """{"type":"message","role":"user","content":"before"}""",
+                """{"type":"message","role":"assistant","content":"calling","tool_calls":[{"id":"call-a","name":"echo","arguments":"{}"},{"id":"call-b","name":"echo","arguments":"{}"}],"provider_items":[{"type":"reasoning","encrypted_content":"discard-me"}]}""",
+                """{"type":"message","role":"tool","content":"partial","tool_call_id":"call-a","name":"echo"}""",
+                """{"type":"interrupted"}""",
+                """{"type":"message","role":"user","content":"continued"}""",
+                """{"type":"message","role":"assistant","content":"calling again","tool_calls":[{"id":"call-c","name":"echo","arguments":"{}"}]}""",
+                """{"type":"interrupted"}"""
+            ]) + "\n");
+
+        using var resumed = SessionResume.Open(store, workspace.Path, sessionId);
+        var capture = new CapturingModelProvider(new ModelMessage(ModelRole.Assistant, "finished"));
+        await CreateAgent(
+            capture,
+            resumed.Log,
+            workspace.Path,
+            resumed.Transcript.Messages,
+            new AgentOptions(resumed.Transcript.LastEndpoint!))
+            .RunAsync("again", TestContext.Current.CancellationToken);
+
+        Assert.NotNull(capture.LastRequest);
+        var replayed = capture.LastRequest!.Messages;
+        Assert.Equal(
+            [
+                "system",
+                "before",
+                SessionStore.InterruptedMarker,
+                "continued",
+                SessionStore.InterruptedMarker,
+                "again",
+                "finished"
+            ],
+            replayed.Select(static message => message.Content));
+        Assert.DoesNotContain(replayed, static message => message.Role == ModelRole.Tool);
+        Assert.DoesNotContain(replayed, static message => message.ToolCalls is { Count: > 0 });
+        Assert.DoesNotContain(replayed, static message => message.ProviderItemsJson is not null);
+        Assert.Contains(replayed, static message =>
+            message.Role == ModelRole.System &&
+            message.Content!.Contains("previous turn was cancelled", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void FindsLatestSessionOnlyForTheRequestedWorkspace()
     {
         using var sessions = new TemporaryDirectory();

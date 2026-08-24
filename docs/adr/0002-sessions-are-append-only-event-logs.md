@@ -28,7 +28,8 @@ root), and every later line is one event.
   known schema version, and **must** refuse a newer schema version with a clear message rather than
   parsing it optimistically.
 - Event types at v1 are `header`, `turn_started` (carries the endpoint identity), `message`, `usage`,
-  `interrupted`, and `error`. A `message` carries its role, content, tool calls, and, for a tool result,
+  `interrupted`, `error`, and `workspace_rebound` (records a forced workspace rebind without rewriting
+  the header). A `message` carries its role, content, tool calls, and, for a tool result,
   the tool-call ID and name needed to reconstruct a `ModelMessage`. `usage` is recorded per model call
   even though nothing consumes it yet — it is nearly free now and is exactly the data the later
   context-budget and usage-reporting work needs, so omitting it would force a migration.

@@ -188,6 +188,94 @@ public sealed class SessionStartupTests
         }
     }
 
+    [Fact]
+    public async Task ResumeRefusesAnotherWorkspaceAndForceRebindsIt()
+    {
+        using var httpClient = CreateHttpClient();
+        using var console = new ConsoleCapture("/exit\n");
+        var sessions = Directory.CreateTempSubdirectory("wfx-cli-tests-");
+        var recordedWorkspace = Directory.CreateTempSubdirectory("wfx-recorded-workspace-");
+        var store = new SessionStore(sessions.FullName);
+        SessionLog? created = null;
+        try
+        {
+            created = store.Create(recordedWorkspace.FullName);
+            var sessionId = created.Id;
+            var sessionPath = created.FilePath;
+            created.Dispose();
+            created = null;
+
+            var refused = await Program.RunAsync(
+                ["resume", "--id", sessionId, "--provider", "local", "--model", "fake-model"],
+                httpClient,
+                new TestSessionStore(store),
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, refused);
+            Assert.Contains(Path.GetFullPath(recordedWorkspace.FullName), console.Error.ToString());
+            Assert.DoesNotContain("workspace_rebound", File.ReadAllText(sessionPath), StringComparison.Ordinal);
+
+            var forced = await Program.RunAsync(
+                [
+                    "resume",
+                    "--id", sessionId,
+                    "--force",
+                    "--provider", "local",
+                    "--model", "fake-model"
+                ],
+                httpClient,
+                new TestSessionStore(store),
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, forced);
+            Assert.Contains($"Resumed session: {sessionId}", console.Output.ToString());
+            Assert.Contains("\"type\":\"workspace_rebound\"", File.ReadAllText(sessionPath));
+            Assert.Equal(WorkspaceInfo.Discover().Root, store.Read(sessionId).Workspace);
+        }
+        finally
+        {
+            created?.Dispose();
+            Directory.Delete(sessions.FullName, recursive: true);
+            Directory.Delete(recordedWorkspace.FullName, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ResumeReportsSessionInUseWhileSessionsListingStillWorks()
+    {
+        using var httpClient = CreateHttpClient();
+        using var console = new ConsoleCapture();
+        var sessions = Directory.CreateTempSubdirectory("wfx-cli-tests-");
+        var store = new SessionStore(sessions.FullName);
+        var created = store.Create(WorkspaceInfo.Discover().Root);
+        var sessionId = created.Id;
+        created.Dispose();
+        try
+        {
+            using var held = SessionResume.Open(store, WorkspaceInfo.Discover().Root, sessionId);
+            var resumeExitCode = await Program.RunAsync(
+                ["resume", "--id", sessionId, "--provider", "local", "--model", "fake-model"],
+                httpClient,
+                new TestSessionStore(store),
+                TestContext.Current.CancellationToken);
+            var sessionsExitCode = await Program.RunAsync(
+                ["sessions"],
+                httpClient,
+                new TestSessionStore(store),
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, resumeExitCode);
+            Assert.Contains("session", console.Error.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("in use", console.Error.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(0, sessionsExitCode);
+            Assert.Contains(sessionId, console.Output.ToString());
+        }
+        finally
+        {
+            Directory.Delete(sessions.FullName, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -498,6 +586,7 @@ public sealed class SessionStartupTests
         Assert.Equal(0, exitCode);
         Assert.Contains("wfx resume", console.Output.ToString());
         Assert.Contains("--id <session-id>", console.Output.ToString());
+        Assert.Contains("--force", console.Output.ToString());
     }
 
     [Fact]
@@ -538,6 +627,16 @@ public sealed class SessionStartupTests
             () => CliArguments.Parse(["resume", "--no-session"]));
 
         Assert.Contains("'resume' cannot be combined with --no-session", exception.Message);
+    }
+
+    [Fact]
+    public void ForceIsOnlyAcceptedByResume()
+    {
+        var exception = Assert.Throws<ArgumentException>(
+            () => CliArguments.Parse(["run", "--force", "prompt"]));
+
+        Assert.Contains("--force is only valid with 'wfx resume'", exception.Message);
+        Assert.True(CliArguments.Parse(["resume", "--force"]).Force);
     }
 
     private static readonly string[] RunArguments =

@@ -20,6 +20,7 @@ internal sealed record CliArguments(
     bool Verbose,
     bool Debug,
     bool NoSession,
+    bool Force,
     bool ShowHelp,
     bool ShowVersion)
 {
@@ -39,6 +40,7 @@ internal sealed record CliArguments(
         var verbose = false;
         var debug = false;
         var noSession = false;
+        var force = false;
         var showHelp = false;
         var showVersion = false;
         var commandSelected = false;
@@ -63,6 +65,9 @@ internal sealed record CliArguments(
                     break;
                 case "--no-session":
                     noSession = true;
+                    break;
+                case "--force":
+                    force = true;
                     break;
                 case "--id":
                     sessionId = RequireValue(args, ref index, argument);
@@ -151,6 +156,11 @@ internal sealed record CliArguments(
             throw new ArgumentException("'resume' cannot be combined with --no-session.");
         }
 
+        if (force && command != CliCommand.Resume)
+        {
+            throw new ArgumentException("--force is only valid with 'wfx resume'.");
+        }
+
         return new CliArguments(
             command,
             prompt,
@@ -169,6 +179,7 @@ internal sealed record CliArguments(
             verbose,
             debug,
             noSession,
+            force,
             showHelp,
             showVersion);
     }

@@ -221,6 +221,8 @@ Resume a specific session by ID:
 wfx resume --id <session-id>
 ```
 
+A session remains bound to its recorded workspace. Resuming it elsewhere refuses and prints that path; use `--force` to deliberately rebind a moved or renamed workspace. Only one process can resume a session at a time, while `wfx sessions` remains available for inspection.
+
 ## Approval modes
 
 | Mode | Read-only | Workspace write | System change | Dangerous |

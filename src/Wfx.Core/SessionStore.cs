@@ -69,6 +69,9 @@ public sealed class SessionStore : ISessionStore
 {
     private const int TailScanChunkSize = 64 * 1024;
 
+    internal const string InterruptedMarker =
+        "The previous turn was cancelled before all tool results were recorded. Do not assume its unfinished tool calls completed.";
+
     public const int SchemaVersion = 1;
 
     private readonly string _directory;
@@ -86,17 +89,19 @@ public sealed class SessionStore : ISessionStore
     public SessionLog Open(string sessionId)
     {
         var path = ExistingSessionPath(sessionId);
+        var sessionLock = AcquireSessionLock(sessionId);
         FileStream? stream = null;
 
         try
         {
             stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
             TruncateIncompleteTail(stream);
-            return new SessionLog(sessionId, path, stream);
+            return new SessionLog(sessionId, path, stream, sessionLock);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             stream?.Dispose();
+            sessionLock.Dispose();
             throw new IOException($"Could not reopen session '{sessionId}' for append: {exception.Message}", exception);
         }
     }
@@ -194,6 +199,14 @@ public sealed class SessionStore : ISessionStore
                         case "message":
                             messages.Add(ReadMessage(eventRoot, sessionId, index + 1));
                             break;
+                        case "workspace_rebound":
+                            workspace = RequiredString(
+                                eventRoot,
+                                "workspace",
+                                sessionId,
+                                "workspace_rebound",
+                                index + 1);
+                            break;
                         case "header":
                             throw new InvalidDataException(
                                 $"Session '{sessionId}' contains a second header on line {index + 1}.");
@@ -210,7 +223,7 @@ public sealed class SessionStore : ISessionStore
                 path,
                 workspace,
                 createdAt,
-                messages,
+                RepairInterruptedTurns(messages),
                 lastEndpoint);
         }
     }
@@ -219,7 +232,7 @@ public sealed class SessionStore : ISessionStore
     {
         var workspace = Path.GetFullPath(workspaceRoot);
         return List().FirstOrDefault(summary =>
-            summary.Workspace is not null && IsSameWorkspace(summary.Workspace, workspace));
+            summary.Workspace is not null && SessionWorkspace.IsSame(summary.Workspace, workspace));
     }
 
     public SessionLog Create(string workspaceRoot)
@@ -233,21 +246,25 @@ public sealed class SessionStore : ISessionStore
         {
             var id = SessionId.Create(createdAt);
             var path = Path.Combine(_directory, id + ".jsonl");
+            FileStream? sessionLock = null;
             FileStream? stream = null;
             try
             {
+                sessionLock = OpenSessionLock(id);
                 stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
-                var log = new SessionLog(id, path, stream);
+                var log = new SessionLog(id, path, stream, sessionLock);
                 log.WriteHeader(SchemaVersion, id, createdAt, workspace);
                 return log;
             }
             catch (IOException exception) when (File.Exists(path) && stream is null)
             {
+                sessionLock?.Dispose();
                 lastCollision = exception;
             }
             catch
             {
                 stream?.Dispose();
+                sessionLock?.Dispose();
                 try
                 {
                     File.Delete(path);
@@ -325,6 +342,25 @@ public sealed class SessionStore : ISessionStore
 
         return path;
     }
+
+    private FileStream AcquireSessionLock(string sessionId)
+    {
+        try
+        {
+            return OpenSessionLock(sessionId);
+        }
+        catch (IOException exception)
+        {
+            throw new IOException($"Session in use: '{sessionId}'.", exception);
+        }
+    }
+
+    private FileStream OpenSessionLock(string sessionId) =>
+        new(
+            Path.Combine(_directory, sessionId + ".lock"),
+            FileMode.OpenOrCreate,
+            FileAccess.ReadWrite,
+            FileShare.None);
 
     private static IReadOnlyList<string> ReadCompleteLines(string path)
     {
@@ -446,6 +482,51 @@ public sealed class SessionStore : ISessionStore
             providerItems);
     }
 
+    private static IReadOnlyList<ModelMessage> RepairInterruptedTurns(IReadOnlyList<ModelMessage> messages)
+    {
+        var repaired = new List<ModelMessage>(messages.Count);
+        for (var index = 0; index < messages.Count;)
+        {
+            var assistant = messages[index];
+            if (assistant.Role != ModelRole.Assistant || assistant.ToolCalls is not { Count: > 0 } calls)
+            {
+                repaired.Add(assistant);
+                index++;
+                continue;
+            }
+
+            var afterResults = index + 1;
+            var results = new List<ModelMessage>();
+            while (afterResults < messages.Count && messages[afterResults].Role == ModelRole.Tool)
+            {
+                results.Add(messages[afterResults]);
+                afterResults++;
+            }
+
+            var callIds = calls.Select(static call => call.Id).ToHashSet(StringComparer.Ordinal);
+            var resultIds = results
+                .Where(static result => result.ToolCallId is not null)
+                .Select(static result => result.ToolCallId!)
+                .ToHashSet(StringComparer.Ordinal);
+            var complete = callIds.Count == calls.Count &&
+                resultIds.Count == results.Count &&
+                callIds.SetEquals(resultIds);
+            if (complete)
+            {
+                repaired.Add(assistant);
+                repaired.AddRange(results);
+            }
+            else
+            {
+                repaired.Add(new ModelMessage(ModelRole.System, InterruptedMarker));
+            }
+
+            index = afterResults;
+        }
+
+        return repaired;
+    }
+
     private static string RequiredString(JsonElement root, string name, string sessionId, string eventName, int? line = null)
     {
         if (root.ValueKind != JsonValueKind.Object ||
@@ -468,42 +549,19 @@ public sealed class SessionStore : ISessionStore
                 : throw new InvalidDataException(
                     $"Session '{sessionId}' event property '{name}' must be a string or null on line {line}.");
 
-    private static bool IsSameWorkspace(string recordedWorkspace, string workspace)
-    {
-        try
-        {
-            return string.Equals(
-                Path.GetFullPath(recordedWorkspace),
-                workspace,
-                StringComparison.OrdinalIgnoreCase);
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-        catch (NotSupportedException)
-        {
-            return false;
-        }
-    }
-
     private static SessionSummary? ReadSummary(string path)
     {
-        // The header is always line 1 and is written once before any event, so reading just the
-        // first line is safe even while another process appends to the same file. An open log
-        // holds the file with FileShare.Read + FileAccess.Write, so a reader must share Write
-        // (FileShare.ReadWrite) or the open is refused; reads stay lock-free.
+        // Listing never acquires the session lease. Complete lines can be read while an owner
+        // appends, and a forced rebind event supersedes the workspace recorded in the header.
         try
         {
-            using var reader = new StreamReader(
-                new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite));
-            var headerLine = reader.ReadLine();
-            if (string.IsNullOrWhiteSpace(headerLine))
+            var lines = ReadCompleteLines(path);
+            if (lines.Count == 0 || string.IsNullOrWhiteSpace(lines[0]))
             {
                 return null;
             }
 
-            using var document = JsonDocument.Parse(headerLine);
+            using var document = JsonDocument.Parse(lines[0]);
             var root = document.RootElement;
             if (!root.TryGetProperty("type", out var type) || type.GetString() != "header")
             {
@@ -525,6 +583,24 @@ public sealed class SessionStore : ISessionStore
                     out var createdOffset)
                     ? (DateTime?)createdOffset.UtcDateTime
                     : null;
+
+            for (var index = 1; index < lines.Count; index++)
+            {
+                if (!lines[index].Contains("workspace_rebound", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                using var eventDocument = JsonDocument.Parse(lines[index]);
+                var eventRoot = eventDocument.RootElement;
+                if (eventRoot.TryGetProperty("type", out var eventType) &&
+                    eventType.GetString() == "workspace_rebound" &&
+                    eventRoot.TryGetProperty("workspace", out var reboundWorkspace) &&
+                    reboundWorkspace.ValueKind == JsonValueKind.String)
+                {
+                    workspace = reboundWorkspace.GetString();
+                }
+            }
 
             return new SessionSummary(
                 sessionId ?? Path.GetFileNameWithoutExtension(path),
@@ -613,14 +689,16 @@ internal static class SessionId
 public sealed class SessionLog : IDisposable
 {
     private readonly FileStream _stream;
+    private readonly FileStream _sessionLock;
     private readonly object _gate = new();
     private bool _disposed;
 
-    internal SessionLog(string id, string filePath, FileStream stream)
+    internal SessionLog(string id, string filePath, FileStream stream, FileStream sessionLock)
     {
         Id = id;
         FilePath = filePath;
         _stream = stream;
+        _sessionLock = sessionLock;
     }
 
     public string Id { get; }
@@ -648,6 +726,13 @@ public sealed class SessionLog : IDisposable
             writer.WriteString("provider", endpoint.Provider);
             writer.WriteString("protocol", endpoint.Protocol);
             writer.WriteString("model", endpoint.Model);
+        });
+
+    internal void WriteWorkspaceRebound(string workspace) =>
+        Write(writer =>
+        {
+            writer.WriteString("type", "workspace_rebound");
+            writer.WriteString("workspace", workspace);
         });
 
     internal void WriteMessage(ModelMessage message) =>
@@ -717,8 +802,21 @@ public sealed class SessionLog : IDisposable
             }
 
             _disposed = true;
-            _stream.Flush(flushToDisk: true);
-            _stream.Dispose();
+            try
+            {
+                _stream.Flush(flushToDisk: true);
+            }
+            finally
+            {
+                try
+                {
+                    _stream.Dispose();
+                }
+                finally
+                {
+                    _sessionLock.Dispose();
+                }
+            }
         }
     }
 
