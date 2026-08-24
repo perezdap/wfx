@@ -32,7 +32,12 @@ public sealed class SessionResume : IDisposable
 
     public SessionLog Log { get; }
 
-    public static SessionResume Open(
+    /// <summary>
+    /// Reads and validates the session selected for resume without acquiring its lease or
+    /// writing a workspace-rebound event. Callers can use the returned transcript to resolve
+    /// pre-turn settings before deciding whether the resume may start.
+    /// </summary>
+    public static SessionTranscript Inspect(
         ISessionStore store,
         WorkspaceInfo currentWorkspace,
         string? sessionId = null,
@@ -48,19 +53,26 @@ public sealed class SessionResume : IDisposable
         }
 
         var workspace = WorkspacePath.NormalizeRoot(currentWorkspace.Root);
-        var selectedId = sessionId;
-        if (selectedId is null)
-        {
-            selectedId = store.FindLatest(workspace)?.SessionId
-                ?? throw new InvalidOperationException(
-                    "No session for this workspace yet. Start one with 'wfx'.");
-        }
-
-        var selectedTranscript = store.Read(selectedId);
+        var selectedId = sessionId ?? store.FindLatest(workspace)?.SessionId
+            ?? throw new InvalidOperationException(
+                "No session for this workspace yet. Start one with 'wfx'.");
+        var transcript = store.Read(selectedId);
         if (!force)
         {
-            ThrowIfWorkspaceMismatch(selectedId, selectedTranscript.Workspace, workspace);
+            ThrowIfWorkspaceMismatch(selectedId, transcript.Workspace, workspace);
         }
+
+        return transcript;
+    }
+
+    public static SessionResume Open(
+        ISessionStore store,
+        WorkspaceInfo currentWorkspace,
+        string? sessionId = null,
+        bool force = false)
+    {
+        var selectedId = Inspect(store, currentWorkspace, sessionId, force).SessionId;
+        var workspace = WorkspacePath.NormalizeRoot(currentWorkspace.Root);
 
         // Re-read after acquiring the lease because another owner may have rebound the session
         // between the optimistic mismatch check and the fail-fast lease attempt.
@@ -103,9 +115,15 @@ public sealed class SessionResume : IDisposable
     }
 
     public ResumeSettingsResolution ResolveSettings(WfxSettingsLayer cli)
+        => ResolveSettings(Transcript, cli);
+
+    public static ResumeSettingsResolution ResolveSettings(
+        SessionTranscript transcript,
+        WfxSettingsLayer cli)
     {
+        ArgumentNullException.ThrowIfNull(transcript);
         ArgumentNullException.ThrowIfNull(cli);
-        var recordedEndpoint = Transcript.LastEndpoint;
+        var recordedEndpoint = transcript.LastEndpoint;
         if (recordedEndpoint is null)
         {
             return new ResumeSettingsResolution(cli, null);

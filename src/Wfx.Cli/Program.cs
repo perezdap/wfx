@@ -60,14 +60,13 @@ internal static class Program
             }
 
             var workspace = WorkspaceInfo.Discover();
-            using var resumedSession = arguments.Command == CliCommand.Resume
-                ? SessionResume.Open(sessionStore, workspace, arguments.SessionId, arguments.Force)
+            var resumeTranscript = arguments.Command == CliCommand.Resume
+                ? SessionResume.Inspect(sessionStore, workspace, arguments.SessionId, arguments.Force)
                 : null;
-            var transcript = resumedSession?.Transcript;
             var settingsLayer = arguments.Settings;
-            if (resumedSession is not null)
+            if (resumeTranscript is not null)
             {
-                var resolution = resumedSession.ResolveSettings(arguments.Settings);
+                var resolution = SessionResume.ResolveSettings(resumeTranscript, arguments.Settings);
                 settingsLayer = resolution.Layer;
                 if (resolution.OverridingProfile is not null)
                 {
@@ -80,18 +79,23 @@ internal static class Program
                 workspace.Root,
                 settingsLayer,
                 arguments.Settings,
-                transcript?.LastEndpoint,
+                resumeTranscript?.LastEndpoint,
                 userProfile);
             foreach (var warning in settings.Warnings)
             {
                 Console.Error.WriteLine($"wfx: warning: {warning}");
             }
 
-            if (StartupApprovalGate.Refuses(arguments.Command, settings.Approval, console))
+            var refusal = StartupApprovalGate.Evaluate(arguments.Command, settings.Approval, console);
+            if (refusal is not null)
             {
-                Console.Error.WriteLine(StartupApprovalGate.RefusalMessage(settings.Approval));
-                return StartupApprovalGate.RefusedExitCode;
+                Console.Error.WriteLine(refusal.Message);
+                return refusal.ExitCode;
             }
+
+            using var resumedSession = resumeTranscript is not null
+                ? SessionResume.Open(sessionStore, workspace, resumeTranscript.SessionId, arguments.Force)
+                : null;
 
             return arguments.Command switch
             {
@@ -707,8 +711,10 @@ internal static class Program
             unless --no-session is passed. Session files remain sensitive despite secret redaction.
 
             wfx run and wfx resume refuse to start when stdin is not a terminal and approval is
-            always or workspace: a tool prompt would block with nobody there to answer it. Pass
-            --approval never or --yolo to run unattended.
+            always or workspace: a tool prompt would block with nobody there to answer it.
+            """);
+        Console.WriteLine(StartupApprovalGate.Remediation);
+        Console.WriteLine("""
 
             Exit codes:
               0    success

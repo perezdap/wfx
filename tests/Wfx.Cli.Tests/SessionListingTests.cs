@@ -9,7 +9,8 @@ public sealed class SessionListingTests
     public async Task SessionsReportsAnEmptyStoreWithoutModelConfiguration()
     {
         var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");
-        using var httpClient = new HttpClient(new UnexpectedRequestHandler());
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient(
+            "The sessions command must not call a model endpoint.");
         using var console = new ConsoleCapture();
         try
         {
@@ -35,7 +36,8 @@ public sealed class SessionListingTests
     public async Task SessionsPrintsRealStoreWorkspaceTimestampsSizeAndTotal()
     {
         var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");
-        using var httpClient = new HttpClient(new UnexpectedRequestHandler());
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient(
+            "The sessions command must not call a model endpoint.");
         using var console = new ConsoleCapture();
         try
         {
@@ -77,7 +79,8 @@ public sealed class SessionListingTests
     [Fact]
     public async Task HelpDocumentsTheSessionsCommand()
     {
-        using var httpClient = new HttpClient(new UnexpectedRequestHandler());
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient(
+            "The sessions command must not call a model endpoint.");
         using var console = new ConsoleCapture();
 
         var exitCode = await CliRunner.RunAsync(
@@ -90,13 +93,5 @@ public sealed class SessionListingTests
         Assert.Contains("wfx sessions [options]", console.Output.ToString());
         Assert.Contains("sizes, and total", console.Output.ToString());
         Assert.Empty(console.ErrorText);
-    }
-
-    private sealed class UnexpectedRequestHandler : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("The sessions command must not call a model endpoint.");
     }
 }

@@ -1,4 +1,3 @@
-using System.Net;
 using System.Text;
 using System.Text.Json;
 using Wfx.Core;
@@ -711,10 +710,7 @@ public sealed class SessionStartupTests
         "do it"
     ];
 
-    private static HttpClient CreateHttpClient() => new(new StubHandler())
-    {
-        Timeout = Timeout.InfiniteTimeSpan
-    };
+    private static HttpClient CreateHttpClient() => CliRunner.CreateCompletedHttpClient();
 
     private sealed class SessionAnnouncementFailingWriter : TextWriter
     {
@@ -747,17 +743,4 @@ public sealed class SessionStartupTests
         }
     }
 
-    private sealed class StubHandler : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(
-                    "data: {\"choices\":[{\"delta\":{\"content\":\"finished\"}}]}\n\ndata: [DONE]\n\n",
-                    Encoding.UTF8,
-                    "text/event-stream")
-            });
-    }
 }

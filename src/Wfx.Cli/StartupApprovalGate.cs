@@ -9,22 +9,31 @@ namespace Wfx.Cli;
 /// </summary>
 internal static class StartupApprovalGate
 {
-    /// <summary>Exit code for a turn the gate refused to start.</summary>
-    public const int RefusedExitCode = 3;
+    public const string Remediation =
+        "Pass --approval never or --yolo to run unattended; never refuses tool calls that need " +
+        "approval, while yolo bypasses the prompts.";
 
-    public static bool Refuses(CliCommand command, ApprovalMode approval, IConsoleEnvironment console) =>
-        IsTurnCommand(command) &&
-        CanPrompt(approval) &&
-        console.IsInputRedirected;
+    public static StartupApprovalRefusal? Evaluate(
+        CliCommand command,
+        ApprovalMode approval,
+        IConsoleEnvironment console)
+    {
+        if (!IsTurnCommand(command) ||
+            !ApprovalPolicy.CanPrompt(approval) ||
+            !console.IsInputRedirected)
+        {
+            return null;
+        }
 
-    public static string RefusalMessage(ApprovalMode approval) =>
-        $"wfx: approval is {WfxConfiguration.FormatApprovalMode(approval)} and stdin is not a terminal, " +
-        "so no one can answer a tool approval prompt. Pass --approval never to refuse tool calls that " +
-        "need approval, or --yolo to bypass the prompts.";
+        return new StartupApprovalRefusal(
+            ExitCode: 3,
+            Message:
+                $"wfx: approval is {WfxConfiguration.FormatApprovalMode(approval)} and stdin is not a terminal, " +
+                $"so no one can answer a tool approval prompt. {Remediation}");
+    }
 
     private static bool IsTurnCommand(CliCommand command) =>
         command is CliCommand.Run or CliCommand.Resume;
-
-    private static bool CanPrompt(ApprovalMode approval) =>
-        approval is ApprovalMode.Always or ApprovalMode.Workspace;
 }
+
+internal sealed record StartupApprovalRefusal(int ExitCode, string Message);
