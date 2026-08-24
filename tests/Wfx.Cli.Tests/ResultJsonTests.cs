@@ -292,7 +292,7 @@ public sealed partial class ResultJsonTests
     }
 
     [Fact]
-    public async Task ModelsJsonWarnsAboutUnresolvableProfileAndStillListsIt()
+    public async Task ModelsJsonWarnsAboutUnresolvableProfileAndOmitsItFromStdout()
     {
         var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");
         using var httpClient = CliRunner.CreateUnexpectedHttpClient(
@@ -320,14 +320,12 @@ public sealed partial class ResultJsonTests
             Assert.Equal(0, exitCode);
             Assert.Contains("broken", console.ErrorText);
             var result = ParseResultObject(console.Output.ToString());
-            var profiles = result.GetProperty("profiles").EnumerateArray().ToArray();
-            Assert.Equal(2, profiles.Length);
-            var broken = profiles[0];
-            Assert.Equal("broken", broken.GetProperty("name").GetString());
-            Assert.Equal("broken-model", broken.GetProperty("model").GetString());
-            Assert.Equal(JsonValueKind.Null, broken.GetProperty("protocol").ValueKind);
-            Assert.Equal(JsonValueKind.Null, broken.GetProperty("base_url").ValueKind);
-            Assert.False(broken.GetProperty("has_credentials").GetBoolean());
+            // The broken profile cannot supply the contract's string protocol/base_url, so it is
+            // reported on stderr only; every entry on stdout carries the full shape.
+            var profile = Assert.Single(result.GetProperty("profiles").EnumerateArray());
+            Assert.Equal("ok", profile.GetProperty("name").GetString());
+            Assert.Equal("chat_completions", profile.GetProperty("protocol").GetString());
+            Assert.Equal("https://api.openai.com/v1", profile.GetProperty("base_url").GetString());
         }
         finally
         {
@@ -367,6 +365,10 @@ public sealed partial class ResultJsonTests
     [Fact]
     public void ConfigResultOmitsUnsetSecrets()
     {
+        // The unset half of the set-vs-unset redaction pair. It runs at the emitter seam
+        // because the command seam reads the real process environment, so no CLI invocation
+        // can deterministically present an unset credential on a machine with ambient
+        // OPENAI_API_KEY-style variables.
         var settings = new WfxSettings(
             "openai",
             "chat_completions",
@@ -422,7 +424,38 @@ public sealed partial class ResultJsonTests
         Assert.Equal(0, exitCode);
         var output = console.Output.ToString();
         Assert.Contains("--json", output);
+        Assert.Contains("result object", output);
+        Assert.Contains("not an event stream", output);
         Assert.Contains("docs/schemas", output);
+    }
+
+    [Fact]
+    public async Task ConfigJsonExitsTwoOnMalformedConfigFile()
+    {
+        var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient(
+            "The config command must not call a model endpoint.");
+        using var console = new ConsoleCapture();
+        var userProfile = Path.Combine(directory.FullName, "profile-home");
+        Directory.CreateDirectory(Path.Combine(userProfile, ".wfx"));
+        File.WriteAllText(Path.Combine(userProfile, ".wfx", "config.json"), "{ not valid json");
+        try
+        {
+            var exitCode = await CliRunner.RunAsync(
+                ["config", "--json"],
+                httpClient,
+                new TestSessionStore(),
+                TestContext.Current.CancellationToken,
+                userProfile);
+
+            Assert.Equal(2, exitCode);
+            Assert.Empty(console.Output.ToString());
+            Assert.Contains("not valid JSON", console.ErrorText);
+        }
+        finally
+        {
+            Directory.Delete(directory.FullName, recursive: true);
+        }
     }
 
     [Theory]

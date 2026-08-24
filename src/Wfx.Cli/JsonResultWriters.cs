@@ -92,17 +92,27 @@ internal static class JsonResultWriters
         writer.WriteEndArray();
     }
 
+    /// <summary>
+    /// Emits only fully resolved profiles: the contract shape requires string
+    /// <c>protocol</c>/<c>base_url</c>, and a profile that fails to resolve cannot supply
+    /// them. The refusal reason is written to stderr as a warning instead.
+    /// </summary>
     public static void WriteModelsResult(Utf8JsonWriter writer, WfxSettings settings)
     {
         writer.WriteNumber("schema_version", SchemaVersion);
         writer.WriteStartArray("profiles");
-        foreach (var profile in settings.ConfiguredModelProfiles)
+        foreach (var profile in settings.ModelListing)
         {
+            if (profile.Error is not null || profile.Protocol is null || profile.BaseUri is null)
+            {
+                continue;
+            }
+
             writer.WriteStartObject();
             writer.WriteString("name", profile.Name);
             writer.WriteString("provider", profile.Provider);
-            WriteStringOrNull(writer, "protocol", profile.Protocol);
-            WriteStringOrNull(writer, "base_url", profile.BaseUri?.ToString());
+            writer.WriteString("protocol", profile.Protocol);
+            writer.WriteString("base_url", profile.BaseUri.ToString());
             writer.WriteString("model", profile.Model);
             writer.WriteBoolean("has_credentials", profile.HasCredentials);
             writer.WriteEndObject();

@@ -344,7 +344,7 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
-    public void Load_ConfiguredModelProfilesExposeEndpointAndCredentials()
+    public void Load_ModelListingExposesEndpointAndCredentials()
     {
         using var workspace = new TemporaryDirectory();
         using var profile = new TemporaryDirectory();
@@ -366,7 +366,7 @@ public sealed class ConfigurationTests
 
         // Only profiles carrying a model key appear.
         Assert.Collection(
-            result.ConfiguredModelProfiles,
+            result.ModelListing,
             entry =>
             {
                 Assert.Equal("bare", entry.Name);
@@ -387,7 +387,7 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
-    public void Load_ConfiguredModelProfileCredentialsReflectAmbientCredential()
+    public void Load_ModelListingCredentialsReflectAmbientCredential()
     {
         using var workspace = new TemporaryDirectory();
         using var profile = new TemporaryDirectory();
@@ -400,17 +400,30 @@ public sealed class ConfigurationTests
             workspace.Path,
             environment: new Dictionary<string, string?>(),
             userProfile: profile.Path);
-        Assert.False(Assert.Single(withoutCredential.ConfiguredModelProfiles).HasCredentials);
+        Assert.False(Assert.Single(withoutCredential.ModelListing).HasCredentials);
 
         var withCredential = WfxConfiguration.Load(
             workspace.Path,
             environment: new Dictionary<string, string?> { ["OPENAI_API_KEY"] = "ambient-secret" },
             userProfile: profile.Path);
-        Assert.True(Assert.Single(withCredential.ConfiguredModelProfiles).HasCredentials);
+        Assert.True(Assert.Single(withCredential.ModelListing).HasCredentials);
     }
 
     [Fact]
-    public void Load_ConfiguredModelProfilesCarryResolutionError()
+    public void ReadFile_RejectsMalformedJsonAsConfigurationError()
+    {
+        using var temp = new TemporaryDirectory();
+        var path = Path.Combine(temp.Path, "config.json");
+        File.WriteAllText(path, "{ not valid json");
+
+        var exception = Assert.Throws<InvalidOperationException>(() => WfxConfiguration.ReadFile(path));
+
+        Assert.Contains("not valid JSON", exception.Message);
+        Assert.Contains(path, exception.Message);
+    }
+
+    [Fact]
+    public void Load_ModelListingCarriesResolutionError()
     {
         using var workspace = new TemporaryDirectory();
         using var profile = new TemporaryDirectory();
@@ -428,7 +441,7 @@ public sealed class ConfigurationTests
             environment: new Dictionary<string, string?>(),
             userProfile: profile.Path);
 
-        var entry = Assert.Single(result.ConfiguredModelProfiles);
+        var entry = Assert.Single(result.ModelListing);
         Assert.Equal("broken", entry.Name);
         Assert.Equal("broken-model", entry.Model);
         Assert.Null(entry.Protocol);

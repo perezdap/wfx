@@ -655,7 +655,7 @@ internal static class Program
     {
         // Unresolvable profiles still appear in the result object with null endpoint fields;
         // the reason is out-of-band on stderr so the stdout contract stays the spec shape.
-        foreach (var profile in settings.ConfiguredModelProfiles)
+        foreach (var profile in settings.ModelListing)
         {
             if (profile.Error is not null)
             {
@@ -765,8 +765,8 @@ internal static class Program
             Resume a session in a new process with wfx resume, or wfx resume --id <session-id>.
 
             Machine-readable output: wfx sessions --json, wfx config --json, and wfx models --json
-            write one JSON object to stdout. Shapes carry schema_version 1 and are published under
-            docs/schemas/ with every field marked public or internal.
+            write one JSON result object to stdout, not an event stream. Shapes carry schema_version
+            1 and are published under docs/schemas/ with every field marked public or internal.
 
             Configuration precedence: CLI > environment > project > user > defaults.
             Prefer WFX_API_KEY for credentials. WFX never prints API keys.

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:wfx:models-result:v1",
   "title": "WFX models result object v1",
-  "description": "The single JSON object emitted on stdout by 'wfx models --json'. Only profiles carrying a model key appear. Profiles that fail to resolve carry null endpoint fields; the reason is written to stderr as a warning.",
+  "description": "The single JSON object emitted on stdout by 'wfx models --json'. Only profiles carrying a model key appear, and only when they resolve: a profile that fails to resolve is omitted here and reported as a warning on stderr.",
   "type": "object",
   "required": ["schema_version", "profiles"],
   "properties": {
@@ -21,16 +21,8 @@
       "properties": {
         "name": { "type": "string", "minLength": 1, "x-wfx-visibility": "public" },
         "provider": { "type": "string", "x-wfx-visibility": "public" },
-        "protocol": {
-          "type": ["string", "null"],
-          "description": "Null when the profile fails to resolve.",
-          "x-wfx-visibility": "public"
-        },
-        "base_url": {
-          "type": ["string", "null"],
-          "description": "Null when the profile fails to resolve.",
-          "x-wfx-visibility": "public"
-        },
+        "protocol": { "type": "string", "x-wfx-visibility": "public" },
+        "base_url": { "type": "string", "x-wfx-visibility": "public" },
         "model": { "type": "string", "minLength": 1, "x-wfx-visibility": "public" },
         "has_credentials": {
           "type": "boolean",

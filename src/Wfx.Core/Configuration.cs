@@ -49,10 +49,11 @@ public sealed record ConfiguredModel(string Profile, string Provider, string Mod
 public sealed record ConfigurationSource(string Layer, string? Path, IReadOnlyList<string> Keys);
 
 /// <summary>
-/// A configured model profile with enough endpoint detail to list it programmatically.
-/// Profiles that fail to resolve carry the resolution error and null endpoint fields.
+/// One entry of the configured-models listing: a profile carrying a model key with enough
+/// endpoint detail to list it programmatically. Entries that fail to resolve carry the
+/// resolution error and null endpoint fields; presentation decides whether to show them.
 /// </summary>
-public sealed record ConfiguredModelProfile(
+public sealed record ModelListingEntry(
     string Name,
     string Provider,
     string? Protocol,
@@ -87,7 +88,7 @@ public sealed record WfxSettings(
     public IReadOnlyList<ConfigurationSource> Sources { get; init; } = [];
 
     /// <summary>Every configured profile carrying a model key, with endpoint detail for listing.</summary>
-    public IReadOnlyList<ConfiguredModelProfile> ConfiguredModelProfiles { get; init; } = [];
+    public IReadOnlyList<ModelListingEntry> ModelListing { get; init; } = [];
 
     internal IReadOnlyList<ConfiguredModelResolution> ConfiguredModelResolutions { get; init; } = [];
 }
@@ -142,7 +143,7 @@ public static class WfxConfiguration
         {
             ConfiguredModels = configuredModels.Select(static resolution => resolution.Model).ToArray(),
             ConfiguredModelResolutions = configuredModels,
-            ConfiguredModelProfiles = configuredModels.Select(static resolution => new ConfiguredModelProfile(
+            ModelListing = configuredModels.Select(static resolution => new ModelListingEntry(
                 resolution.Model.Profile,
                 resolution.Model.Provider,
                 resolution.Settings?.Protocol,
@@ -175,6 +176,19 @@ public static class WfxConfiguration
     [
         "provider", "protocol", "base_url", "api_key", "model", "headers",
         "timeout_seconds", "max_iterations", "approval", "profile"
+    ];
+
+    // The keys whose winning layer is decided by Merge's plain non-null override. This table
+    // mirrors Merge: adding a setting there means adding it here (and to SourceKeyOrder).
+    private static readonly (string Key, Func<WfxSettingsLayer, bool> IsSet)[] MergeDecidedKeys =
+    [
+        ("provider", static layer => layer.Provider is not null),
+        ("protocol", static layer => layer.Protocol is not null),
+        ("base_url", static layer => layer.BaseUrl is not null),
+        ("model", static layer => layer.Model is not null),
+        ("timeout_seconds", static layer => layer.TimeoutSeconds is not null),
+        ("max_iterations", static layer => layer.MaxIterations is not null),
+        ("approval", static layer => layer.Approval is not null)
     ];
 
     private static IReadOnlyList<ConfigurationSource> ComputeSources(
@@ -224,39 +238,12 @@ public static class WfxConfiguration
         var winners = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (name, _, layer) in layers)
         {
-            if (layer.Provider is not null)
+            foreach (var (key, isSet) in MergeDecidedKeys)
             {
-                winners["provider"] = name;
-            }
-
-            if (layer.Protocol is not null)
-            {
-                winners["protocol"] = name;
-            }
-
-            if (layer.BaseUrl is not null)
-            {
-                winners["base_url"] = name;
-            }
-
-            if (layer.Model is not null)
-            {
-                winners["model"] = name;
-            }
-
-            if (layer.TimeoutSeconds is not null)
-            {
-                winners["timeout_seconds"] = name;
-            }
-
-            if (layer.MaxIterations is not null)
-            {
-                winners["max_iterations"] = name;
-            }
-
-            if (layer.Approval is not null)
-            {
-                winners["approval"] = name;
+                if (isSet(layer))
+                {
+                    winners[key] = name;
+                }
             }
         }
 
@@ -468,25 +455,41 @@ public static class WfxConfiguration
 
     public static WfxSettingsLayer ReadFile(string path)
     {
-        using var document = JsonDocument.Parse(File.ReadAllText(path), new JsonDocumentOptions
+        JsonDocument document;
+        try
         {
-            AllowTrailingCommas = true,
-            CommentHandling = JsonCommentHandling.Skip
-        });
-        var root = document.RootElement;
-        if (root.ValueKind != JsonValueKind.Object)
+            document = JsonDocument.Parse(File.ReadAllText(path), new JsonDocumentOptions
+            {
+                AllowTrailingCommas = true,
+                CommentHandling = JsonCommentHandling.Skip
+            });
+        }
+        catch (JsonException exception)
         {
-            throw new InvalidOperationException($"Configuration file must contain a JSON object: {path}");
+            // A file that cannot be parsed is a configuration error, same as a file with the
+            // wrong shape; callers map InvalidOperationException to the config-error exit code.
+            throw new InvalidOperationException(
+                $"Configuration file is not valid JSON: {path}: {exception.Message}",
+                exception);
         }
 
-        IReadOnlyDictionary<string, WfxSettingsLayer>? profiles = null;
-        if (root.TryGetProperty("profiles", out var profilesElement))
+        using (document)
         {
-            profiles = ParseProfiles(profilesElement, path);
-        }
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidOperationException($"Configuration file must contain a JSON object: {path}");
+            }
 
-        var layer = ParseLayer(root, path);
-        return layer with { Profile = GetString(root, "profile"), Profiles = profiles };
+            IReadOnlyDictionary<string, WfxSettingsLayer>? profiles = null;
+            if (root.TryGetProperty("profiles", out var profilesElement))
+            {
+                profiles = ParseProfiles(profilesElement, path);
+            }
+
+            var layer = ParseLayer(root, path);
+            return layer with { Profile = GetString(root, "profile"), Profiles = profiles };
+        }
     }
 
     private static Dictionary<string, WfxSettingsLayer> ParseProfiles(JsonElement profilesElement, string path)
