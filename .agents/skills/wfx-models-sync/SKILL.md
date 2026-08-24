@@ -1,6 +1,6 @@
 ---
 name: wfx-models-sync
-description: "Sync a provider's live /models catalog into wfx named profiles (%USERPROFILE%\\.wfx\\config.json) using tools/Sync-WfxProfiles.ps1. Use when the user wants to add, update, refresh, or list the available models of a wfx provider (venice, deepseek, gemini, qwen-token-plan, cursor, etc.) as selectable profiles."
+description: "Sync a provider's live /models catalog into wfx named profiles (%USERPROFILE%\\.wfx\\config.json) using tools/Sync-WfxProfiles.ps1. Use when the user wants to add, update, refresh, or list the available models of a wfx provider (venice, deepseek, gemini, qwen-token-plan, cursor, ollama, etc.) as selectable profiles."
 ---
 
 # WFX Models Sync
@@ -47,6 +47,7 @@ pwsh tools/Sync-WfxProfiles.ps1 -ListProviders
 | `inception` | api.inceptionlabs.ai/v1 | `INCEPTION_API_KEY` |
 | `meta` | api.meta.ai/v1 | `META_AI_API_KEY` |
 | `neuralwatt` | api.neuralwatt.com/v1 | `NEURALWATT_API_KEY` |
+| `ollama` | 127.0.0.1:11434/v1 (local OpenAI-compat daemon) | none |
 | `poe` | api.poe.com/v1 | `POE_API_KEY` |
 | `qwen-token-plan` | token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1 | `QWEN_TOKEN_PLAN_API_KEY` |
 | `routera` | api.routera.one/v1 | `ROUTERA_API_KEY` |
@@ -58,7 +59,7 @@ Not yet ported from the pi collection: the Cloudflare-AI-Gateway-routed
 providers (`asterlab`, `nube`, `cloudflare-vertex`), Chatbox AI, and Cline.
 Add them to the hashtable in `tools/Sync-WfxProfiles.ps1` when needed.
 Registry entries are ported from the pi skills; only `venice`, `deepseek`,
-`gemini`, and `cursor` have been verified live so far.
+`gemini`, `cursor`, and `ollama` have been verified live so far.
 
 ## Behavior to know before running
 
