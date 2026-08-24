@@ -131,6 +131,106 @@ public sealed class SessionListingTests
     }
 
     [Fact]
+    public void ListReportsLastEndpointFromLatestTurnStarted()
+    {
+        using var temp = new TemporaryDirectory();
+        var store = new SessionStore(System.IO.Path.Combine(temp.Path, "sessions"));
+        var workspace = System.IO.Path.Combine(temp.Path, "workspace");
+        using (var log = store.Create(workspace))
+        {
+            log.WriteTurnStarted(new EndpointIdentity(null, "openai", "chat_completions", "first-model"));
+            log.WriteMessage(new ModelMessage(ModelRole.Assistant, "first turn"));
+            log.WriteTurnStarted(new EndpointIdentity("deep", "openrouter", "responses", "second-model"));
+            log.WriteMessage(new ModelMessage(ModelRole.Assistant, "second turn"));
+        }
+
+        var session = Assert.Single(store.List().Sessions);
+
+        Assert.Equal(
+            new EndpointIdentity("deep", "openrouter", "responses", "second-model"),
+            session.LastEndpoint);
+    }
+
+    [Fact]
+    public void ListReportsNullEndpointForHeaderOnlySession()
+    {
+        using var temp = new TemporaryDirectory();
+        var store = new SessionStore(System.IO.Path.Combine(temp.Path, "sessions"));
+        using (store.Create(System.IO.Path.Combine(temp.Path, "workspace")))
+        {
+        }
+
+        var session = Assert.Single(store.List().Sessions);
+
+        Assert.Null(session.LastEndpoint);
+    }
+
+    [Fact]
+    public void ListReportsEndpointWhenLeaseRequiresFullScan()
+    {
+        using var temp = new TemporaryDirectory();
+        var sessionsRoot = System.IO.Path.Combine(temp.Path, "sessions");
+        Directory.CreateDirectory(sessionsRoot);
+        const string sessionId = "20260822T000000Z-scanned";
+        var workspace = System.IO.Path.Combine(temp.Path, "workspace").Replace("\\", "\\\\");
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(sessionsRoot, sessionId + ".jsonl"),
+            string.Join('\n',
+            [
+                $$"""{"type":"header","schema_version":1,"session_id":"{{sessionId}}","created_at":"2026-08-22T00:00:00Z","workspace":"{{workspace}}"}""",
+                """{"type":"turn_started","profile":"deep","provider":"openrouter","protocol":"responses","model":"scanned-model"}"""
+            ]) + "\n");
+        // A legacy empty lease sidecar forces the full-history scan path.
+        System.IO.File.WriteAllBytes(System.IO.Path.Combine(sessionsRoot, sessionId + ".lock"), []);
+        var store = new SessionStore(sessionsRoot);
+
+        var session = Assert.Single(store.List().Sessions);
+
+        Assert.Equal(
+            new EndpointIdentity("deep", "openrouter", "responses", "scanned-model"),
+            session.LastEndpoint);
+    }
+
+    [Fact]
+    public void ListToleratesMalformedTailWhenReadingEndpoint()
+    {
+        using var temp = new TemporaryDirectory();
+        var store = new SessionStore(System.IO.Path.Combine(temp.Path, "sessions"));
+        var workspace = System.IO.Path.Combine(temp.Path, "workspace");
+        var log = store.Create(workspace);
+        log.WriteTurnStarted(new EndpointIdentity(null, "openai", "chat_completions", "durable-model"));
+        var path = log.FilePath;
+        log.Dispose();
+        System.IO.File.AppendAllText(path, "{malformed later history}\n");
+
+        var session = Assert.Single(store.List().Sessions);
+
+        Assert.Equal(
+            new EndpointIdentity(null, "openai", "chat_completions", "durable-model"),
+            session.LastEndpoint);
+    }
+
+    [Fact]
+    public void ListFindsEndpointBeyondOneTailChunk()
+    {
+        using var temp = new TemporaryDirectory();
+        var store = new SessionStore(System.IO.Path.Combine(temp.Path, "sessions"));
+        var workspace = System.IO.Path.Combine(temp.Path, "workspace");
+        using (var log = store.Create(workspace))
+        {
+            log.WriteTurnStarted(new EndpointIdentity(null, "openai", "chat_completions", "buried-model"));
+            // More than one 64 KB tail-scan chunk of traffic after the last turn_started.
+            log.WriteMessage(new ModelMessage(ModelRole.Assistant, new string('x', 160 * 1024)));
+        }
+
+        var session = Assert.Single(store.List().Sessions);
+
+        Assert.Equal(
+            new EndpointIdentity(null, "openai", "chat_completions", "buried-model"),
+            session.LastEndpoint);
+    }
+
+    [Fact]
     public void ListReadsHeaderFieldsFromDisk()
     {
         using var temp = new TemporaryDirectory();

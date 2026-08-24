@@ -3,6 +3,7 @@ using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using System.Text;
 using System.Text.Json;
 
 namespace Wfx.Core;
@@ -219,8 +220,7 @@ public sealed class SessionStore : ISessionStore
                             // Version 1 vocabulary: turn_started, message, usage, interrupted, error.
                             // Unknown event types are ignored for forward-compatible reads.
                             break;
-                    }
-                }
+                    }                }
             }
 
             RepairInterruptedTail(messages);
@@ -608,6 +608,7 @@ public sealed class SessionStore : ISessionStore
                     ? (DateTime?)createdOffset.UtcDateTime
                     : null;
 
+            EndpointIdentity? lastEndpoint = null;
             if (MustScanWorkspaceRebounds(path))
             {
                 var lines = ReadCompleteLines(path);
@@ -617,12 +618,20 @@ public sealed class SessionStore : ISessionStore
                     {
                         using var eventDocument = JsonDocument.Parse(lines[index]);
                         var eventRoot = eventDocument.RootElement;
-                        if (eventRoot.TryGetProperty("type", out var eventType) &&
-                            eventType.GetString() == "workspace_rebound" &&
+                        if (!eventRoot.TryGetProperty("type", out var eventType))
+                        {
+                            continue;
+                        }
+
+                        if (eventType.GetString() == "workspace_rebound" &&
                             eventRoot.TryGetProperty("workspace", out var reboundWorkspace) &&
                             reboundWorkspace.ValueKind == JsonValueKind.String)
                         {
                             workspace = reboundWorkspace.GetString();
+                        }
+                        else if (eventType.GetString() == "turn_started")
+                        {
+                            lastEndpoint = TryReadListedEndpoint(eventRoot) ?? lastEndpoint;
                         }
                     }
                     catch (JsonException)
@@ -631,13 +640,20 @@ public sealed class SessionStore : ISessionStore
                     }
                 }
             }
+            else
+            {
+                lastEndpoint = ReadLastEndpointFromTail(path);
+            }
 
             return new SessionSummary(
                 sessionId ?? Path.GetFileNameWithoutExtension(path),
                 workspace,
                 createdAt,
                 info.LastWriteTimeUtc,
-                info.Length);
+                info.Length)
+            {
+                LastEndpoint = lastEndpoint
+            };
         }
         catch (IOException)
         {
@@ -652,6 +668,110 @@ public sealed class SessionStore : ISessionStore
             return null;
         }
     }
+
+    /// <summary>
+    /// Walks the file backwards in chunks and returns the endpoint of the last
+    /// <c>turn_started</c> event, without reading the full history of a healthy session.
+    /// Malformed lines are skipped; any I/O failure yields null so listing stays available.
+    /// </summary>
+    private static EndpointIdentity? ReadLastEndpointFromTail(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var end = stream.Length;
+            var carried = string.Empty;
+            var isTailChunk = true;
+            while (end > 0)
+            {
+                var start = Math.Max(0, end - TailScanChunkSize);
+                var buffer = new byte[(int)(end - start)];
+                stream.Position = start;
+                var offset = 0;
+                while (offset < buffer.Length)
+                {
+                    var read = stream.Read(buffer, offset, buffer.Length - offset);
+                    if (read == 0)
+                    {
+                        return null;
+                    }
+
+                    offset += read;
+                }
+
+                var text = Encoding.UTF8.GetString(buffer) + carried;
+                var pieces = text.Split('\n');
+                // pieces[0] may straddle the chunk boundary unless the file start is reached; the
+                // final piece of the tail chunk is the unterminated EOF fragment, which is skipped
+                // the same way ReadCompleteLines drops it.
+                var firstIndex = start == 0 ? 0 : 1;
+                var lastIndex = isTailChunk ? pieces.Length - 2 : pieces.Length - 1;
+                for (var index = lastIndex; index >= firstIndex; index--)
+                {
+                    var line = pieces[index].TrimEnd('\r');
+                    if (!line.Contains("turn_started", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    var endpoint = TryParseListedEndpointLine(line);
+                    if (endpoint is not null)
+                    {
+                        return endpoint;
+                    }
+                }
+
+                carried = pieces[0];
+                isTailChunk = false;
+                end = start;
+            }
+
+            return null;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static EndpointIdentity? TryParseListedEndpointLine(string line)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("type", out var type) ||
+                type.GetString() != "turn_started")
+            {
+                return null;
+            }
+
+            return TryReadListedEndpoint(root);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static EndpointIdentity? TryReadListedEndpoint(JsonElement root)
+    {
+        var provider = OptionalListingString(root, "provider");
+        var protocol = OptionalListingString(root, "protocol");
+        var model = OptionalListingString(root, "model");
+        if (provider is null || protocol is null || model is null)
+        {
+            return null;
+        }
+
+        return new EndpointIdentity(OptionalListingString(root, "profile"), provider, protocol, model);
+    }
+
+    private static string? OptionalListingString(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     private static bool MustScanWorkspaceRebounds(string sessionPath)
     {
@@ -953,4 +1073,8 @@ public sealed record SessionSummary(
     string? Workspace,
     DateTime? CreatedAt,
     DateTime UpdatedAt,
-    long SizeBytes);
+    long SizeBytes)
+{
+    /// <summary>The endpoint identity recorded by the session's last <c>turn_started</c> event, if any.</summary>
+    public EndpointIdentity? LastEndpoint { get; init; }
+}
