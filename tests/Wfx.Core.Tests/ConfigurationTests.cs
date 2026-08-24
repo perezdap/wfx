@@ -207,6 +207,19 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
+    public void Load_AcceptsYoloFromEnvironment()
+    {
+        using var workspace = new TemporaryDirectory();
+
+        var result = WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?> { ["WFX_APPROVAL"] = "yolo" },
+            userProfile: Path.Combine(workspace.Path, "missing-profile"));
+
+        Assert.Equal(ApprovalMode.Yolo, result.Approval);
+    }
+
+    [Fact]
     public void Load_RejectsInvalidApprovalFromEnvironment()
     {
         using var workspace = new TemporaryDirectory();
@@ -216,6 +229,6 @@ public sealed class ConfigurationTests
             environment: new Dictionary<string, string?> { ["WFX_APPROVAL"] = "sometimes" },
             userProfile: Path.Combine(workspace.Path, "missing-profile")));
 
-        Assert.Contains("always, workspace, or never", exception.Message);
+        Assert.Contains("always, workspace, never, or yolo", exception.Message);
     }
 }

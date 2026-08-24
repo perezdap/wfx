@@ -95,14 +95,21 @@ internal sealed record CliArguments(
                 case "--max-iterations":
                     maxIterations = ParseInteger(RequireValue(args, ref index, argument), argument, 1, 100);
                     break;
+                case "--yolo":
+                    approval = CombineApproval(approval, ApprovalMode.Yolo);
+                    break;
                 case "--approval":
-                    approval = RequireValue(args, ref index, argument).ToLowerInvariant() switch
-                    {
-                        "always" => ApprovalMode.Always,
-                        "workspace" => ApprovalMode.Workspace,
-                        "never" => ApprovalMode.Never,
-                        _ => throw new ArgumentException("--approval must be always, workspace, or never.")
-                    };
+                    approval = CombineApproval(
+                        approval,
+                        RequireValue(args, ref index, argument).ToLowerInvariant() switch
+                        {
+                            "always" => ApprovalMode.Always,
+                            "workspace" => ApprovalMode.Workspace,
+                            "never" => ApprovalMode.Never,
+                            "yolo" => ApprovalMode.Yolo,
+                            _ => throw new ArgumentException(
+                                "--approval must be always, workspace, never, or yolo.")
+                        });
                     break;
                 case "run" when !commandSelected:
                     command = CliCommand.Run;
@@ -187,6 +194,16 @@ internal sealed record CliArguments(
             force,
             showHelp,
             showVersion);
+    }
+
+    private static ApprovalMode CombineApproval(ApprovalMode? current, ApprovalMode next)
+    {
+        if (current is { } existing && existing != next)
+        {
+            throw new ArgumentException("Approval mode was specified more than once with different values.");
+        }
+
+        return next;
     }
 
     private static string RequireValue(string[] args, ref int index, string option)

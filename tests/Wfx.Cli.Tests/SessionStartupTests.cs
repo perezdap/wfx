@@ -627,6 +627,31 @@ public sealed class SessionStartupTests
     }
 
     [Fact]
+    public async Task RunWarnsWhenApprovalIsYolo()
+    {
+        using var httpClient = CreateHttpClient();
+        using var console = new ConsoleCapture();
+        var exitCode = await Program.RunAsync(
+            [
+                "run",
+                "--provider", "local",
+                "--protocol", "chat_completions",
+                "--base-url", "https://example.test/v1",
+                "--model", "fake-model",
+                "--approval", "yolo",
+                "--no-session",
+                "do it"
+            ],
+            httpClient,
+            new TestSessionStore(new SessionStore()),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("approval is yolo", console.ErrorText);
+        Assert.Contains("Workspace path checks still apply", console.ErrorText);
+    }
+
+    [Fact]
     public void SessionIdIsOnlyAcceptedByResume()
     {
         var exception = Assert.Throws<ArgumentException>(

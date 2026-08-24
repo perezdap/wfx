@@ -573,7 +573,8 @@ public static class WfxConfiguration
         "always" => ApprovalMode.Always,
         "workspace" => ApprovalMode.Workspace,
         "never" => ApprovalMode.Never,
-        _ => throw new InvalidOperationException("Approval must be always, workspace, or never.")
+        "yolo" => ApprovalMode.Yolo,
+        _ => throw new InvalidOperationException("Approval must be always, workspace, never, or yolo.")
     };
 
     private static int? ParseEnvironmentInteger(IReadOnlyDictionary<string, string?>? environment, string name)
