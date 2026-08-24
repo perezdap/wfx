@@ -209,6 +209,20 @@ List persisted sessions with workspace, timestamps, and size:
 wfx sessions
 ```
 
+Resume the most recently updated session for the current workspace:
+
+```powershell
+wfx resume
+```
+
+Resume a specific session by ID:
+
+```powershell
+wfx resume --id <session-id>
+```
+
+A session remains bound to its recorded workspace. Resuming it elsewhere refuses and prints that path. To deliberately rebind a moved or renamed workspace, select the session explicitly with `wfx resume --id <session-id> --force`. Only one process can hold a session lease at a time, while `wfx sessions` remains available for inspection.
+
 ## Approval modes
 
 | Mode | Read-only | Workspace write | System change | Dangerous |

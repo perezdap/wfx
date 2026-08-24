@@ -221,7 +221,7 @@ public sealed class ProfileConfigurationTests
             { "profiles": { "gamma": {} } }
             """);
 
-        var exception = Assert.Throws<InvalidOperationException>(() => WfxConfiguration.Load(
+        var exception = Assert.Throws<UndefinedProfileException>(() => WfxConfiguration.Load(
             workspace.Path,
             new WfxSettingsLayer { Profile = "missing" },
             new Dictionary<string, string?>(),
@@ -238,7 +238,7 @@ public sealed class ProfileConfigurationTests
     {
         using var workspace = new TemporaryDirectory();
 
-        var exception = Assert.Throws<InvalidOperationException>(() => WfxConfiguration.Load(
+        var exception = Assert.Throws<UndefinedProfileException>(() => WfxConfiguration.Load(
             workspace.Path,
             new WfxSettingsLayer { Profile = "missing" },
             new Dictionary<string, string?>(),

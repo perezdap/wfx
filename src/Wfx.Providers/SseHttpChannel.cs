@@ -71,17 +71,24 @@ internal sealed class SseHttpChannel
     /// Transient statuses (429 and 5xx) are retried with bounded, jittered
     /// backoff, honoring <c>Retry-After</c> when the endpoint sends one. The
     /// request factory runs once per attempt because sent messages cannot be
-    /// replayed. The configured timeout bounds each wait, not the whole stream:
+    /// replayed. A caller-approved rejected response is retried at most once.
+    /// The configured timeout bounds each wait, not the whole stream:
     /// each attempt (headers plus any backoff) gets a fresh window, and so does
     /// every subsequent line read.
     /// </summary>
     public async IAsyncEnumerable<string> ReadDataEventsAsync(
         Func<HttpRequestMessage> createRequest,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken,
+        Func<HttpStatusCode, string, bool>? retryRejectedResponse = null)
     {
         using var timeoutSource = new CancellationTokenSource(_options.Timeout);
         using var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
-        using var response = await SendWithRetriesAsync(createRequest, timeoutSource, linkedSource.Token, cancellationToken).ConfigureAwait(false);
+        using var response = await SendWithRetriesAsync(
+            createRequest,
+            timeoutSource,
+            linkedSource.Token,
+            cancellationToken,
+            retryRejectedResponse).ConfigureAwait(false);
         await using var stream = await response.Content.ReadAsStreamAsync(linkedSource.Token).ConfigureAwait(false);
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
         var sawData = false;
@@ -134,9 +141,12 @@ internal sealed class SseHttpChannel
         Func<HttpRequestMessage> createRequest,
         CancellationTokenSource timeoutSource,
         CancellationToken linkedToken,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<HttpStatusCode, string, bool>? retryRejectedResponse)
     {
-        for (var attempt = 0; ; attempt++)
+        var transientAttempts = 0;
+        var rejectedResponseRetried = false;
+        while (true)
         {
             timeoutSource.CancelAfter(_options.Timeout);
             using var request = createRequest();
@@ -157,24 +167,33 @@ internal sealed class SseHttpChannel
 
             using (response)
             {
-                if (!IsTransient(response.StatusCode) || attempt == MaxRetries)
+                if (IsTransient(response.StatusCode) && transientAttempts < MaxRetries)
                 {
-                    var error = await ReadBoundedAsync(response.Content, 64 * 1024, linkedToken).ConfigureAwait(false);
-                    throw new HttpRequestException(
-                        $"Model endpoint returned {(int)response.StatusCode} {response.ReasonPhrase}: {Redact(error)}",
-                        null,
-                        response.StatusCode);
+                    var delay = GetRetryAfter(response) ?? ComputeBackoff(transientAttempts);
+                    transientAttempts++;
+                    try
+                    {
+                        await _delayAsync(delay, linkedToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeoutSource.IsCancellationRequested)
+                    {
+                        throw new TimeoutException($"Model request exceeded the {_options.Timeout} timeout.");
+                    }
+
+                    continue;
                 }
 
-                var delay = GetRetryAfter(response) ?? ComputeBackoff(attempt);
-                try
+                var error = await ReadBoundedAsync(response.Content, 64 * 1024, linkedToken).ConfigureAwait(false);
+                if (!rejectedResponseRetried && retryRejectedResponse?.Invoke(response.StatusCode, error) is true)
                 {
-                    await _delayAsync(delay, linkedToken).ConfigureAwait(false);
+                    rejectedResponseRetried = true;
+                    continue;
                 }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeoutSource.IsCancellationRequested)
-                {
-                    throw new TimeoutException($"Model request exceeded the {_options.Timeout} timeout.");
-                }
+
+                throw new HttpRequestException(
+                    $"Model endpoint returned {(int)response.StatusCode} {response.ReasonPhrase}: {Redact(error)}",
+                    null,
+                    response.StatusCode);
             }
         }
     }

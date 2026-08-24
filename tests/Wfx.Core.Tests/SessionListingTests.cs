@@ -37,7 +37,11 @@ public sealed class SessionListingTests
             sessions.Single(session => session.Workspace == Path.GetFullPath(workspaceA)).Workspace);
         Assert.Equal(Path.GetFullPath(workspaceB),
             sessions.Single(session => session.Workspace == Path.GetFullPath(workspaceB)).Workspace);
-        Assert.Equal(sessions.Sum(session => session.SizeBytes), listing.TotalSizeBytes);
+        var leaseBytes = Directory.EnumerateFiles(
+                System.IO.Path.Combine(temp.Path, "sessions"),
+                "*.lock")
+            .Sum(path => new FileInfo(path).Length);
+        Assert.Equal(sessions.Sum(session => session.SizeBytes) + leaseBytes, listing.TotalSizeBytes);
     }
 
     [Fact]
@@ -82,6 +86,48 @@ public sealed class SessionListingTests
             Assert.Equal(Path.GetFullPath(workspace), session.Workspace);
             Assert.True(session.SizeBytes > 0);
         }
+    }
+
+    [Fact]
+    public void ListScansLegacyEmptyLeaseSidecarForAWorkspaceRebind()
+    {
+        using var temp = new TemporaryDirectory();
+        var sessionsRoot = System.IO.Path.Combine(temp.Path, "sessions");
+        Directory.CreateDirectory(sessionsRoot);
+        const string sessionId = "20260822T000000Z-rebound";
+        var originalWorkspace = System.IO.Path.Combine(temp.Path, "original").Replace("\\", "\\\\");
+        var reboundWorkspace = System.IO.Path.Combine(temp.Path, "rebound").Replace("\\", "\\\\");
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(sessionsRoot, sessionId + ".jsonl"),
+            string.Join('\n',
+            [
+                $$"""{"type":"header","schema_version":1,"session_id":"{{sessionId}}","created_at":"2026-08-22T00:00:00Z","workspace":"{{originalWorkspace}}"}""",
+                $$"""{"type":"workspace_rebound","workspace":"{{reboundWorkspace}}"}"""
+            ]) + "\n");
+        System.IO.File.WriteAllBytes(
+            System.IO.Path.Combine(sessionsRoot, sessionId + ".lock"),
+            []);
+        var store = new SessionStore(sessionsRoot);
+
+        var session = Assert.Single(store.List().Sessions);
+
+        Assert.Equal(System.IO.Path.Combine(temp.Path, "rebound"), session.Workspace);
+    }
+
+    [Fact]
+    public void ListDoesNotReadNeverReboundSessionHistory()
+    {
+        using var temp = new TemporaryDirectory();
+        var store = new SessionStore(System.IO.Path.Combine(temp.Path, "sessions"));
+        var workspace = System.IO.Path.Combine(temp.Path, "workspace");
+        var log = store.Create(workspace);
+        var path = log.FilePath;
+        log.Dispose();
+        System.IO.File.AppendAllText(path, "{malformed later history}\n");
+
+        var session = Assert.Single(store.List().Sessions);
+
+        Assert.Equal(Path.GetFullPath(workspace), session.Workspace);
     }
 
     [Fact]

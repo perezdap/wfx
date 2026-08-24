@@ -8,16 +8,19 @@ internal enum CliCommand
     Run,
     Models,
     Config,
-    Sessions
+    Sessions,
+    Resume
 }
 
 internal sealed record CliArguments(
     CliCommand Command,
     string? Prompt,
     WfxSettingsLayer Settings,
+    string? SessionId,
     bool Verbose,
     bool Debug,
     bool NoSession,
+    bool Force,
     bool ShowHelp,
     bool ShowVersion)
 {
@@ -30,12 +33,14 @@ internal sealed record CliArguments(
         string? baseUrl = null;
         string? model = null;
         string? profile = null;
+        string? sessionId = null;
         int? timeout = null;
         int? maxIterations = null;
         ApprovalMode? approval = null;
         var verbose = false;
         var debug = false;
         var noSession = false;
+        var force = false;
         var showHelp = false;
         var showVersion = false;
         var commandSelected = false;
@@ -60,6 +65,12 @@ internal sealed record CliArguments(
                     break;
                 case "--no-session":
                     noSession = true;
+                    break;
+                case "--force":
+                    force = true;
+                    break;
+                case "--id":
+                    sessionId = RequireValue(args, ref index, argument);
                     break;
                 case "--provider":
                     provider = RequireValue(args, ref index, argument);
@@ -109,6 +120,10 @@ internal sealed record CliArguments(
                     command = CliCommand.Sessions;
                     commandSelected = true;
                     break;
+                case "resume" when !commandSelected:
+                    command = CliCommand.Resume;
+                    commandSelected = true;
+                    break;
                 default:
                     if (argument.StartsWith("-", StringComparison.Ordinal))
                     {
@@ -131,6 +146,26 @@ internal sealed record CliArguments(
             throw new ArgumentException("The run command requires a prompt.");
         }
 
+        if (sessionId is not null && command != CliCommand.Resume)
+        {
+            throw new ArgumentException("--id is only valid with 'wfx resume'.");
+        }
+
+        if (command == CliCommand.Resume && noSession)
+        {
+            throw new ArgumentException("'resume' cannot be combined with --no-session.");
+        }
+
+        if (force && command != CliCommand.Resume)
+        {
+            throw new ArgumentException("--force is only valid with 'wfx resume'.");
+        }
+
+        if (force && sessionId is null)
+        {
+            throw new ArgumentException("--force requires --id to select the session to rebind.");
+        }
+
         return new CliArguments(
             command,
             prompt,
@@ -145,9 +180,11 @@ internal sealed record CliArguments(
                 MaxIterations = maxIterations,
                 Approval = approval
             },
+            sessionId,
             verbose,
             debug,
             noSession,
+            force,
             showHelp,
             showVersion);
     }

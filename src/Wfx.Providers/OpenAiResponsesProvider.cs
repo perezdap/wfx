@@ -1,3 +1,4 @@
+using System.Net;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -29,9 +30,21 @@ public sealed class OpenAiResponsesProvider : IModelProvider
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var accumulator = new ResponseAccumulator();
+        var body = BuildBody(request);
+        var canDowngrade = request.Messages.Any(static message => message.ProviderItemsJson is not null);
         await foreach (var data in _channel.ReadDataEventsAsync(
-                           () => _channel.CreateRequest("/responses", BuildBody(request)),
-                           cancellationToken).ConfigureAwait(false))
+                           () => _channel.CreateRequest("/responses", body),
+                           cancellationToken,
+                           (statusCode, error) =>
+                           {
+                               if (!canDowngrade || !IsInvalidEncryptedContent(statusCode, error))
+                               {
+                                   return false;
+                               }
+
+                               body = BuildBody(request with { Messages = ProviderItemDowngrade.Strip(request.Messages) });
+                               return true;
+                           }).ConfigureAwait(false))
         {
             string? delta;
             try
@@ -60,6 +73,28 @@ public sealed class OpenAiResponsesProvider : IModelProvider
         }
 
         yield return new ModelCompleted(accumulator.BuildMessage(), accumulator.Usage);
+    }
+
+    private static bool IsInvalidEncryptedContent(HttpStatusCode statusCode, string responseBody)
+    {
+        if (statusCode is not HttpStatusCode.BadRequest)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(responseBody);
+            return document.RootElement.TryGetProperty("error", out var error) &&
+                   error.ValueKind is JsonValueKind.Object &&
+                   error.TryGetProperty("code", out var code) &&
+                   code.ValueKind is JsonValueKind.String &&
+                   code.GetString() == "invalid_encrypted_content";
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static byte[] BuildBody(ModelRequest request)

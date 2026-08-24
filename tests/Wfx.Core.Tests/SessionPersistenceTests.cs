@@ -98,7 +98,7 @@ public sealed class SessionPersistenceTests
     public async Task RecordsProviderItemsAndToolResultsOnMessageEvents()
     {
         using var session = new SessionFixture();
-        const string providerItems = """[{"type":"reasoning","id":"rs-1","encrypted_content":"opaque-blob"}]""";
+        const string providerItems = """[ { "type": "reasoning", "id": "rs-1", "encrypted_content": "opaque-blob" } ]""";
         var model = new SequenceModelProvider([
             new ModelMessage(
                 ModelRole.Assistant,
@@ -116,15 +116,492 @@ public sealed class SessionPersistenceTests
             TypeOf(e) == "message" &&
             e.GetProperty("role").GetString() == "assistant" &&
             e.GetProperty("content").GetString() == "calling");
-        using var items = JsonDocument.Parse(providerItems);
         Assert.Equal(JsonValueKind.Array, assistant.GetProperty("provider_items").ValueKind);
-        Assert.Equal(items.RootElement.GetRawText(), assistant.GetProperty("provider_items").GetRawText());
+        Assert.Equal(providerItems, assistant.GetProperty("provider_items").GetRawText());
 
         var tool = Assert.Single(events, static e =>
             TypeOf(e) == "message" && e.GetProperty("role").GetString() == "tool");
         Assert.Equal("call-1", tool.GetProperty("tool_call_id").GetString());
         Assert.Equal("echo", tool.GetProperty("name").GetString());
         Assert.Contains("echo:hello", tool.GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public async Task ReadsTranscriptAndReplaysProviderItemsAtTheAgentSeam()
+    {
+        using var session = new SessionFixture();
+        const string providerItems = """[ { "type": "reasoning", "id": "rs-1", "encrypted_content": "opaque-blob" } ]""";
+        var first = CreateAgent(
+            new SequenceModelProvider([
+                new ModelMessage(
+                    ModelRole.Assistant,
+                    "first",
+                    [new ModelToolCall("call-1", "echo", "{\"value\":\"hello\"}")],
+                    ProviderItemsJson: providerItems),
+                new ModelMessage(ModelRole.Assistant, "completed")
+            ]),
+            session,
+            new EchoTool(),
+            new AgentOptions(new EndpointIdentity("work", "openrouter", "responses", "fake-model")));
+        await first.RunAsync("one", TestContext.Current.CancellationToken);
+
+        var transcript = new SessionStore(session.SessionsPath).Read(session.Log.Id);
+        Assert.Equal(Path.GetFullPath(session.Workspace), transcript.Workspace);
+        Assert.Equal(new EndpointIdentity("work", "openrouter", "responses", "fake-model"), transcript.LastEndpoint);
+        Assert.Equal(5, transcript.Messages.Count);
+        Assert.Equal(providerItems, transcript.Messages[2].ProviderItemsJson);
+
+        var capture = new CapturingModelProvider(new ModelMessage(ModelRole.Assistant, "second"));
+        var resumed = CreateAgent(
+            capture,
+            session.Log,
+            session.Workspace,
+            transcript.Messages,
+            new AgentOptions(transcript.LastEndpoint!));
+        await resumed.RunAsync("two", TestContext.Current.CancellationToken);
+
+        Assert.NotNull(capture.LastRequest);
+        Assert.Equal(
+            transcript.Messages
+                .Append(new ModelMessage(ModelRole.User, "two"))
+                .Append(new ModelMessage(ModelRole.Assistant, "second")),
+            capture.LastRequest!.Messages);
+        Assert.Equal(providerItems, capture.LastRequest.Messages[2].ProviderItemsJson);
+        Assert.Equal(1, capture.LastRequest.Messages.Count(static message => message.Role == ModelRole.System));
+    }
+
+    [Fact]
+    public async Task OpensExistingSessionForAppendWithoutWritingAnotherHeader()
+    {
+        using var session = new SessionFixture();
+        await CreateAgent(
+            new SequenceModelProvider([new ModelMessage(ModelRole.Assistant, "first")]),
+            session).RunAsync("one", TestContext.Current.CancellationToken);
+        session.Log.Dispose();
+
+        var store = new SessionStore(session.SessionsPath);
+        var beforeOpen = File.ReadAllBytes(session.Log.FilePath);
+        using (store.Open(session.Log.Id))
+        {
+        }
+
+        Assert.Equal(beforeOpen, File.ReadAllBytes(session.Log.FilePath));
+        using var reopened = store.Open(session.Log.Id);
+        var transcript = store.Read(session.Log.Id);
+        await CreateAgent(
+            new SequenceModelProvider([new ModelMessage(ModelRole.Assistant, "second")]),
+            reopened,
+            session.Workspace,
+            transcript.Messages,
+            new AgentOptions(transcript.LastEndpoint!))
+            .RunAsync("two", TestContext.Current.CancellationToken);
+
+        var events = session.Events();
+        Assert.Single(events, static e => TypeOf(e) == "header");
+        Assert.Equal(2, events.Count(static e => TypeOf(e) == "turn_started"));
+        Assert.Contains(events, static e => TypeOf(e) == "message" && e.GetProperty("content").GetString() == "one");
+        Assert.Contains(events, static e => TypeOf(e) == "message" && e.GetProperty("content").GetString() == "two");
+    }
+
+    [Fact]
+    public async Task OpensSessionByDiscardingAnUnterminatedTailBeforeAppending()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var sessions = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        var log = store.Create(workspace.Path);
+        var sessionId = log.Id;
+        var sessionPath = log.FilePath;
+        log.Dispose();
+
+        var durablePrefix = Header(sessionId, Path.GetFullPath(workspace.Path)) + "\r\n";
+        var partial = """{"type":"message","role":"user","content":""" + new string('x', 70_000);
+        File.WriteAllText(
+            sessionPath,
+            durablePrefix + """{"type":"message","role":"user","content":"kept"}""" + "\r\n" + partial);
+
+        using var reopened = store.Open(sessionId);
+        await new SessionRecorder(reopened).OnMessageAsync(
+            new ModelMessage(ModelRole.User, "appended"),
+            TestContext.Current.CancellationToken);
+
+        var transcript = store.Read(sessionId);
+        Assert.Equal(["kept", "appended"], transcript.Messages.Select(static message => message.Content));
+        reopened.Dispose();
+        Assert.StartsWith(
+            durablePrefix + """{"type":"message","role":"user","content":"kept"}""" + "\r\n",
+            File.ReadAllText(sessionPath),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OpenRefusesASessionFileWithNoCompleteLine()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var sessions = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string sessionId = "20260822T150405Z-no-newline";
+        var path = Path.Combine(sessions.Path, sessionId + ".jsonl");
+        var content = Header(sessionId, workspace.Path);
+        File.WriteAllText(path, content);
+
+        var exception = Assert.Throws<IOException>(() => store.Open(sessionId));
+
+        Assert.Contains("no complete newline-terminated event", exception.Message);
+        Assert.Equal(content, File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void ForcedResumeRequiresAnExplicitSessionIdAtTheCoreSeam()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+
+        var exception = Assert.Throws<ArgumentException>(
+            () => SessionResume.Open(store, Workspace(workspace.Path), force: true));
+
+        Assert.Equal("sessionId", exception.ParamName);
+        Assert.Contains("explicit session ID", exception.Message);
+    }
+
+    [Fact]
+    public void ResumeRefusesWorkspaceMismatchAndForceRebindsPersistently()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var recordedWorkspace = new TemporaryDirectory();
+        using var currentWorkspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        var created = store.Create(recordedWorkspace.Path);
+        var sessionId = created.Id;
+        var sessionPath = created.FilePath;
+        created.Dispose();
+
+        var exception = Assert.Throws<SessionWorkspaceMismatchException>(
+            () => SessionResume.Open(store, Workspace(currentWorkspace.Path), sessionId));
+        Assert.Equal(Path.GetFullPath(recordedWorkspace.Path), exception.RecordedWorkspace);
+        Assert.Equal(Path.GetFullPath(currentWorkspace.Path), exception.CurrentWorkspace);
+        Assert.Contains(Path.GetFullPath(recordedWorkspace.Path), exception.Message);
+        Assert.DoesNotContain("workspace_rebound", File.ReadAllText(sessionPath), StringComparison.Ordinal);
+
+        using (var resumed = SessionResume.Open(
+            store,
+            Workspace(currentWorkspace.Path),
+            sessionId,
+            force: true))
+        {
+            Assert.Equal(Path.GetFullPath(currentWorkspace.Path), resumed.Transcript.Workspace);
+            Assert.Equal(Path.GetFullPath(currentWorkspace.Path), store.Read(sessionId).Workspace);
+            Assert.Equal(
+                Path.GetFullPath(currentWorkspace.Path),
+                Assert.Single(store.List().Sessions).Workspace);
+        }
+
+        Assert.Equal(1, new FileInfo(Path.ChangeExtension(sessionPath, ".lock")).Length);
+
+        var events = ReadEvents(sessionPath);
+        Assert.Single(events, static e => TypeOf(e) == "header");
+        Assert.Equal(
+            Path.GetFullPath(recordedWorkspace.Path),
+            events[0].GetProperty("workspace").GetString());
+        var rebound = Assert.Single(events, static e => TypeOf(e) == "workspace_rebound");
+        Assert.Equal(Path.GetFullPath(currentWorkspace.Path), rebound.GetProperty("workspace").GetString());
+        Assert.Equal(sessionId, store.FindLatest(currentWorkspace.Path)?.SessionId);
+        Assert.Null(store.FindLatest(recordedWorkspace.Path));
+    }
+
+    [Fact]
+    public void ResumeTreatsATrailingDirectorySeparatorAsTheSameWorkspace()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        var created = store.Create(workspace.Path);
+        var sessionId = created.Id;
+        var sessionPath = created.FilePath;
+        created.Dispose();
+
+        using var resumed = SessionResume.Open(
+            store,
+            Workspace(workspace.Path + Path.DirectorySeparatorChar),
+            sessionId);
+
+        Assert.Equal(sessionId, resumed.Transcript.SessionId);
+        Assert.DoesNotContain(
+            ReadLines(sessionPath),
+            static line => line.Contains("workspace_rebound", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ResumeUsesThePlatformCaseRuleForWorkspaceRoots()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        var created = store.Create(workspace.Path);
+        var sessionId = created.Id;
+        var sessionPath = created.FilePath;
+        created.Dispose();
+        var differentCase = workspace.Path.ToUpperInvariant();
+        Assert.False(string.Equals(workspace.Path, differentCase, StringComparison.Ordinal));
+
+        using var resumed = SessionResume.Open(store, Workspace(differentCase), sessionId);
+
+        Assert.DoesNotContain(
+            ReadLines(sessionPath),
+            static line => line.Contains("workspace_rebound", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ResumeLeaseFailsFastWhenSessionIsInUseWhileListingRemainsAvailable()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        var created = store.Create(workspace.Path);
+        var sessionId = created.Id;
+        created.Dispose();
+
+        using (SessionResume.Open(store, Workspace(workspace.Path), sessionId))
+        {
+            var exception = Assert.Throws<IOException>(
+                () => SessionResume.Open(store, Workspace(workspace.Path), sessionId));
+            Assert.Contains("session", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("in use", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(sessionId, Assert.Single(store.List().Sessions).SessionId);
+            Assert.True(store.TotalSizeBytes() > 0);
+        }
+
+        using var reopened = SessionResume.Open(store, Workspace(workspace.Path), sessionId);
+        Assert.Equal(sessionId, reopened.Transcript.SessionId);
+    }
+
+    [Fact]
+    public async Task ResumeRepairsInterruptedToolCallsAtTheAgentLoopSeam()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string sessionId = "20260822T150405Z-repair1";
+        var path = Path.Combine(sessions.Path, sessionId + ".jsonl");
+        File.WriteAllText(
+            path,
+            string.Join('\n',
+            [
+                Header(sessionId, workspace.Path),
+                """{"type":"turn_started","profile":null,"provider":"local","protocol":"chat_completions","model":"fake-model"}""",
+                """{"type":"message","role":"system","content":"system"}""",
+                """{"type":"message","role":"user","content":"before"}""",
+                """{"type":"message","role":"assistant","content":"calling","tool_calls":[{"id":"call-a","name":"echo","arguments":"{}"},{"id":"call-b","name":"echo","arguments":"{}"}],"provider_items":[{"type":"reasoning","encrypted_content":"discard-me"}]}""",
+                """{"type":"message","role":"tool","content":"partial","tool_call_id":"call-a","name":"echo"}""",
+                """{"type":"interrupted"}""",
+                """{"type":"message","role":"user","content":"continued"}""",
+                """{"type":"message","role":"assistant","content":"calling again","tool_calls":[{"id":"call-c","name":"echo","arguments":"{}"}]}""",
+                """{"type":"interrupted"}"""
+            ]) + "\n");
+
+        using var resumed = SessionResume.Open(store, Workspace(workspace.Path), sessionId);
+        var capture = new CapturingModelProvider(new ModelMessage(ModelRole.Assistant, "finished"));
+        await CreateAgent(
+            capture,
+            resumed.Log,
+            workspace.Path,
+            resumed.Transcript.Messages,
+            new AgentOptions(resumed.Transcript.LastEndpoint!))
+            .RunAsync("again", TestContext.Current.CancellationToken);
+
+        Assert.NotNull(capture.LastRequest);
+        var replayed = capture.LastRequest!.Messages;
+        Assert.Equal(
+            [
+                "system",
+                "before",
+                SessionStore.InterruptedMarker,
+                "continued",
+                SessionStore.InterruptedMarker,
+                "again",
+                "finished"
+            ],
+            replayed.Select(static message => message.Content));
+        Assert.DoesNotContain(replayed, static message => message.Role == ModelRole.Tool);
+        Assert.DoesNotContain(replayed, static message => message.ToolCalls is { Count: > 0 });
+        Assert.DoesNotContain(replayed, static message => message.ProviderItemsJson is not null);
+        Assert.Contains(replayed, static message =>
+            message.Role == ModelRole.System &&
+            message.Content!.Contains("previous turn was cancelled", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ReadDoesNotRewriteAnUnmarkedNonTrailingToolCallBatch()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string sessionId = "20260822T150405Z-historical";
+        var path = Path.Combine(sessions.Path, sessionId + ".jsonl");
+        File.WriteAllText(
+            path,
+            string.Join('\n',
+            [
+                Header(sessionId, workspace.Path),
+                """{"type":"message","role":"assistant","content":"calling","tool_calls":[{"id":"call-a","name":"echo","arguments":"{}"}]}""",
+                """{"type":"message","role":"user","content":"continued"}""",
+                """{"type":"message","role":"assistant","content":"done"}"""
+            ]) + "\n");
+
+        var transcript = store.Read(sessionId);
+
+        Assert.Equal(3, transcript.Messages.Count);
+        Assert.Single(transcript.Messages[0].ToolCalls!);
+        Assert.DoesNotContain(
+            transcript.Messages,
+            static message => message.Content == SessionStore.InterruptedMarker);
+    }
+
+    [Fact]
+    public void FindsLatestSessionOnlyForTheRequestedWorkspace()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var firstWorkspace = new TemporaryDirectory();
+        using var secondWorkspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        var first = store.Create(firstWorkspace.Path);
+        first.Dispose();
+        var second = store.Create(secondWorkspace.Path);
+        second.Dispose();
+        var latestFirst = store.Create(firstWorkspace.Path);
+        latestFirst.Dispose();
+
+        File.SetLastWriteTimeUtc(
+            Path.Combine(sessions.Path, first.Id + ".jsonl"),
+            DateTime.UtcNow.AddMinutes(-3));
+        File.SetLastWriteTimeUtc(
+            Path.Combine(sessions.Path, second.Id + ".jsonl"),
+            DateTime.UtcNow.AddMinutes(10));
+        File.SetLastWriteTimeUtc(
+            Path.Combine(sessions.Path, latestFirst.Id + ".jsonl"),
+            DateTime.UtcNow.AddMinutes(-1));
+        File.WriteAllText(
+            Path.Combine(sessions.Path, "20260822T150405Z-corrupt-workspace.jsonl"),
+            Header("20260822T150405Z-corrupt-workspace", "C:\\bad*workspace") + "\n");
+
+        Assert.Equal(latestFirst.Id, store.FindLatest(firstWorkspace.Path)?.SessionId);
+        Assert.Equal(second.Id, store.FindLatest(secondWorkspace.Path)?.SessionId);
+        Assert.Null(store.FindLatest(Path.Combine(sessions.Path, "missing-workspace")));
+    }
+
+    [Fact]
+    public void ReadAndOpenRefuseSessionIdsThatCouldEscapeTheStoreDirectory()
+    {
+        using var sessions = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        var ids = new[]
+        {
+            "../outside",
+            "..\\outside",
+            "nested/session",
+            Path.GetFullPath("absolute-session")
+        };
+
+        foreach (var id in ids)
+        {
+            Assert.Throws<FileNotFoundException>(() => store.Read(id));
+            Assert.Throws<FileNotFoundException>(() => store.Open(id));
+        }
+    }
+
+    [Fact]
+    public void ReaderSkipsUnknownEventsAtSupportedSchemaVersions()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string id = "20260822T150405Z-reader1";
+        var path = Path.Combine(sessions.Path, id + ".jsonl");
+        File.WriteAllText(
+            path,
+            Header(id, workspace.Path) + "\n" +
+            """{"type":"future_event","value":"ignored"}""" + "\n" +
+            """{"type":"message","role":"user","content":"kept"}""" + "\n");
+
+        var transcript = store.Read(id);
+        Assert.Single(transcript.Messages);
+        Assert.Equal("kept", transcript.Messages[0].Content);
+    }
+
+    [Fact]
+    public void ReaderSkipsWhitespaceOnlyLinesBetweenEvents()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string id = "20260822T150405Z-whitespace";
+        var path = Path.Combine(sessions.Path, id + ".jsonl");
+        File.WriteAllText(
+            path,
+            Header(id, workspace.Path) + "\n" +
+            """{"type":"message","role":"user","content":"first"}""" + "\n" +
+            "  \t  \n" +
+            """{"type":"message","role":"user","content":"second"}""" + "\n");
+
+        var transcript = store.Read(id);
+        Assert.Equal(["first", "second"], transcript.Messages.Select(static message => message.Content));
+    }
+
+    [Fact]
+    public void ReaderDiscardsAnUnterminatedFinalEvent()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string id = "20260822T150405Z-truncated";
+        var path = Path.Combine(sessions.Path, id + ".jsonl");
+        File.WriteAllText(
+            path,
+            Header(id, workspace.Path) + "\n" +
+            """{"type":"message","role":"user","content":"kept"}""" + "\n" +
+            """{"type":"message","role":"user","content":"truncated"}""");
+
+        var transcript = store.Read(id);
+        Assert.Single(transcript.Messages);
+        Assert.Equal("kept", transcript.Messages[0].Content);
+    }
+
+    [Fact]
+    public void ReaderRefusesANewerSchemaVersion()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string id = "20260822T150405Z-newer1";
+        var path = Path.Combine(sessions.Path, id + ".jsonl");
+        File.WriteAllText(path, Header(id, workspace.Path, schemaVersion: 2) + "\n");
+
+        var exception = Assert.Throws<InvalidDataException>(() => store.Read(id));
+        Assert.Contains("schema_version 2", exception.Message);
+        Assert.Contains("supports version 1", exception.Message);
+    }
+
+    [Fact]
+    public void ReaderRejectsMalformedMidFileJson()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string id = "20260822T150405Z-corrupt1";
+        var path = Path.Combine(sessions.Path, id + ".jsonl");
+        File.WriteAllText(
+            path,
+            Header(id, workspace.Path) + "\n{not-json\n" +
+            """{"type":"message","role":"user","content":"later"}""" + "\n");
+
+        var exception = Assert.Throws<InvalidDataException>(() => store.Read(id));
+        Assert.Contains("line 2", exception.Message);
     }
 
     [Fact]
@@ -323,6 +800,21 @@ public sealed class SessionPersistenceTests
         options ?? new AgentOptions("fake-model"),
         session.Workspace);
 
+    private static Agent CreateAgent(
+        IModelProvider model,
+        SessionLog log,
+        string workspace,
+        IReadOnlyList<ModelMessage> conversation,
+        AgentOptions options) => new(
+        model,
+        new ToolRegistry([new EchoTool()]),
+        new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
+        new StaticContextProvider("test context"),
+        new SessionRecorder(log),
+        options,
+        workspace,
+        conversation);
+
     [SupportedOSPlatform("windows")]
     private static void AssertCurrentUserOnlyAcl(string directory)
     {
@@ -371,7 +863,16 @@ public sealed class SessionPersistenceTests
 
     private static JsonElement[] ReadEvents(string path) => ParseLines(ReadLines(path));
 
+    private static WorkspaceInfo Workspace(string root) =>
+        new(Path.GetFullPath(root), Path.GetFullPath(root), false);
+
     private static string TypeOf(JsonElement element) => element.GetProperty("type").GetString()!;
+
+    private static string Header(string id, string workspace, int schemaVersion = 1)
+    {
+        var escapedWorkspace = workspace.Replace("\\", "\\\\");
+        return $$"""{"type":"header","schema_version":{{schemaVersion}},"session_id":"{{id}}","created_at":"2026-08-22T15:04:05Z","workspace":"{{escapedWorkspace}}"}""";
+    }
 
     private sealed class SessionFixture : IDisposable
     {
@@ -416,6 +917,20 @@ public sealed class SessionPersistenceTests
         {
             await Task.Yield();
             yield return new ModelCompleted(responses[_index++], usage);
+        }
+    }
+
+    private sealed class CapturingModelProvider(ModelMessage response) : IModelProvider
+    {
+        public ModelRequest? LastRequest { get; private set; }
+
+        public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
+            ModelRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            LastRequest = request;
+            await Task.Yield();
+            yield return new ModelCompleted(response);
         }
     }
 
