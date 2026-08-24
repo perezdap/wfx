@@ -284,6 +284,32 @@ public sealed class StartupApprovalGateTests
         Assert.Contains("--approval never or --yolo", help);
     }
 
+    [Fact]
+    public async Task HelpOutputIsNoWiderThanTheOptionsTable()
+    {
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient(UnexpectedModelRequest);
+        using var console = new ConsoleCapture();
+
+        var exitCode = await CliRunner.RunAsync(
+            ["--help"],
+            httpClient,
+            new TestSessionStore(new SessionStore()),
+            TestContext.Current.CancellationToken,
+            consoleEnvironment: FakeConsoleEnvironment.Redirected);
+
+        Assert.Equal(0, exitCode);
+        var lines = console.Output.ToString().Split('\n');
+        // 93 is the width of the --protocol option line, the widest line of the help layout.
+        // The approval-gate remediation must wrap instead of spilling past it (#63).
+        Assert.All(
+            lines,
+            line =>
+            {
+                var trimmed = line.TrimEnd('\r');
+                Assert.True(trimmed.Length <= 93, $"Help line is {trimmed.Length} chars wide: {trimmed}");
+            });
+    }
+
     private static string[] TurnArguments(string command, string? approval, string prompt)
     {
         string[] approvalArguments = approval is null ? [] : ["--approval", approval];

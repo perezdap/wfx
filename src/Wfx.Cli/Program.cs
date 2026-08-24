@@ -12,6 +12,8 @@ internal static class Program
 
     private const int ApprovalSummaryLength = 400;
 
+    private const int RemediationWrapWidth = 80;
+
     private static bool _unicodeConsole;
 
     public static async Task<int> Main(string[] args)
@@ -713,7 +715,12 @@ internal static class Program
             wfx run and wfx resume refuse to start when stdin is not a terminal and approval is
             always or workspace: a tool prompt would block with nobody there to answer it.
             """);
-        Console.WriteLine(StartupApprovalGate.Remediation);
+        // Wrap the shared remediation wording to the help layout; the stderr refusal keeps the
+        // same string as one unbroken sentence.
+        foreach (var line in HelpText.Wrap(StartupApprovalGate.Remediation, RemediationWrapWidth))
+        {
+            Console.WriteLine(line);
+        }
         Console.WriteLine("""
 
             Exit codes:
