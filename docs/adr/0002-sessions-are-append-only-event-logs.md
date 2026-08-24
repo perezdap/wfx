@@ -28,7 +28,8 @@ root), and every later line is one event.
   known schema version, and **must** refuse a newer schema version with a clear message rather than
   parsing it optimistically.
 - Event types at v1 are `header`, `turn_started` (carries the endpoint identity), `message`, `usage`,
-  `interrupted`, and `error`. A `message` carries its role, content, tool calls, and, for a tool result,
+  `interrupted`, `error`, and `workspace_rebound` (records a forced workspace rebind without rewriting
+  the header). A `message` carries its role, content, tool calls, and, for a tool result,
   the tool-call ID and name needed to reconstruct a `ModelMessage`. `usage` is recorded per model call
   even though nothing consumes it yet — it is nearly free now and is exactly the data the later
   context-budget and usage-reporting work needs, so omitting it would force a migration.
@@ -37,12 +38,16 @@ root), and every later line is one event.
   WFX deleting a user's history unasked is a worse failure than a large directory.
 - `resume last` means the most recently updated session **whose workspace is the current workspace**,
   so resuming in the wrong repository is impossible without passing `--id`. Resuming a session whose
-  recorded workspace does not match refuses by default and prints the recorded path; `--force` rebinds.
+  recorded workspace does not match refuses by default and prints the recorded path; an explicit
+  `--id <session-id> --force` rebinds.
   Transcripts are full of absolute paths and tool results describing one specific tree, and replaying
   them against a different tree makes the model confidently wrong about the user's files.
-- Resume takes an advisory exclusive lock and fails fast with "session in use" rather than blocking.
+- Resume holds an exclusive session lease and fails fast with "session in use" rather than blocking.
+  The lease uses a stable `<session-id>.lock` sidecar: owners deny other writers but permit readers, so
+  `wfx sessions` stays lock-free. The sidecar also marks sessions that have ever been rebound, allowing
+  ordinary listing to read only the header while preserving the event log as the binding authority.
   Append-only makes concurrent writes survive, but two interactive processes appending to one session
-  interleave turns into nonsense. Reads (`wfx sessions`) stay lock-free.
+  interleave turns into nonsense.
 
 ## Consequences
 

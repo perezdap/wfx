@@ -58,23 +58,20 @@ internal static class Program
             }
 
             var workspace = WorkspaceInfo.Discover();
-            SessionTranscript? transcript = null;
+            using var resumedSession = arguments.Command == CliCommand.Resume
+                ? SessionResume.Open(sessionStore, workspace, arguments.SessionId, arguments.Force)
+                : null;
+            var transcript = resumedSession?.Transcript;
             var settingsLayer = arguments.Settings;
-            if (arguments.Command == CliCommand.Resume)
+            if (resumedSession is not null)
             {
-                transcript = SelectTranscript(arguments, workspace, sessionStore);
-                if (arguments.Settings.Profile is not null &&
-                    transcript.LastEndpoint is not null &&
-                    !string.Equals(
-                        arguments.Settings.Profile,
-                        transcript.LastEndpoint.Profile,
-                        StringComparison.OrdinalIgnoreCase))
+                var resolution = resumedSession.ResolveSettings(arguments.Settings);
+                settingsLayer = resolution.Layer;
+                if (resolution.OverridingProfile is not null)
                 {
                     Console.Error.WriteLine(
-                        $"wfx: profile '{arguments.Settings.Profile}' overrides the recorded endpoint for this resumed session.");
+                        $"wfx: profile '{resolution.OverridingProfile}' overrides the recorded endpoint for this resumed session.");
                 }
-
-                settingsLayer = ResumeSettingsLayer(arguments.Settings, transcript.LastEndpoint);
             }
 
             var settings = LoadSettings(
@@ -96,9 +93,21 @@ internal static class Program
                     arguments.Prompt!, settings, workspace, arguments, httpClient, sessionStore, cancellationToken)
                     .ConfigureAwait(false),
                 CliCommand.Resume => await RunInteractiveAsync(
-                    settings, workspace, arguments, httpClient, sessionStore, transcript, cancellationToken).ConfigureAwait(false),
+                    settings,
+                    workspace,
+                    arguments,
+                    httpClient,
+                    sessionStore,
+                    resumedSession,
+                    cancellationToken).ConfigureAwait(false),
                 _ => await RunInteractiveAsync(
-                    settings, workspace, arguments, httpClient, sessionStore, null, cancellationToken).ConfigureAwait(false)
+                    settings,
+                    workspace,
+                    arguments,
+                    httpClient,
+                    sessionStore,
+                    null,
+                    cancellationToken).ConfigureAwait(false)
             };
         }
         catch (OperationCanceledException)
@@ -154,7 +163,7 @@ internal static class Program
         CliArguments arguments,
         HttpClient httpClient,
         ISessionStore sessionStore,
-        SessionTranscript? transcript,
+        SessionResume? resumedSession,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(settings.Model) && settings.ConfiguredModels.Count == 0)
@@ -166,9 +175,15 @@ internal static class Program
         Console.WriteLine();
         PrintActiveModel(settings);
         Console.WriteLine($"Workspace: {workspace.Root}");
-        using var session = transcript is null
+        using var createdSession = resumedSession is null
             ? OpenSession(arguments, workspace, Console.Out, "Session: ", sessionStore)
-            : OpenResumedSession(transcript, sessionStore);
+            : null;
+        var session = resumedSession?.Log ?? createdSession;
+        var transcript = resumedSession?.Transcript;
+        if (resumedSession is not null)
+        {
+            Console.WriteLine($"Resumed session: {resumedSession.Transcript.SessionId}");
+        }
 
         Console.WriteLine();
 
@@ -254,26 +269,6 @@ internal static class Program
         return 0;
     }
 
-    private static SessionTranscript SelectTranscript(
-        CliArguments arguments,
-        WorkspaceInfo workspace,
-        ISessionStore sessionStore)
-    {
-        if (arguments.SessionId is not null)
-        {
-            return sessionStore.Read(arguments.SessionId);
-        }
-
-        var latest = sessionStore.FindLatest(workspace.Root);
-        if (latest is null)
-        {
-            throw new InvalidOperationException(
-                "No session for this workspace yet. Start one with 'wfx'.");
-        }
-
-        return sessionStore.Read(latest.SessionId);
-    }
-
     private static WfxSettings LoadSettings(
         string workspaceRoot,
         WfxSettingsLayer layer,
@@ -297,30 +292,6 @@ internal static class Program
                 $"wfx: recorded profile '{recordedEndpoint.Profile}' is no longer configured; using current settings instead.");
             return WfxConfiguration.Load(workspaceRoot, cliOnly, userProfile: userProfile);
         }
-    }
-
-    private static WfxSettingsLayer ResumeSettingsLayer(
-        WfxSettingsLayer cli,
-        EndpointIdentity? recordedEndpoint)
-    {
-        if (recordedEndpoint is null)
-        {
-            return cli;
-        }
-
-        if (cli.Profile is not null &&
-            !string.Equals(cli.Profile, recordedEndpoint.Profile, StringComparison.OrdinalIgnoreCase))
-        {
-            return cli;
-        }
-
-        return cli with
-        {
-            Profile = recordedEndpoint.Profile ?? cli.Profile,
-            Provider = cli.Provider ?? recordedEndpoint.Provider,
-            Protocol = cli.Protocol ?? recordedEndpoint.Protocol,
-            Model = cli.Model ?? recordedEndpoint.Model
-        };
     }
 
     private static bool IsModelCommand(string prompt) =>
@@ -444,21 +415,6 @@ internal static class Program
         try
         {
             output.WriteLine($"{prefix}{session.Id}");
-            return session;
-        }
-        catch
-        {
-            session.Dispose();
-            throw;
-        }
-    }
-
-    private static SessionLog OpenResumedSession(SessionTranscript transcript, ISessionStore sessionStore)
-    {
-        var session = sessionStore.Open(transcript.SessionId);
-        try
-        {
-            Console.WriteLine($"Resumed session: {session.Id}");
             return session;
         }
         catch
@@ -700,6 +656,7 @@ internal static class Program
               --debug                       Show tool result diagnostics
               --no-session                  Do not persist a session log for this invocation
               --id <session-id>             Resume a specific session (only with wfx resume)
+              --force                       Rebind the session selected with --id
               --help                        Show help
               --version                     Show version
 

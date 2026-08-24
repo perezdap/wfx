@@ -46,8 +46,16 @@ _Avoid_: iteration (that is one model call inside a turn), exchange, round
 The (profile, provider, protocol, model) tuple a turn ran under, recorded per turn because `/model` can change it mid-session. Approval mode is deliberately not part of it: approval is a posture of the current invocation, not a property of history.
 _Avoid_: session config, settings (for the recorded tuple)
 
+**Workspace binding**:
+The workspace root a session's transcript describes and against which its future turns may run. Resume refuses a different current workspace by default. A forced rebind, selected explicitly by session ID, appends a `workspace_rebound` event and makes the current workspace the new binding without rewriting history.
+_Avoid_: session path, working directory
+
+**Session lease**:
+Exclusive ownership of session appends for one process lifetime. Resume fails fast with "session in use" when another owner holds the lease; read-only session inspection does not acquire it.
+_Avoid_: session lock (for the domain concept), file lock
+
 **Resume**:
-Continuing an existing session: its transcript is loaded, the last turn's endpoint identity is restored, and new turns append to the same session. Resuming refuses by default when the recorded workspace is not the current workspace.
+Continuing an existing session: its transcript is loaded, the last turn's endpoint identity is restored, a session lease is held, and new turns append to the same session. Resuming refuses by default when the workspace binding is not the current workspace; `--id <session-id> --force` deliberately rebinds it.
 _Avoid_: restore, reopen, replay (replay is re-sending a transcript to an endpoint, not resuming a session)
 
 **Provider items**:
