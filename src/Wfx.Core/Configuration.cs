@@ -40,6 +40,27 @@ public sealed class UndefinedProfileException : InvalidOperationException
 
 public sealed record ConfiguredModel(string Profile, string Provider, string Model);
 
+/// <summary>
+/// One configuration layer's contribution to the effective settings: the layer name
+/// (<c>defaults</c>, <c>user</c>, <c>project</c>, <c>environment</c>, or <c>cli</c>), the file
+/// path the layer was read from when it came from a file, and the setting keys the layer
+/// supplied to the effective result.
+/// </summary>
+public sealed record ConfigurationSource(string Layer, string? Path, IReadOnlyList<string> Keys);
+
+/// <summary>
+/// A configured model profile with enough endpoint detail to list it programmatically.
+/// Profiles that fail to resolve carry the resolution error and null endpoint fields.
+/// </summary>
+public sealed record ConfiguredModelProfile(
+    string Name,
+    string Provider,
+    string? Protocol,
+    Uri? BaseUri,
+    string Model,
+    bool HasCredentials,
+    string? Error);
+
 internal sealed record ConfiguredModelResolution(
     ConfiguredModel Model,
     WfxSettings? Settings,
@@ -61,6 +82,12 @@ public sealed record WfxSettings(
     public string? Profile { get; init; }
 
     public IReadOnlyList<ConfiguredModel> ConfiguredModels { get; init; } = [];
+
+    /// <summary>Per-layer provenance of the effective settings, lowest precedence first.</summary>
+    public IReadOnlyList<ConfigurationSource> Sources { get; init; } = [];
+
+    /// <summary>Every configured profile carrying a model key, with endpoint detail for listing.</summary>
+    public IReadOnlyList<ConfiguredModelProfile> ConfiguredModelProfiles { get; init; } = [];
 
     internal IReadOnlyList<ConfiguredModelResolution> ConfiguredModelResolutions { get; init; } = [];
 }
@@ -101,11 +128,209 @@ public static class WfxConfiguration
         var profile = cli?.Profile ?? environmentLayer.Profile ?? projectLayer?.Profile ?? userLayer?.Profile;
         var settings = ResolveSettings(userLayer, projectLayer, environmentLayer, cli, profile, environment);
         var configuredModels = BuildConfiguredModels(userLayer, projectLayer, environmentLayer, cli, environment);
+        var sources = ComputeSources(
+            userLayer,
+            userLayer is null ? null : userConfig,
+            projectLayer,
+            projectLayer is null ? null : projectConfig,
+            environmentLayer,
+            cli,
+            profile,
+            environment,
+            settings);
         return settings with
         {
             ConfiguredModels = configuredModels.Select(static resolution => resolution.Model).ToArray(),
-            ConfiguredModelResolutions = configuredModels
+            ConfiguredModelResolutions = configuredModels,
+            ConfiguredModelProfiles = configuredModels.Select(static resolution => new ConfiguredModelProfile(
+                resolution.Model.Profile,
+                resolution.Model.Provider,
+                resolution.Settings?.Protocol,
+                resolution.Settings?.BaseUri,
+                resolution.Model.Model,
+                resolution.Settings is not null && HasCredentials(resolution.Settings),
+                resolution.Error)).ToArray(),
+            Sources = sources
         };
+    }
+
+    /// <summary>
+    /// A project-scoped base_url pins the endpoint, so credentials from broader layers are
+    /// suppressed unless the project or CLI scope supplies its own. Both effective resolution
+    /// and provenance attribution depend on the same boundary, computed once here.
+    /// </summary>
+    private static bool ProjectControlsBaseUrl(
+        WfxSettingsLayer? projectLayer,
+        WfxSettingsLayer environmentLayer,
+        WfxSettingsLayer? cli) =>
+        !string.IsNullOrWhiteSpace(projectLayer?.BaseUrl) &&
+        string.IsNullOrWhiteSpace(environmentLayer.BaseUrl) &&
+        string.IsNullOrWhiteSpace(cli?.BaseUrl);
+
+    private static bool HasCredentials(WfxSettings settings) =>
+        settings.ApiKey is not null ||
+        settings.Headers.Values.Any(static value => !string.IsNullOrEmpty(value));
+
+    private static readonly string[] SourceKeyOrder =
+    [
+        "provider", "protocol", "base_url", "api_key", "model", "headers",
+        "timeout_seconds", "max_iterations", "approval", "profile"
+    ];
+
+    private static IReadOnlyList<ConfigurationSource> ComputeSources(
+        WfxSettingsLayer? userLayer,
+        string? userPath,
+        WfxSettingsLayer? projectLayer,
+        string? projectPath,
+        WfxSettingsLayer environmentLayer,
+        WfxSettingsLayer? cli,
+        string? profile,
+        IReadOnlyDictionary<string, string?>? environment,
+        WfxSettings settings)
+    {
+        var profileWinner = cli?.Profile is not null ? "cli"
+            : environmentLayer.Profile is not null ? "environment"
+            : projectLayer?.Profile is not null ? "project"
+            : userLayer?.Profile is not null ? "user"
+            : null;
+
+        if (profile is not null)
+        {
+            (userLayer, projectLayer) = ExpandProfile(profile, userLayer, projectLayer);
+        }
+
+        var layers = new List<(string Name, string? Path, WfxSettingsLayer Layer)>
+        {
+            ("defaults", null, Defaults)
+        };
+        if (userLayer is not null)
+        {
+            layers.Add(("user", userPath, userLayer));
+        }
+
+        if (projectLayer is not null)
+        {
+            layers.Add(("project", projectPath, projectLayer));
+        }
+
+        layers.Add(("environment", null, environmentLayer));
+        if (cli is not null)
+        {
+            layers.Add(("cli", null, cli));
+        }
+
+        var projectControlsBaseUrl = ProjectControlsBaseUrl(projectLayer, environmentLayer, cli);
+
+        var winners = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (name, _, layer) in layers)
+        {
+            if (layer.Provider is not null)
+            {
+                winners["provider"] = name;
+            }
+
+            if (layer.Protocol is not null)
+            {
+                winners["protocol"] = name;
+            }
+
+            if (layer.BaseUrl is not null)
+            {
+                winners["base_url"] = name;
+            }
+
+            if (layer.Model is not null)
+            {
+                winners["model"] = name;
+            }
+
+            if (layer.TimeoutSeconds is not null)
+            {
+                winners["timeout_seconds"] = name;
+            }
+
+            if (layer.MaxIterations is not null)
+            {
+                winners["max_iterations"] = name;
+            }
+
+            if (layer.Approval is not null)
+            {
+                winners["approval"] = name;
+            }
+        }
+
+        if (settings.ApiKey is not null)
+        {
+            if (projectControlsBaseUrl)
+            {
+                if (!string.IsNullOrWhiteSpace(cli?.ApiKey))
+                {
+                    winners["api_key"] = "cli";
+                }
+                else if (!string.IsNullOrWhiteSpace(projectLayer?.ApiKey))
+                {
+                    winners["api_key"] = "project";
+                }
+            }
+            else
+            {
+                foreach (var (name, _, layer) in layers)
+                {
+                    if (!string.IsNullOrWhiteSpace(layer.ApiKey))
+                    {
+                        winners["api_key"] = name;
+                    }
+                }
+
+                // No layer supplied the key, so it came from the provider-specific
+                // credential variable read straight from the environment.
+                winners.TryAdd("api_key", "environment");
+            }
+        }
+
+        if (settings.Headers.Count > 0)
+        {
+            if (projectControlsBaseUrl)
+            {
+                if (cli?.Headers is not null)
+                {
+                    winners["headers"] = "cli";
+                }
+                else if (projectLayer?.Headers is not null)
+                {
+                    winners["headers"] = "project";
+                }
+            }
+            else
+            {
+                foreach (var (name, _, layer) in layers)
+                {
+                    if (layer.Headers is not null)
+                    {
+                        winners["headers"] = name;
+                    }
+                }
+            }
+        }
+
+        if (profileWinner is not null)
+        {
+            winners["profile"] = profileWinner;
+        }
+
+        var sources = new List<ConfigurationSource>();
+        foreach (var (name, path, _) in layers)
+        {
+            var keys = SourceKeyOrder.Where(key => winners.TryGetValue(key, out var winner) && winner == name)
+                .ToArray();
+            if (keys.Length > 0)
+            {
+                sources.Add(new ConfigurationSource(name, path, keys));
+            }
+        }
+
+        return sources;
     }
 
     private static WfxSettings ResolveSettings(
@@ -150,9 +375,7 @@ public static class WfxConfiguration
             throw new InvalidOperationException("The configured base_url must be an absolute HTTP or HTTPS URL.");
         }
 
-        var projectControlsBaseUrl = !string.IsNullOrWhiteSpace(projectLayer?.BaseUrl) &&
-            string.IsNullOrWhiteSpace(environmentLayer.BaseUrl) &&
-            string.IsNullOrWhiteSpace(cli?.BaseUrl);
+        var projectControlsBaseUrl = ProjectControlsBaseUrl(projectLayer, environmentLayer, cli);
         var apiKey = projectControlsBaseUrl
             ? cli?.ApiKey ?? projectLayer?.ApiKey
             : merged.ApiKey;

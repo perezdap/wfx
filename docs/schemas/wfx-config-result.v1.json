@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:wfx:config-result:v1",
+  "title": "WFX config result object v1",
+  "description": "The single JSON object emitted on stdout by 'wfx config --json'. Secret values that are set appear as \"[REDACTED]\"; secret keys that are unset are omitted.",
+  "type": "object",
+  "required": ["schema_version", "effective", "sources"],
+  "properties": {
+    "schema_version": { "const": 1, "x-wfx-visibility": "public" },
+    "effective": { "$ref": "#/$defs/effective", "x-wfx-visibility": "public" },
+    "sources": {
+      "type": "array",
+      "description": "Per-layer provenance of the effective settings, lowest precedence first. A layer appears only when it supplied at least one key.",
+      "x-wfx-visibility": "public",
+      "items": { "$ref": "#/$defs/source" }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "setting_key": {
+      "enum": [
+        "provider", "protocol", "base_url", "api_key", "model", "headers",
+        "timeout_seconds", "max_iterations", "approval", "profile"
+      ]
+    },
+    "effective": {
+      "type": "object",
+      "required": ["provider", "protocol", "base_url", "model", "timeout_seconds", "max_iterations", "approval", "profile"],
+      "properties": {
+        "provider": { "type": "string", "x-wfx-visibility": "public" },
+        "protocol": { "type": "string", "x-wfx-visibility": "public" },
+        "base_url": { "type": "string", "x-wfx-visibility": "public" },
+        "api_key": {
+          "const": "[REDACTED]",
+          "description": "Present only when a credential is set; the value is never emitted.",
+          "x-wfx-visibility": "public"
+        },
+        "model": { "type": "string", "x-wfx-visibility": "public" },
+        "headers": {
+          "type": "object",
+          "description": "Present only when headers are set; every value is redacted.",
+          "additionalProperties": { "const": "[REDACTED]" },
+          "x-wfx-visibility": "public"
+        },
+        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600, "x-wfx-visibility": "public" },
+        "max_iterations": { "type": "integer", "minimum": 1, "maximum": 100, "x-wfx-visibility": "public" },
+        "approval": { "enum": ["always", "workspace", "never", "yolo"], "x-wfx-visibility": "public" },
+        "profile": { "type": ["string", "null"], "x-wfx-visibility": "public" }
+      },
+      "additionalProperties": true
+    },
+    "source": {
+      "type": "object",
+      "required": ["layer", "path", "keys"],
+      "properties": {
+        "layer": {
+          "enum": ["defaults", "user", "project", "environment", "cli"],
+          "x-wfx-visibility": "public"
+        },
+        "path": {
+          "type": ["string", "null"],
+          "description": "The configuration file path for user and project layers; null for defaults, environment, and cli.",
+          "x-wfx-visibility": "public"
+        },
+        "keys": {
+          "type": "array",
+          "description": "The setting keys this layer supplied to the effective result, in canonical key order.",
+          "items": { "$ref": "#/$defs/setting_key" },
+          "x-wfx-visibility": "public"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

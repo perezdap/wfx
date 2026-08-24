@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:wfx:sessions-result:v1",
+  "title": "WFX sessions result object v1",
+  "description": "The single JSON object emitted on stdout by 'wfx sessions --json'. Not an event stream: one object per invocation, schema_version 1.",
+  "type": "object",
+  "required": ["schema_version", "sessions"],
+  "properties": {
+    "schema_version": { "const": 1, "x-wfx-visibility": "public" },
+    "sessions": {
+      "type": "array",
+      "x-wfx-visibility": "public",
+      "items": { "$ref": "#/$defs/session" }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "endpoint": {
+      "type": ["object", "null"],
+      "description": "The endpoint identity recorded by the session's last turn_started event, or null when the session never started a turn.",
+      "required": ["profile", "provider", "protocol", "model"],
+      "properties": {
+        "profile": { "type": ["string", "null"], "x-wfx-visibility": "public" },
+        "provider": { "type": "string", "x-wfx-visibility": "public" },
+        "protocol": { "type": "string", "x-wfx-visibility": "public" },
+        "model": { "type": "string", "x-wfx-visibility": "public" }
+      },
+      "additionalProperties": true
+    },
+    "session": {
+      "type": "object",
+      "required": ["id", "workspace", "created_at", "updated_at", "size_bytes", "endpoint"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "x-wfx-visibility": "public" },
+        "workspace": { "type": ["string", "null"], "x-wfx-visibility": "public" },
+        "created_at": {
+          "type": ["string", "null"],
+          "description": "UTC timestamp, yyyy-MM-ddTHH:mm:ssZ. Null when the session header carries no parseable created_at.",
+          "x-wfx-visibility": "public"
+        },
+        "updated_at": { "type": "string", "description": "UTC timestamp, yyyy-MM-ddTHH:mm:ssZ.", "x-wfx-visibility": "public" },
+        "size_bytes": { "type": "integer", "minimum": 0, "x-wfx-visibility": "public" },
+        "endpoint": { "$ref": "#/$defs/endpoint", "x-wfx-visibility": "public" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -20,6 +20,7 @@ internal sealed record CliArguments(
     bool Verbose,
     bool Debug,
     bool NoSession,
+    bool Json,
     bool Force,
     bool ShowHelp,
     bool ShowVersion)
@@ -40,6 +41,7 @@ internal sealed record CliArguments(
         var verbose = false;
         var debug = false;
         var noSession = false;
+        var json = false;
         var force = false;
         var showHelp = false;
         var showVersion = false;
@@ -66,6 +68,9 @@ internal sealed record CliArguments(
                     break;
                 case "--no-session":
                     noSession = true;
+                    break;
+                case "--json":
+                    json = true;
                     break;
                 case "--force":
                     force = true;
@@ -190,6 +195,7 @@ internal sealed record CliArguments(
             verbose,
             debug,
             noSession,
+            json,
             force,
             showHelp,
             showVersion);

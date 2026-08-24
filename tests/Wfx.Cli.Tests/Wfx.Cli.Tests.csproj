@@ -6,4 +6,9 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Wfx.Cli/Wfx.Cli.csproj" AdditionalProperties="SelfContained=false" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="../../docs/schemas/wfx-sessions-result.v1.json" Link="docs/schemas/wfx-sessions-result.v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../docs/schemas/wfx-config-result.v1.json" Link="docs/schemas/wfx-config-result.v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../docs/schemas/wfx-models-result.v1.json" Link="docs/schemas/wfx-models-result.v1.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

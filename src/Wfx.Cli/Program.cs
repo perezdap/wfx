@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Wfx.Core;
 using Wfx.Providers;
 using Wfx.Tools;
@@ -56,7 +57,7 @@ internal static class Program
             // resolution, which can throw on an unconfigured endpoint.
             if (arguments.Command == CliCommand.Sessions)
             {
-                return PrintSessions(sessionStore);
+                return arguments.Json ? PrintSessionsJson(sessionStore) : PrintSessions(sessionStore);
             }
 
             var workspace = WorkspaceInfo.Discover();
@@ -75,12 +76,25 @@ internal static class Program
                 }
             }
 
-            var settings = LoadSettings(
-                workspace.Root,
-                settingsLayer,
-                arguments.Settings,
-                resumeTranscript?.LastEndpoint,
-                userProfile);
+            WfxSettings settings;
+            try
+            {
+                settings = LoadSettings(
+                    workspace.Root,
+                    settingsLayer,
+                    arguments.Settings,
+                    resumeTranscript?.LastEndpoint,
+                    userProfile);
+            }
+            catch (InvalidOperationException exception)
+                when (arguments.Command is CliCommand.Models or CliCommand.Config)
+            {
+                // Non-turn commands follow the outer exit-code table only: a configuration
+                // error before the result object can be built is exit 2, not a usage error.
+                Console.Error.WriteLine($"wfx: {exception.Message}");
+                return 2;
+            }
+
             foreach (var warning in settings.Warnings)
             {
                 Console.Error.WriteLine($"wfx: warning: {warning}");
@@ -99,8 +113,10 @@ internal static class Program
 
             return arguments.Command switch
             {
-                CliCommand.Models => PrintModels(settings, workspace),
-                CliCommand.Config => PrintConfig(settings, workspace, userProfile),
+                CliCommand.Models => arguments.Json ? PrintModelsJson(settings) : PrintModels(settings, workspace),
+                CliCommand.Config => arguments.Json
+                    ? PrintConfigJson(settings)
+                    : PrintConfig(settings, workspace, userProfile),
                 CliCommand.Run => await RunOnceAsync(
                     arguments.Prompt!,
                     settings,
@@ -629,6 +645,48 @@ internal static class Program
         return 0;
     }
 
+    private static int PrintSessionsJson(ISessionStore sessionStore) =>
+        PrintJsonResult(writer => JsonResultWriters.WriteSessionsResult(writer, sessionStore.List()));
+
+    private static int PrintConfigJson(WfxSettings settings) =>
+        PrintJsonResult(writer => JsonResultWriters.WriteConfigResult(writer, settings));
+
+    private static int PrintModelsJson(WfxSettings settings)
+    {
+        // Unresolvable profiles still appear in the result object with null endpoint fields;
+        // the reason is out-of-band on stderr so the stdout contract stays the spec shape.
+        foreach (var profile in settings.ConfiguredModelProfiles)
+        {
+            if (profile.Error is not null)
+            {
+                Console.Error.WriteLine(
+                    $"wfx: warning: profile '{profile.Name}' could not be resolved: {profile.Error}");
+            }
+        }
+
+        return PrintJsonResult(writer => JsonResultWriters.WriteModelsResult(writer, settings));
+    }
+
+    /// <summary>
+    /// Writes one JSON result object to stdout through <see cref="Console.Out"/> so captured
+    /// consoles see it, terminated by a newline for shell-friendly single-object output.
+    /// </summary>
+    private static int PrintJsonResult(Action<Utf8JsonWriter> write)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            write(writer);
+            writer.WriteEndObject();
+        }
+
+        Console.Out.Write(Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length));
+        Console.Out.WriteLine();
+        Console.Out.Flush();
+        return 0;
+    }
+
     private static string FormatBytes(long bytes)
     {
         if (bytes < 1024)
@@ -692,6 +750,7 @@ internal static class Program
               --verbose                     Show timing and progress details
               --debug                       Show tool result diagnostics
               --no-session                  Do not persist a session log for this invocation
+              --json                        Machine-readable JSON for sessions, config, and models
               --id <session-id>             Resume a specific session (only with wfx resume)
               --force                       Rebind the session selected with --id
               --help                        Show help
@@ -704,6 +763,10 @@ internal static class Program
               /exit, /quit                  End the session
 
             Resume a session in a new process with wfx resume, or wfx resume --id <session-id>.
+
+            Machine-readable output: wfx sessions --json, wfx config --json, and wfx models --json
+            write one JSON object to stdout. Shapes carry schema_version 1 and are published under
+            docs/schemas/ with every field marked public or internal.
 
             Configuration precedence: CLI > environment > project > user > defaults.
             Prefer WFX_API_KEY for credentials. WFX never prints API keys.
@@ -719,7 +782,7 @@ internal static class Program
             Exit codes:
               0    success
               1    error
-              2    run stopped at the iteration limit (--max-iterations)
+              2    config error, or run stopped at the iteration limit (--max-iterations)
               3    wfx run or wfx resume refused to start: approval needs a terminal
               130  cancelled
             """);
