@@ -56,8 +56,8 @@ $ErrorActionPreference = 'Stop'
 # to profiles), EnvVar for the API key ($null = no auth, e.g. a local proxy),
 # Filter (scriptblock over a raw catalog entry), Exclude (regex over the id).
 # Endpoints are ported from the pi *-models-sync skills; verified live so far:
-# venice, deepseek, gemini (x-goog-api-key listing + v1beta/openai shim), and
-# cursor against a local fake endpoint.
+# venice, deepseek, gemini (x-goog-api-key listing + v1beta/openai shim),
+# cursor against a local fake endpoint, and ollama against a local daemon.
 $script:ProviderRegistry = [ordered]@{
     'atlas-cloud'     = @{ BaseUrl = 'https://api.atlascloud.ai/v1';          EnvVar = 'ATLAS_CLOUD_API_KEY' }
     'cursor'          = @{ BaseUrl = 'http://127.0.0.1:8080/v1';              EnvVar = $null } # local proxy from cursor-openai-api-sync
@@ -74,6 +74,7 @@ $script:ProviderRegistry = [ordered]@{
     'inception'       = @{ BaseUrl = 'https://api.inceptionlabs.ai/v1';       EnvVar = 'INCEPTION_API_KEY' }
     'meta'            = @{ BaseUrl = 'https://api.meta.ai/v1';                EnvVar = 'META_AI_API_KEY' }
     'neuralwatt'      = @{ BaseUrl = 'https://api.neuralwatt.com/v1';         EnvVar = 'NEURALWATT_API_KEY' }
+    'ollama'          = @{ BaseUrl = 'http://127.0.0.1:11434/v1';             EnvVar = $null } # local OpenAI-compat daemon
     'poe'             = @{ BaseUrl = 'https://api.poe.com/v1';                EnvVar = 'POE_API_KEY' }
     'qwen-token-plan' = @{
         BaseUrl = 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1'
