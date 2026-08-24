@@ -353,7 +353,7 @@ internal static class Program
 
     private static void WarnIfYolo(WfxSettings settings)
     {
-        if (settings.Approval == ApprovalMode.Yolo)
+        if (settings.Approval == ApprovalMode.AllowAll)
         {
             Console.Error.WriteLine(
                 "wfx: warning: approval is yolo; tool prompts are bypassed. Workspace path checks still apply.");
@@ -571,7 +571,7 @@ internal static class Program
     private static int PrintConfig(WfxSettings settings, WorkspaceInfo workspace, string? userProfile)
     {
         PrintModels(settings, workspace);
-        Console.WriteLine($"Approval: {settings.Approval.ToString().ToLowerInvariant()}");
+        Console.WriteLine($"Approval: {WfxConfiguration.FormatApprovalMode(settings.Approval)}");
         Console.WriteLine($"Timeout: {settings.Timeout.TotalSeconds:F0}s");
         Console.WriteLine($"Maximum iterations: {settings.MaxIterations}");
         Console.WriteLine($"Project config: {Path.Combine(workspace.Root, ".wfx", "config.json")}");

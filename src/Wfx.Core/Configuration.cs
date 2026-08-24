@@ -212,6 +212,37 @@ public static class WfxConfiguration
         return new WfxSettingsLayer { Model = value };
     }
 
+    public static bool TryParseApprovalMode(string? value, out ApprovalMode mode)
+    {
+        switch (value?.ToLowerInvariant())
+        {
+            case "always":
+                mode = ApprovalMode.Always;
+                return true;
+            case "workspace":
+                mode = ApprovalMode.Workspace;
+                return true;
+            case "never":
+                mode = ApprovalMode.Never;
+                return true;
+            case "yolo":
+                mode = ApprovalMode.AllowAll;
+                return true;
+            default:
+                mode = default;
+                return false;
+        }
+    }
+
+    public static string FormatApprovalMode(ApprovalMode mode) => mode switch
+    {
+        ApprovalMode.Always => "always",
+        ApprovalMode.Workspace => "workspace",
+        ApprovalMode.Never => "never",
+        ApprovalMode.AllowAll => "yolo",
+        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown approval mode.")
+    };
+
     public static WfxSettingsLayer ReadFile(string path)
     {
         using var document = JsonDocument.Parse(File.ReadAllText(path), new JsonDocumentOptions
@@ -567,15 +598,17 @@ public static class WfxConfiguration
             ? ParseApproval(value.GetString())
             : null;
 
-    private static ApprovalMode? ParseApproval(string? value) => value?.ToLowerInvariant() switch
+    private static ApprovalMode? ParseApproval(string? value)
     {
-        null or "" => null,
-        "always" => ApprovalMode.Always,
-        "workspace" => ApprovalMode.Workspace,
-        "never" => ApprovalMode.Never,
-        "yolo" => ApprovalMode.Yolo,
-        _ => throw new InvalidOperationException("Approval must be always, workspace, never, or yolo.")
-    };
+        if (string.IsNullOrEmpty(value))
+        {
+            return null;
+        }
+
+        return TryParseApprovalMode(value, out var mode)
+            ? mode
+            : throw new InvalidOperationException("Approval must be always, workspace, never, or yolo.");
+    }
 
     private static int? ParseEnvironmentInteger(IReadOnlyDictionary<string, string?>? environment, string name)
     {

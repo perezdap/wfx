@@ -206,6 +206,16 @@ public sealed class ConfigurationTests
         return new string(chars);
     }
 
+    [Theory]
+    [InlineData(ApprovalMode.Always, "always")]
+    [InlineData(ApprovalMode.Workspace, "workspace")]
+    [InlineData(ApprovalMode.Never, "never")]
+    [InlineData(ApprovalMode.AllowAll, "yolo")]
+    public void FormatApprovalMode_UsesConfigurationNames(ApprovalMode mode, string expected)
+    {
+        Assert.Equal(expected, WfxConfiguration.FormatApprovalMode(mode));
+    }
+
     [Fact]
     public void Load_AcceptsYoloFromEnvironment()
     {
@@ -216,7 +226,7 @@ public sealed class ConfigurationTests
             environment: new Dictionary<string, string?> { ["WFX_APPROVAL"] = "yolo" },
             userProfile: Path.Combine(workspace.Path, "missing-profile"));
 
-        Assert.Equal(ApprovalMode.Yolo, result.Approval);
+        Assert.Equal(ApprovalMode.AllowAll, result.Approval);
     }
 
     [Fact]

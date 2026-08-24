@@ -17,10 +17,10 @@ public sealed class PolicyApprovalServiceTests
     [InlineData(ApprovalMode.Never, ApprovalLevel.WorkspaceWrite, false, false)]
     [InlineData(ApprovalMode.Never, ApprovalLevel.SystemChange, false, false)]
     [InlineData(ApprovalMode.Never, ApprovalLevel.Dangerous, false, false)]
-    [InlineData(ApprovalMode.Yolo, ApprovalLevel.ReadOnly, true, false)]
-    [InlineData(ApprovalMode.Yolo, ApprovalLevel.WorkspaceWrite, true, false)]
-    [InlineData(ApprovalMode.Yolo, ApprovalLevel.SystemChange, true, false)]
-    [InlineData(ApprovalMode.Yolo, ApprovalLevel.Dangerous, true, false)]
+    [InlineData(ApprovalMode.AllowAll, ApprovalLevel.ReadOnly, true, false)]
+    [InlineData(ApprovalMode.AllowAll, ApprovalLevel.WorkspaceWrite, true, false)]
+    [InlineData(ApprovalMode.AllowAll, ApprovalLevel.SystemChange, true, false)]
+    [InlineData(ApprovalMode.AllowAll, ApprovalLevel.Dangerous, true, false)]
     public async Task DecidesFromModeAndOnlyPromptsWhenPolicyDoesNot(
         ApprovalMode mode,
         ApprovalLevel level,

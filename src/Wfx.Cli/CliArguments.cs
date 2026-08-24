@@ -44,6 +44,7 @@ internal sealed record CliArguments(
         var showHelp = false;
         var showVersion = false;
         var commandSelected = false;
+        var yoloSpecified = false;
 
         for (var index = 0; index < args.Length; index++)
         {
@@ -96,20 +97,18 @@ internal sealed record CliArguments(
                     maxIterations = ParseInteger(RequireValue(args, ref index, argument), argument, 1, 100);
                     break;
                 case "--yolo":
-                    approval = CombineApproval(approval, ApprovalMode.Yolo);
+                    EnsureYoloCompatible(approval);
+                    approval = ApprovalMode.AllowAll;
+                    yoloSpecified = true;
                     break;
                 case "--approval":
-                    approval = CombineApproval(
-                        approval,
-                        RequireValue(args, ref index, argument).ToLowerInvariant() switch
-                        {
-                            "always" => ApprovalMode.Always,
-                            "workspace" => ApprovalMode.Workspace,
-                            "never" => ApprovalMode.Never,
-                            "yolo" => ApprovalMode.Yolo,
-                            _ => throw new ArgumentException(
-                                "--approval must be always, workspace, never, or yolo.")
-                        });
+                    var nextApproval = ParseApproval(RequireValue(args, ref index, argument));
+                    if (yoloSpecified)
+                    {
+                        EnsureYoloCompatible(nextApproval);
+                    }
+
+                    approval = nextApproval;
                     break;
                 case "run" when !commandSelected:
                     command = CliCommand.Run;
@@ -196,14 +195,22 @@ internal sealed record CliArguments(
             showVersion);
     }
 
-    private static ApprovalMode CombineApproval(ApprovalMode? current, ApprovalMode next)
+    private static ApprovalMode ParseApproval(string value)
     {
-        if (current is { } existing && existing != next)
+        if (WfxConfiguration.TryParseApprovalMode(value, out var mode))
+        {
+            return mode;
+        }
+
+        throw new ArgumentException("--approval must be always, workspace, never, or yolo.");
+    }
+
+    private static void EnsureYoloCompatible(ApprovalMode? mode)
+    {
+        if (mode is { } value && value != ApprovalMode.AllowAll)
         {
             throw new ArgumentException("Approval mode was specified more than once with different values.");
         }
-
-        return next;
     }
 
     private static string RequireValue(string[] args, ref int index, string option)

@@ -11,7 +11,7 @@ public sealed class ApprovalArgumentsTests
     {
         var arguments = CliArguments.Parse(["run", ..approvalArgs, "do it"]);
 
-        Assert.Equal(ApprovalMode.Yolo, arguments.Settings.Approval);
+        Assert.Equal(ApprovalMode.AllowAll, arguments.Settings.Approval);
     }
 
     [Fact]
@@ -19,16 +19,27 @@ public sealed class ApprovalArgumentsTests
     {
         var arguments = CliArguments.Parse(["run", "--yolo", "--approval", "yolo", "do it"]);
 
-        Assert.Equal(ApprovalMode.Yolo, arguments.Settings.Approval);
+        Assert.Equal(ApprovalMode.AllowAll, arguments.Settings.Approval);
+    }
+
+    [Theory]
+    [InlineData("--yolo", "--approval", "workspace")]
+    [InlineData("--approval", "workspace", "--yolo")]
+    public void RejectsConflictingApprovalFlags(params string[] approvalArgs)
+    {
+        var exception = Assert.Throws<ArgumentException>(
+            () => CliArguments.Parse(["run", ..approvalArgs, "do it"]));
+
+        Assert.Contains("different values", exception.Message);
     }
 
     [Fact]
-    public void RejectsConflictingApprovalFlags()
+    public void RepeatedApprovalOptionsUseLastValue()
     {
-        var exception = Assert.Throws<ArgumentException>(
-            () => CliArguments.Parse(["run", "--yolo", "--approval", "workspace", "do it"]));
+        var arguments = CliArguments.Parse(
+            ["run", "--approval", "always", "--approval", "workspace", "do it"]);
 
-        Assert.Contains("different values", exception.Message);
+        Assert.Equal(ApprovalMode.Workspace, arguments.Settings.Approval);
     }
 
     [Fact]
