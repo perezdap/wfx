@@ -6,18 +6,13 @@ internal sealed class ConsoleAgentObserver(
     bool verbose,
     bool debug,
     bool unicode = true,
-    IReadOnlyList<string>? secrets = null,
-    bool suppressOutput = false) : IAgentObserver
+    IReadOnlyList<string>? secrets = null) : IAgentObserver
 {
     private readonly string _marker = unicode ? ConsoleText.Marker : ConsoleText.AsciiMarker;
 
     public ValueTask OnModelTextAsync(string text, CancellationToken cancellationToken)
     {
-        if (!suppressOutput)
-        {
-            Console.Write(text);
-        }
-
+        Console.Write(text);
         return ValueTask.CompletedTask;
     }
 
@@ -27,12 +22,8 @@ internal sealed class ConsoleAgentObserver(
         ApprovalLevel level,
         CancellationToken cancellationToken)
     {
-        if (!suppressOutput)
-        {
-            var call = ToolCallSummary.Describe(name, argumentsJson, secrets: secrets);
-            WriteLine($"{_marker} {call}{(verbose ? $" [{level}]" : string.Empty)}");
-        }
-
+        var call = ToolCallSummary.Describe(name, argumentsJson, secrets: secrets);
+        WriteLine($"{_marker} {call}{(verbose ? $" [{level}]" : string.Empty)}");
         return ValueTask.CompletedTask;
     }
 
@@ -42,12 +33,8 @@ internal sealed class ConsoleAgentObserver(
         string reason,
         CancellationToken cancellationToken)
     {
-        if (!suppressOutput)
-        {
-            WriteLine($"{_marker} {ToolCallSummary.Describe(name, argumentsJson, secrets: secrets)}");
-            WriteLine($"  skipped: {ToolCallSummary.DescribeText(reason, secrets: secrets)}");
-        }
-
+        WriteLine($"{_marker} {ToolCallSummary.Describe(name, argumentsJson, secrets: secrets)}");
+        WriteLine($"  skipped: {ToolCallSummary.DescribeText(reason, secrets: secrets)}");
         return ValueTask.CompletedTask;
     }
 
@@ -57,11 +44,6 @@ internal sealed class ConsoleAgentObserver(
         TimeSpan duration,
         CancellationToken cancellationToken)
     {
-        if (suppressOutput)
-        {
-            return ValueTask.CompletedTask;
-        }
-
         if (verbose)
         {
             WriteLine($"  {(result.Success ? "completed" : "failed")} in {duration.TotalMilliseconds:F0} ms");

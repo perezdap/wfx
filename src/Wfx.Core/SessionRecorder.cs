@@ -33,6 +33,14 @@ public sealed class SessionRecorder : IAgentObserver
         return ValueTask.CompletedTask;
     }
 
+    /// <summary>
+    /// Legacy bridge for callers that still invoke the pre-typed observer callbacks directly.
+    /// The typed path is <see cref="OnEventAsync"/>: the agent loop always dispatches through it
+    /// with complete turn metadata (session ID, workspace, approval mode). These bridges exist
+    /// only so direct legacy calls keep persisting; they cannot know the turn's workspace or
+    /// approval mode, so they persist the session's own ID with placeholder values for those
+    /// two fields. New callers should construct the typed events instead.
+    /// </summary>
     public ValueTask OnTurnStartedAsync(EndpointIdentity endpoint, CancellationToken cancellationToken) =>
         OnEventAsync(
             new TurnStartedEvent(_log.Id, string.Empty, endpoint, ApprovalMode.Always, _time.GetUtcNow()),

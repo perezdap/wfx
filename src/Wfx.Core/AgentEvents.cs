@@ -4,6 +4,26 @@ namespace Wfx.Core;
 
 public abstract record AgentEvent;
 
+/// <summary>
+/// The canonical event names shared by the stream, the transcript writer, and the transcript
+/// reader, so the vocabulary cannot drift between them.
+/// </summary>
+public static class AgentEventNames
+{
+    public const string TurnStarted = "turn_started";
+    public const string Message = "message";
+    public const string ToolStarted = "tool_started";
+    public const string ToolCompleted = "tool_completed";
+    public const string ToolRejected = "tool_rejected";
+    public const string Usage = "usage";
+    public const string TurnCompleted = "turn_completed";
+    public const string TurnInterrupted = "turn_interrupted";
+    public const string TurnError = "turn_error";
+    public const string Interrupted = "interrupted";
+    public const string Header = "header";
+    public const string WorkspaceRebound = "workspace_rebound";
+}
+
 public sealed record TurnStartedEvent(
     string SessionId,
     string Workspace,
@@ -123,7 +143,7 @@ public static class AgentEventJson
 
     private static void WriteTurnStarted(Utf8JsonWriter writer, TurnStartedEvent started)
     {
-        writer.WriteString("event", "turn_started");
+        writer.WriteString("event", AgentEventNames.TurnStarted);
         writer.WriteNumber("schema_version", SchemaVersion);
         writer.WriteString("session_id", started.SessionId);
         writer.WriteString("workspace", started.Workspace);
@@ -140,7 +160,7 @@ public static class AgentEventJson
     private static void WriteMessage(Utf8JsonWriter writer, MessageEvent messageEvent)
     {
         var message = messageEvent.Message;
-        writer.WriteString("event", "message");
+        writer.WriteString("event", AgentEventNames.Message);
         writer.WriteString("role", SessionMessageRoles.Name(message.Role));
         WriteOptionalString(writer, "content", message.Content);
 
@@ -179,7 +199,7 @@ public static class AgentEventJson
 
     private static void WriteToolStarted(Utf8JsonWriter writer, ToolStartedEvent started)
     {
-        writer.WriteString("event", "tool_started");
+        writer.WriteString("event", AgentEventNames.ToolStarted);
         writer.WriteString("call_id", started.CallId);
         writer.WriteString("name", started.Name);
         writer.WriteString("arguments_json", started.ArgumentsJson);
@@ -189,7 +209,7 @@ public static class AgentEventJson
 
     private static void WriteToolCompleted(Utf8JsonWriter writer, ToolCompletedEvent completed)
     {
-        writer.WriteString("event", "tool_completed");
+        writer.WriteString("event", AgentEventNames.ToolCompleted);
         writer.WriteString("call_id", completed.CallId);
         writer.WriteString("name", completed.Name);
         writer.WriteNumber("duration_ms", Math.Max(0, completed.Duration.TotalMilliseconds));
@@ -207,7 +227,7 @@ public static class AgentEventJson
 
     private static void WriteToolRejected(Utf8JsonWriter writer, ToolRejectedEvent rejected)
     {
-        writer.WriteString("event", "tool_rejected");
+        writer.WriteString("event", AgentEventNames.ToolRejected);
         writer.WriteString("call_id", rejected.CallId);
         writer.WriteString("name", rejected.Name);
         writer.WriteString("arguments_json", rejected.ArgumentsJson);
@@ -217,14 +237,14 @@ public static class AgentEventJson
 
     private static void WriteUsage(Utf8JsonWriter writer, UsageEvent usageEvent)
     {
-        writer.WriteString("event", "usage");
+        writer.WriteString("event", AgentEventNames.Usage);
         WriteUsageProperties(writer, usageEvent.Usage);
         writer.WriteString("at", usageEvent.At.UtcDateTime);
     }
 
     private static void WriteTurnCompleted(Utf8JsonWriter writer, TurnCompletedEvent completed)
     {
-        writer.WriteString("event", "turn_completed");
+        writer.WriteString("event", AgentEventNames.TurnCompleted);
         writer.WriteString("session_id", completed.SessionId);
         writer.WriteNumber("iterations", completed.Iterations);
         writer.WriteString("final_message", completed.FinalMessage);
@@ -236,7 +256,7 @@ public static class AgentEventJson
 
     private static void WriteTurnInterrupted(Utf8JsonWriter writer, TurnInterruptedEvent interrupted)
     {
-        writer.WriteString("event", "turn_interrupted");
+        writer.WriteString("event", AgentEventNames.TurnInterrupted);
         writer.WriteString("session_id", interrupted.SessionId);
         writer.WriteString("reason", InterruptionReasonName(interrupted.Reason));
         writer.WriteString("at", interrupted.At.UtcDateTime);
@@ -244,7 +264,7 @@ public static class AgentEventJson
 
     private static void WriteTurnError(Utf8JsonWriter writer, TurnErrorEvent error)
     {
-        writer.WriteString("event", "turn_error");
+        writer.WriteString("event", AgentEventNames.TurnError);
         writer.WriteString("session_id", error.SessionId);
         writer.WriteStartObject("error");
         writer.WriteString("kind", ErrorKindName(error.Error.Kind));

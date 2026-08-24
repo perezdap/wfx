@@ -7,28 +7,42 @@ namespace Wfx.Cli.Tests;
 [Collection("Console")]
 public sealed class JsonEventStreamTests
 {
-    private static readonly string[][] JsonOutsideTurnCommandArguments =
+    private static readonly string[][] JsonOutsideSubcommandArguments =
     [
-        ["--json"],
-        ["sessions", "--json"],
-        ["config", "--json"],
-        ["models", "--json"],
-        ["run", "--json", "--help"],
-        ["resume", "--json", "--version"]
+        ["--json"]
     ];
 
     [Fact]
-    public void JsonIsLimitedToTurnCommands()
+    public void JsonRequiresASubcommand()
     {
         Assert.True(CliArguments.Parse(["run", "--json", "prompt"]).Json);
         Assert.True(CliArguments.Parse(["resume", "--json"]).Json);
+        Assert.True(CliArguments.Parse(["sessions", "--json"]).Json);
+        Assert.True(CliArguments.Parse(["config", "--json"]).Json);
+        Assert.True(CliArguments.Parse(["models", "--json"]).Json);
 
-        foreach (var arguments in JsonOutsideTurnCommandArguments)
+        foreach (var arguments in JsonOutsideSubcommandArguments)
         {
             var exception = Assert.Throws<ArgumentException>(() => CliArguments.Parse(arguments));
             Assert.Contains("wfx run --json", exception.Message);
             Assert.Contains("wfx resume --json", exception.Message);
         }
+    }
+
+    [Fact]
+    public async Task JsonRunHelpStillShowsHelp()
+    {
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient("Help must not call a model endpoint.");
+        using var console = new ConsoleCapture();
+
+        var exitCode = await CliRunner.RunAsync(
+            ["run", "--json", "--help"],
+            httpClient,
+            new TestSessionStore(),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Usage:", console.Output.ToString());
     }
 
     [Fact]
@@ -43,10 +57,7 @@ public sealed class JsonEventStreamTests
         ]);
 
         var exitCode = await CliRunner.RunAsync(
-            [
-                "run", "--json", "--approval", "never", "--provider", "local",
-                "--base-url", "https://example.test/v1", "--model", "fake-model", "do it"
-            ],
+            RunJsonArguments("do it"),
             httpClient,
             store,
             TestContext.Current.CancellationToken,
@@ -86,10 +97,7 @@ public sealed class JsonEventStreamTests
         ]);
 
         var exitCode = await CliRunner.RunAsync(
-            [
-                "run", "--json", "--approval", "never", "--provider", "local",
-                "--base-url", "https://example.test/v1", "--model", "fake-model", "inspect"
-            ],
+            RunJsonArguments("inspect"),
             httpClient,
             new SessionStore(sessions.Path),
             TestContext.Current.CancellationToken,
@@ -116,10 +124,17 @@ public sealed class JsonEventStreamTests
         using var httpClient = CliRunner.CreateUnexpectedHttpClient("The injected provider must be used.");
         using var console = new ConsoleCapture("continue\n");
         var store = new SessionStore(sessions.Path);
-        var session = store.Create(WorkspaceInfo.Discover().Root);
+        var workspace = WorkspaceInfo.Discover().Root;
+        var session = store.Create(workspace);
         var sessionId = session.Id;
-        await new SessionRecorder(session).OnTurnStartedAsync(
-            new EndpointIdentity(null, "local", "chat_completions", "fake-model"),
+        // Seed the prior turn through the typed event path, as the agent loop does.
+        await new SessionRecorder(session).OnEventAsync(
+            new TurnStartedEvent(
+                sessionId,
+                workspace,
+                new EndpointIdentity(null, "local", "chat_completions", "fake-model"),
+                ApprovalMode.Never,
+                DateTimeOffset.UtcNow),
             TestContext.Current.CancellationToken);
         session.Dispose();
         var provider = new SequenceModelProvider([
@@ -157,11 +172,7 @@ public sealed class JsonEventStreamTests
         ]);
 
         var exitCode = await CliRunner.RunAsync(
-            [
-                "run", "--json", "--approval", "never", "--provider", "local",
-                "--base-url", "https://example.test/v1", "--model", "fake-model",
-                "--max-iterations", "1", "inspect"
-            ],
+            [.. RunJsonArguments("inspect"), "--max-iterations", "1"],
             httpClient,
             new SessionStore(sessions.Path),
             TestContext.Current.CancellationToken,
@@ -181,10 +192,7 @@ public sealed class JsonEventStreamTests
         using var console = new ConsoleCapture();
 
         var exitCode = await CliRunner.RunAsync(
-            [
-                "run", "--json", "--approval", "never", "--provider", "local",
-                "--base-url", "https://example.test/v1", "--model", "fake-model", "fail"
-            ],
+            RunJsonArguments("fail"),
             httpClient,
             new SessionStore(sessions.Path),
             TestContext.Current.CancellationToken,
@@ -198,9 +206,9 @@ public sealed class JsonEventStreamTests
     }
 
     [Fact]
-    public async Task JsonOutsideTurnCommandsReturnsUsageError()
+    public async Task JsonWithoutASubcommandReturnsUsageError()
     {
-        foreach (var arguments in JsonOutsideTurnCommandArguments)
+        foreach (var arguments in JsonOutsideSubcommandArguments)
         {
             using var httpClient = CliRunner.CreateUnexpectedHttpClient("A usage error must not call a model endpoint.");
             using var console = new ConsoleCapture();
@@ -226,10 +234,7 @@ public sealed class JsonEventStreamTests
         var provider = new SelfCancellingModelProvider(cancellation);
 
         var exitCode = await CliRunner.RunAsync(
-            [
-                "run", "--json", "--approval", "never", "--provider", "local",
-                "--base-url", "https://example.test/v1", "--model", "fake-model", "stop"
-            ],
+            RunJsonArguments("stop"),
             httpClient,
             new SessionStore(sessions.Path),
             cancellation.Token,
@@ -323,8 +328,8 @@ public sealed class JsonEventStreamTests
         foreach (var instance in ParseLines(output.ToString()))
         {
             var eventName = instance.GetProperty("event").GetString()!;
-            var errors = new List<string>();
-            Validate(instance, definitions.GetProperty(eventName), schema, "$", errors);
+            // Validate against the root schema so the oneOf event selection is exercised too.
+            var errors = JsonSchemaValidator.Validate(instance, schema);
             Assert.True(errors.Count == 0, $"{eventName}: {string.Join("; ", errors)}");
         }
 
@@ -333,96 +338,6 @@ public sealed class JsonEventStreamTests
             AssertVisibility(definition.Value, $"#/$defs/{definition.Name}");
         }
     }
-
-    private static void Validate(
-        JsonElement instance,
-        JsonElement schema,
-        JsonElement rootSchema,
-        string path,
-        List<string> errors)
-    {
-        if (schema.TryGetProperty("$ref", out var reference))
-        {
-            var target = rootSchema;
-            foreach (var segment in reference.GetString()![2..].Split('/'))
-            {
-                target = target.GetProperty(segment);
-            }
-
-            Validate(instance, target, rootSchema, path, errors);
-            return;
-        }
-
-        if (schema.TryGetProperty("const", out var constant) && !JsonElement.DeepEquals(instance, constant))
-        {
-            errors.Add($"{path} does not match const {constant.GetRawText()}");
-        }
-
-        if (schema.TryGetProperty("enum", out var choices) &&
-            !choices.EnumerateArray().Any(choice => JsonElement.DeepEquals(instance, choice)))
-        {
-            errors.Add($"{path} is not in enum {choices.GetRawText()}");
-        }
-
-        if (schema.TryGetProperty("type", out var type) && !MatchesType(instance, type))
-        {
-            errors.Add($"{path} has type {instance.ValueKind}, expected {type.GetRawText()}");
-            return;
-        }
-
-        if (instance.ValueKind == JsonValueKind.Object)
-        {
-            if (schema.TryGetProperty("required", out var required))
-            {
-                foreach (var name in required.EnumerateArray().Select(static item => item.GetString()!))
-                {
-                    if (!instance.TryGetProperty(name, out _))
-                    {
-                        errors.Add($"{path} is missing {name}");
-                    }
-                }
-            }
-
-            if (schema.TryGetProperty("properties", out var properties))
-            {
-                foreach (var property in properties.EnumerateObject())
-                {
-                    if (instance.TryGetProperty(property.Name, out var value))
-                    {
-                        Validate(value, property.Value, rootSchema, $"{path}.{property.Name}", errors);
-                    }
-                }
-            }
-        }
-
-        if (instance.ValueKind == JsonValueKind.Array && schema.TryGetProperty("items", out var items))
-        {
-            var index = 0;
-            foreach (var item in instance.EnumerateArray())
-            {
-                Validate(item, items, rootSchema, $"{path}[{index++}]", errors);
-            }
-        }
-    }
-
-    private static bool MatchesType(JsonElement instance, JsonElement type) => type.ValueKind switch
-    {
-        JsonValueKind.String => MatchesType(instance, type.GetString()!),
-        JsonValueKind.Array => type.EnumerateArray().Any(item => MatchesType(instance, item.GetString()!)),
-        _ => false
-    };
-
-    private static bool MatchesType(JsonElement instance, string type) => type switch
-    {
-        "object" => instance.ValueKind == JsonValueKind.Object,
-        "array" => instance.ValueKind == JsonValueKind.Array,
-        "string" => instance.ValueKind == JsonValueKind.String,
-        "integer" => instance.ValueKind == JsonValueKind.Number && instance.TryGetInt64(out _),
-        "number" => instance.ValueKind == JsonValueKind.Number,
-        "boolean" => instance.ValueKind is JsonValueKind.True or JsonValueKind.False,
-        "null" => instance.ValueKind == JsonValueKind.Null,
-        _ => false
-    };
 
     private static void AssertVisibility(JsonElement schema, string path)
     {
@@ -452,6 +367,17 @@ public sealed class JsonEventStreamTests
             return document.RootElement.Clone();
         })
         .ToArray();
+
+    private static string[] RunJsonArguments(string prompt) =>
+    [
+        "run",
+        "--json",
+        "--approval", "never",
+        "--provider", "local",
+        "--base-url", "https://example.test/v1",
+        "--model", "fake-model",
+        prompt
+    ];
 
     private sealed class SequenceModelProvider(IReadOnlyList<ModelStreamEvent> events) : IModelProvider
     {

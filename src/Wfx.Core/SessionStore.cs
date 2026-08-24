@@ -134,7 +134,7 @@ public sealed class SessionStore : ISessionStore
             var header = headerDocument.RootElement;
             if (header.ValueKind != JsonValueKind.Object ||
                 !header.TryGetProperty("type", out var type) ||
-                type.GetString() != "header")
+                type.GetString() != AgentEventNames.Header)
             {
                 throw new InvalidDataException($"Session '{sessionId}' must begin with a header event.");
             }
@@ -212,32 +212,33 @@ public sealed class SessionStore : ISessionStore
 
                     switch (eventName)
                     {
-                        case "turn_started":
+                        case AgentEventNames.TurnStarted:
                             lastEndpoint = ReadEndpoint(eventRoot, sessionId, index + 1);
                             break;
-                        case "message":
+                        case AgentEventNames.Message:
                             messages.Add(ReadMessage(eventRoot, sessionId, index + 1));
                             break;
-                        case "workspace_rebound":
+                        case AgentEventNames.WorkspaceRebound:
                             workspace = RequiredString(
                                 eventRoot,
                                 "workspace",
                                 sessionId,
-                                "workspace_rebound",
+                                AgentEventNames.WorkspaceRebound,
                                 index + 1);
                             break;
-                        case "interrupted":
-                        case "turn_interrupted":
+                        case AgentEventNames.Interrupted:
+                        case AgentEventNames.TurnInterrupted:
                             RepairInterruptedTail(messages);
                             break;
-                        case "header":
+                        case AgentEventNames.Header:
                             throw new InvalidDataException(
                                 $"Session '{sessionId}' contains a second header on line {index + 1}.");
                         default:
                             // Legacy v1 and typed v2 event vocabularies are both readable.
                             // Unknown event types are ignored for forward-compatible reads.
                             break;
-                    }                }
+                    }
+                }
             }
 
             RepairInterruptedTail(messages);
@@ -607,7 +608,7 @@ public sealed class SessionStore : ISessionStore
 
             using var document = JsonDocument.Parse(headerLine);
             var root = document.RootElement;
-            if (!root.TryGetProperty("type", out var type) || type.GetString() != "header")
+            if (!root.TryGetProperty("type", out var type) || type.GetString() != AgentEventNames.Header)
             {
                 return null;
             }
@@ -638,18 +639,19 @@ public sealed class SessionStore : ISessionStore
                     {
                         using var eventDocument = JsonDocument.Parse(lines[index]);
                         var eventRoot = eventDocument.RootElement;
-                        if (!eventRoot.TryGetProperty("type", out var eventType))
+                        var eventName = SessionEventName(eventRoot);
+                        if (eventName is null)
                         {
                             continue;
                         }
 
-                        if (eventType.GetString() == "workspace_rebound" &&
+                        if (eventName == AgentEventNames.WorkspaceRebound &&
                             eventRoot.TryGetProperty("workspace", out var reboundWorkspace) &&
                             reboundWorkspace.ValueKind == JsonValueKind.String)
                         {
                             workspace = reboundWorkspace.GetString();
                         }
-                        else if (eventType.GetString() == "turn_started")
+                        else if (eventName == AgentEventNames.TurnStarted)
                         {
                             lastEndpoint = TryReadListedEndpoint(eventRoot) ?? lastEndpoint;
                         }
@@ -729,7 +731,7 @@ public sealed class SessionStore : ISessionStore
                 for (var index = lastIndex; index >= firstIndex; index--)
                 {
                     var line = pieces[index].TrimEnd('\r');
-                    if (!line.Contains("turn_started", StringComparison.Ordinal))
+                    if (!line.Contains(AgentEventNames.TurnStarted, StringComparison.Ordinal))
                     {
                         continue;
                     }
@@ -761,8 +763,7 @@ public sealed class SessionStore : ISessionStore
             using var document = JsonDocument.Parse(line);
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object ||
-                !root.TryGetProperty("type", out var type) ||
-                type.GetString() != "turn_started")
+                SessionEventName(root) != AgentEventNames.TurnStarted)
             {
                 return null;
             }
@@ -775,17 +776,51 @@ public sealed class SessionStore : ISessionStore
         }
     }
 
+    /// <summary>
+    /// The name of a session event line, accepting both shapes the reader supports: the legacy
+    /// v1 <c>type</c> key (header, workspace_rebound, and events written by older builds) and
+    /// the typed v2 <c>event</c> key written by <see cref="AgentEventJson"/>.
+    /// </summary>
+    private static string? SessionEventName(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (root.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String)
+        {
+            return type.GetString();
+        }
+
+        return root.TryGetProperty("event", out var eventName) && eventName.ValueKind == JsonValueKind.String
+            ? eventName.GetString()
+            : null;
+    }
+
     private static EndpointIdentity? TryReadListedEndpoint(JsonElement root)
     {
-        var provider = OptionalListingString(root, "provider");
-        var protocol = OptionalListingString(root, "protocol");
-        var model = OptionalListingString(root, "model");
+        // v2 turn_started nests the endpoint; v1 carries the fields at the root.
+        if (root.TryGetProperty("endpoint", out var endpoint) &&
+            endpoint.ValueKind == JsonValueKind.Object)
+        {
+            return TryReadListedEndpointFields(endpoint);
+        }
+
+        return TryReadListedEndpointFields(root);
+    }
+
+    private static EndpointIdentity? TryReadListedEndpointFields(JsonElement source)
+    {
+        var provider = OptionalListingString(source, "provider");
+        var protocol = OptionalListingString(source, "protocol");
+        var model = OptionalListingString(source, "model");
         if (provider is null || protocol is null || model is null)
         {
             return null;
         }
 
-        return new EndpointIdentity(OptionalListingString(root, "profile"), provider, protocol, model);
+        return new EndpointIdentity(OptionalListingString(source, "profile"), provider, protocol, model);
     }
 
     private static string? OptionalListingString(JsonElement root, string name) =>
@@ -904,7 +939,7 @@ public sealed class SessionLog : IDisposable
     internal void WriteHeader(int schemaVersion, string sessionId, DateTimeOffset createdAt, string workspace) =>
         Write(writer =>
         {
-            writer.WriteString("type", "header");
+            writer.WriteString("type", AgentEventNames.Header);
             writer.WriteNumber("schema_version", schemaVersion);
             writer.WriteString("session_id", sessionId);
             writer.WriteString(
@@ -924,7 +959,7 @@ public sealed class SessionLog : IDisposable
         MarkWorkspaceRebound();
         Write(writer =>
         {
-            writer.WriteString("type", "workspace_rebound");
+            writer.WriteString("type", AgentEventNames.WorkspaceRebound);
             writer.WriteString("workspace", workspace);
         });
     }

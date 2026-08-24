@@ -579,15 +579,16 @@ internal static class Program
             observers.Add(new SessionRecorder(session));
         }
 
-        observers.Add(new ConsoleAgentObserver(
-            arguments.Verbose,
-            arguments.Debug,
-            _unicodeConsole,
-            secrets,
-            suppressOutput: arguments.Json));
         if (arguments.Json)
         {
+            // stdout is the NDJSON event stream; the console observer would interleave text
+            // deltas on stdout and per-turn progress on stderr, neither of which belongs there
+            // under --json. Approval prompts are separate and still reach stderr.
             observers.Add(new NdjsonAgentObserver(Console.Out));
+        }
+        else
+        {
+            observers.Add(new ConsoleAgentObserver(arguments.Verbose, arguments.Debug, _unicodeConsole, secrets));
         }
 
         return new Agent(
