@@ -33,8 +33,10 @@ internal static class Program
         HttpClient httpClient,
         ISessionStore sessionStore,
         CancellationToken cancellationToken,
-        string? userProfile = null)
+        string? userProfile = null,
+        IConsoleEnvironment? consoleEnvironment = null)
     {
+        var console = consoleEnvironment ?? SystemConsoleEnvironment.Instance;
         try
         {
             var arguments = CliArguments.Parse(args);
@@ -85,13 +87,25 @@ internal static class Program
                 Console.Error.WriteLine($"wfx: warning: {warning}");
             }
 
+            if (StartupApprovalGate.Refuses(arguments.Command, settings.Approval, console))
+            {
+                Console.Error.WriteLine(StartupApprovalGate.RefusalMessage(settings.Approval));
+                return StartupApprovalGate.RefusedExitCode;
+            }
+
             return arguments.Command switch
             {
                 CliCommand.Models => PrintModels(settings, workspace),
                 CliCommand.Config => PrintConfig(settings, workspace, userProfile),
                 CliCommand.Run => await RunOnceAsync(
-                    arguments.Prompt!, settings, workspace, arguments, httpClient, sessionStore, cancellationToken)
-                    .ConfigureAwait(false),
+                    arguments.Prompt!,
+                    settings,
+                    workspace,
+                    arguments,
+                    httpClient,
+                    sessionStore,
+                    console,
+                    cancellationToken).ConfigureAwait(false),
                 CliCommand.Resume => await RunInteractiveAsync(
                     settings,
                     workspace,
@@ -99,6 +113,7 @@ internal static class Program
                     httpClient,
                     sessionStore,
                     resumedSession,
+                    console,
                     cancellationToken).ConfigureAwait(false),
                 _ => await RunInteractiveAsync(
                     settings,
@@ -107,6 +122,7 @@ internal static class Program
                     httpClient,
                     sessionStore,
                     null,
+                    console,
                     cancellationToken).ConfigureAwait(false)
             };
         }
@@ -129,6 +145,7 @@ internal static class Program
         CliArguments arguments,
         HttpClient httpClient,
         ISessionStore sessionStore,
+        IConsoleEnvironment console,
         CancellationToken cancellationToken)
     {
         EnsureRunnable(settings);
@@ -140,7 +157,7 @@ internal static class Program
         using var session = OpenSession(arguments, workspace, Console.Error, "wfx: session ", sessionStore);
 
         var provider = CreateModelProvider(settings, httpClient);
-        var agent = CreateAgent(settings, workspace, arguments, provider, [], session);
+        var agent = CreateAgent(settings, workspace, arguments, provider, [], session, console);
         var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
         PrintTrailingNewline(result);
 
@@ -165,6 +182,7 @@ internal static class Program
         HttpClient httpClient,
         ISessionStore sessionStore,
         SessionResume? resumedSession,
+        IConsoleEnvironment console,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(settings.Model) && settings.ConfiguredModels.Count == 0)
@@ -248,7 +266,7 @@ internal static class Program
             try
             {
                 EnsureRunnable(settings);
-                var agent = CreateAgent(settings, workspace, arguments, provider, conversation, session);
+                var agent = CreateAgent(settings, workspace, arguments, provider, conversation, session, console);
                 var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
                 conversation = result.Messages;
                 PrintTrailingNewline(result);
@@ -441,7 +459,8 @@ internal static class Program
         CliArguments arguments,
         IModelProvider provider,
         IReadOnlyList<ModelMessage> conversation,
-        SessionLog? session)
+        SessionLog? session,
+        IConsoleEnvironment console)
     {
         var tools = BuiltInTools.Create(workspace.Root);
         var context = new CompositeContextProvider([
@@ -451,7 +470,7 @@ internal static class Program
         var secrets = ProviderSecrets(settings);
         var approval = new PolicyApprovalService(
             settings.Approval,
-            (request, token) => PromptForApprovalAsync(request, secrets, token));
+            (request, token) => PromptForApprovalAsync(request, secrets, console, token));
         IAgentObserver observer = new ConsoleAgentObserver(arguments.Verbose, arguments.Debug, _unicodeConsole, secrets);
         if (session is not null)
         {
@@ -527,12 +546,13 @@ internal static class Program
     private static async ValueTask<bool> PromptForApprovalAsync(
         ApprovalRequest request,
         IReadOnlyList<string> secrets,
+        IConsoleEnvironment console,
         CancellationToken cancellationToken)
     {
         var call = ConsoleText.ForConsole(
             ToolCallSummary.Describe(request.ToolName, request.ArgumentsJson, ApprovalSummaryLength, secrets),
             _unicodeConsole);
-        if (Console.IsInputRedirected)
+        if (console.IsInputRedirected)
         {
             Console.Error.WriteLine($"Denied {call}: approval is required but input is redirected.");
             return false;
@@ -686,10 +706,15 @@ internal static class Program
             Interactive mode and wfx run persist a JSONL session under %USERPROFILE%\.wfx\sessions\
             unless --no-session is passed. Session files remain sensitive despite secret redaction.
 
+            wfx run and wfx resume refuse to start when stdin is not a terminal and approval is
+            always or workspace: a tool prompt would block with nobody there to answer it. Pass
+            --approval never or --yolo to run unattended.
+
             Exit codes:
               0    success
               1    error
               2    run stopped at the iteration limit (--max-iterations)
+              3    wfx run or wfx resume refused to start: approval needs a terminal
               130  cancelled
             """);
     }

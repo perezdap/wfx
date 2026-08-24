@@ -14,7 +14,7 @@ public sealed class SessionListingTests
         try
         {
             var store = new SessionStore(Path.Combine(directory.FullName, "sessions"));
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 ["sessions"],
                 httpClient,
                 store,
@@ -50,7 +50,7 @@ public sealed class SessionListingTests
             Assert.NotNull(summary.CreatedAt);
             Assert.InRange(summary.SizeBytes, 1, 1023);
 
-            var exitCode = await Program.RunAsync(
+            var exitCode = await CliRunner.RunAsync(
                 ["sessions"],
                 httpClient,
                 store,
@@ -80,7 +80,7 @@ public sealed class SessionListingTests
         using var httpClient = new HttpClient(new UnexpectedRequestHandler());
         using var console = new ConsoleCapture();
 
-        var exitCode = await Program.RunAsync(
+        var exitCode = await CliRunner.RunAsync(
             ["--help"],
             httpClient,
             new TestSessionStore(),
