@@ -264,15 +264,10 @@ internal static class Program
 
             return 0;
         }
-        catch (Exception exception) when (arguments.Json && exception is OperationCanceledException or TimeoutException)
-        {
-            Console.Error.WriteLine($"wfx: {exception.Message}");
-            return 4;
-        }
         catch (Exception exception) when (arguments.Json)
         {
             Console.Error.WriteLine($"wfx: {exception.Message}");
-            return 5;
+            return exception is OperationCanceledException or TimeoutException ? 4 : 5;
         }
     }
 

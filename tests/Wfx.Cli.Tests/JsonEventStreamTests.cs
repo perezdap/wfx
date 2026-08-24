@@ -7,21 +7,23 @@ namespace Wfx.Cli.Tests;
 [Collection("Console")]
 public sealed class JsonEventStreamTests
 {
+    private static readonly string[][] JsonOutsideTurnCommandArguments =
+    [
+        ["--json"],
+        ["sessions", "--json"],
+        ["config", "--json"],
+        ["models", "--json"],
+        ["run", "--json", "--help"],
+        ["resume", "--json", "--version"]
+    ];
+
     [Fact]
     public void JsonIsLimitedToTurnCommands()
     {
         Assert.True(CliArguments.Parse(["run", "--json", "prompt"]).Json);
         Assert.True(CliArguments.Parse(["resume", "--json"]).Json);
 
-        foreach (var arguments in new[]
-        {
-            new[] { "--json" },
-            ["sessions", "--json"],
-            ["config", "--json"],
-            ["models", "--json"],
-            ["run", "--json", "--help"],
-            ["resume", "--json", "--version"]
-        })
+        foreach (var arguments in JsonOutsideTurnCommandArguments)
         {
             var exception = Assert.Throws<ArgumentException>(() => CliArguments.Parse(arguments));
             Assert.Contains("wfx run --json", exception.Message);
@@ -198,15 +200,7 @@ public sealed class JsonEventStreamTests
     [Fact]
     public async Task JsonOutsideTurnCommandsReturnsUsageError()
     {
-        foreach (var arguments in new[]
-        {
-            new[] { "--json" },
-            ["sessions", "--json"],
-            ["config", "--json"],
-            ["models", "--json"],
-            ["run", "--json", "--help"],
-            ["resume", "--json", "--version"]
-        })
+        foreach (var arguments in JsonOutsideTurnCommandArguments)
         {
             using var httpClient = CliRunner.CreateUnexpectedHttpClient("A usage error must not call a model endpoint.");
             using var console = new ConsoleCapture();
