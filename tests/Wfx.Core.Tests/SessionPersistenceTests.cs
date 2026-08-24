@@ -33,17 +33,22 @@ public sealed class SessionPersistenceTests
 
         var events = session.Events();
         Assert.Equal("header", TypeOf(events[0]));
-        Assert.Equal(1, events[0].GetProperty("schema_version").GetInt32());
+        Assert.Equal(2, events[0].GetProperty("schema_version").GetInt32());
         Assert.Equal(session.Log.Id, events[0].GetProperty("session_id").GetString());
         Assert.Equal(Path.GetFullPath(session.Workspace), events[0].GetProperty("workspace").GetString());
         Assert.True(events[0].TryGetProperty("created_at", out var createdAt));
         Assert.Matches(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", createdAt.GetString());
 
         Assert.Equal("turn_started", TypeOf(events[1]));
-        Assert.Equal("work", events[1].GetProperty("profile").GetString());
-        Assert.Equal("openrouter", events[1].GetProperty("provider").GetString());
-        Assert.Equal("responses", events[1].GetProperty("protocol").GetString());
-        Assert.Equal("fake-model", events[1].GetProperty("model").GetString());
+        Assert.Equal(1, events[1].GetProperty("schema_version").GetInt32());
+        Assert.Equal(session.Log.Id, events[1].GetProperty("session_id").GetString());
+        Assert.Equal(Path.GetFullPath(session.Workspace), events[1].GetProperty("workspace").GetString());
+        var endpoint = events[1].GetProperty("endpoint");
+        Assert.Equal("work", endpoint.GetProperty("profile").GetString());
+        Assert.Equal("openrouter", endpoint.GetProperty("provider").GetString());
+        Assert.Equal("responses", endpoint.GetProperty("protocol").GetString());
+        Assert.Equal("fake-model", endpoint.GetProperty("model").GetString());
+        Assert.Equal("workspace", events[1].GetProperty("approval_mode").GetString());
 
         Assert.Equal("message", TypeOf(events[2]));
         Assert.Equal("system", events[2].GetProperty("role").GetString());
@@ -60,7 +65,14 @@ public sealed class SessionPersistenceTests
         Assert.Equal("usage", TypeOf(events[5]));
         Assert.Equal(10, events[5].GetProperty("input_tokens").GetInt64());
         Assert.Equal(4, events[5].GetProperty("output_tokens").GetInt64());
-        Assert.Equal(6, events.Length);
+        Assert.Equal(14, events[5].GetProperty("total_tokens").GetInt64());
+
+        Assert.Equal("turn_completed", TypeOf(events[6]));
+        Assert.Equal(session.Log.Id, events[6].GetProperty("session_id").GetString());
+        Assert.Equal(1, events[6].GetProperty("iterations").GetInt32());
+        Assert.Equal("finished", events[6].GetProperty("final_message").GetString());
+        Assert.Equal(14, events[6].GetProperty("total_usage").GetProperty("total_tokens").GetInt64());
+        Assert.Equal(7, events.Length);
     }
 
     [Fact]
@@ -91,7 +103,7 @@ public sealed class SessionPersistenceTests
         Assert.Contains(during, static e => TypeOf(e) == "usage");
         Assert.DoesNotContain(during, static e =>
             TypeOf(e) == "message" && e.GetProperty("role").GetString() == "tool");
-        Assert.DoesNotContain(during, static e => TypeOf(e) == "interrupted");
+        Assert.DoesNotContain(during, static e => TypeOf(e) == "turn_interrupted");
     }
 
     [Fact]
@@ -119,11 +131,22 @@ public sealed class SessionPersistenceTests
         Assert.Equal(JsonValueKind.Array, assistant.GetProperty("provider_items").ValueKind);
         Assert.Equal(providerItems, assistant.GetProperty("provider_items").GetRawText());
 
+        var toolStarted = Assert.Single(events, static e => TypeOf(e) == "tool_started");
+        Assert.Equal("call-1", toolStarted.GetProperty("call_id").GetString());
+        Assert.Equal("{\"value\":\"hello\"}", toolStarted.GetProperty("arguments_json").GetString());
+        var toolCompleted = Assert.Single(events, static e => TypeOf(e) == "tool_completed");
+        Assert.Equal("call-1", toolCompleted.GetProperty("call_id").GetString());
+        Assert.False(toolCompleted.GetProperty("result").GetProperty("is_error").GetBoolean());
+        Assert.Contains("echo:hello", toolCompleted.GetProperty("result").GetProperty("content").GetString());
+        Assert.True(
+            Array.IndexOf(events, toolStarted) < Array.IndexOf(events, toolCompleted));
+
         var tool = Assert.Single(events, static e =>
             TypeOf(e) == "message" && e.GetProperty("role").GetString() == "tool");
         Assert.Equal("call-1", tool.GetProperty("tool_call_id").GetString());
         Assert.Equal("echo", tool.GetProperty("name").GetString());
         Assert.Contains("echo:hello", tool.GetProperty("content").GetString());
+        Assert.Single(events, static e => TypeOf(e) == "turn_completed");
     }
 
     [Fact]
@@ -516,6 +539,57 @@ public sealed class SessionPersistenceTests
     }
 
     [Fact]
+    public void ReaderAcceptsLegacyAndTypedEventLinesWithoutReplayingEventOnlyData()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string id = "20260822T150405Z-compatible";
+        var path = Path.Combine(sessions.Path, id + ".jsonl");
+        File.WriteAllText(
+            path,
+            string.Join('\n',
+            [
+                Header(id, workspace.Path),
+                """{"type":"turn_started","profile":null,"provider":"local","protocol":"chat_completions","model":"legacy-model"}""",
+                """{"type":"message","role":"user","content":"legacy message"}""",
+                """{"type":"error","message":"legacy ignored error"}""",
+                """{"event":"turn_started","schema_version":1,"session_id":"20260822T150405Z-compatible","workspace":"C:\\workspace","endpoint":{"profile":"work","provider":"openrouter","protocol":"responses","model":"new-model"},"approval_mode":"never","started_at":"2026-08-22T15:04:05Z"}""",
+                """{"event":"tool_started","call_id":"call-1","name":"echo","arguments_json":"{}","approval_level":"read_only","at":"2026-08-22T15:04:06Z"}""",
+                """{"event":"tool_completed","call_id":"call-1","name":"echo","duration_ms":1,"outcome":"completed","result":{"content":"ignored","is_error":false},"at":"2026-08-22T15:04:07Z"}""",
+                """{"event":"turn_completed","session_id":"20260822T150405Z-compatible","iterations":1,"final_message":"ignored terminal data","total_usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"ended_at":"2026-08-22T15:04:08Z"}""",
+                """{"event":"turn_error","session_id":"20260822T150405Z-compatible","error":{"kind":"provider_error","message":"ignored"},"at":"2026-08-22T15:04:09Z"}"""
+            ]) + "\n");
+
+        var transcript = store.Read(id);
+
+        Assert.Equal(["legacy message"], transcript.Messages.Select(static message => message.Content));
+        Assert.Equal(new EndpointIdentity("work", "openrouter", "responses", "new-model"), transcript.LastEndpoint);
+    }
+
+    [Fact]
+    public void ReaderRepairsNewTurnInterruptedEventLikeLegacyInterruptedType()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+        const string id = "20260822T150405Z-newinterrupt";
+        var path = Path.Combine(sessions.Path, id + ".jsonl");
+        File.WriteAllText(
+            path,
+            string.Join('\n',
+            [
+                Header(id, workspace.Path),
+                """{"event":"message","role":"assistant","content":"calling","tool_calls":[{"id":"call-a","name":"echo","arguments":"{}"}],"at":"2026-08-22T15:04:05Z"}""",
+                """{"event":"turn_interrupted","session_id":"20260822T150405Z-newinterrupt","reason":"cancelled","at":"2026-08-22T15:04:06Z"}"""
+            ]) + "\n");
+
+        var transcript = store.Read(id);
+
+        Assert.Equal([SessionStore.InterruptedMarker], transcript.Messages.Select(static message => message.Content));
+    }
+
+    [Fact]
     public void ReaderSkipsUnknownEventsAtSupportedSchemaVersions()
     {
         using var sessions = new TemporaryDirectory();
@@ -580,11 +654,11 @@ public sealed class SessionPersistenceTests
         var store = new SessionStore(sessions.Path);
         const string id = "20260822T150405Z-newer1";
         var path = Path.Combine(sessions.Path, id + ".jsonl");
-        File.WriteAllText(path, Header(id, workspace.Path, schemaVersion: 2) + "\n");
+        File.WriteAllText(path, Header(id, workspace.Path, schemaVersion: 3) + "\n");
 
         var exception = Assert.Throws<InvalidDataException>(() => store.Read(id));
-        Assert.Contains("schema_version 2", exception.Message);
-        Assert.Contains("supports version 1", exception.Message);
+        Assert.Contains("schema_version 3", exception.Message);
+        Assert.Contains("supports version 2", exception.Message);
     }
 
     [Fact]
@@ -643,18 +717,22 @@ public sealed class SessionPersistenceTests
             session.Recorder,
             new AgentOptions(new EndpointIdentity("b", "openrouter", "responses", "model-b")),
             session.Workspace,
-            first.Messages).RunAsync("two", TestContext.Current.CancellationToken);
+            first.Messages,
+            new AgentTurnMetadata(session.Log.Id, ApprovalMode.Workspace))
+            .RunAsync("two", TestContext.Current.CancellationToken);
 
         var turns = session.Events().Where(static e => TypeOf(e) == "turn_started").ToArray();
         Assert.Equal(2, turns.Length);
-        Assert.Equal("a", turns[0].GetProperty("profile").GetString());
-        Assert.Equal("openai", turns[0].GetProperty("provider").GetString());
-        Assert.Equal("chat_completions", turns[0].GetProperty("protocol").GetString());
-        Assert.Equal("model-a", turns[0].GetProperty("model").GetString());
-        Assert.Equal("b", turns[1].GetProperty("profile").GetString());
-        Assert.Equal("openrouter", turns[1].GetProperty("provider").GetString());
-        Assert.Equal("responses", turns[1].GetProperty("protocol").GetString());
-        Assert.Equal("model-b", turns[1].GetProperty("model").GetString());
+        var firstEndpoint = turns[0].GetProperty("endpoint");
+        Assert.Equal("a", firstEndpoint.GetProperty("profile").GetString());
+        Assert.Equal("openai", firstEndpoint.GetProperty("provider").GetString());
+        Assert.Equal("chat_completions", firstEndpoint.GetProperty("protocol").GetString());
+        Assert.Equal("model-a", firstEndpoint.GetProperty("model").GetString());
+        var secondEndpoint = turns[1].GetProperty("endpoint");
+        Assert.Equal("b", secondEndpoint.GetProperty("profile").GetString());
+        Assert.Equal("openrouter", secondEndpoint.GetProperty("provider").GetString());
+        Assert.Equal("responses", secondEndpoint.GetProperty("protocol").GetString());
+        Assert.Equal("model-b", secondEndpoint.GetProperty("model").GetString());
         Assert.Single(session.Events(), static e => TypeOf(e) == "header");
     }
 
@@ -675,8 +753,9 @@ public sealed class SessionPersistenceTests
             () => agent.RunAsync("do it", interruption.Token));
 
         var events = session.Events();
-        Assert.Contains(events, static e => TypeOf(e) == "interrupted");
-        Assert.DoesNotContain(events, static e => TypeOf(e) == "error");
+        var interruptionEvent = Assert.Single(events, static e => TypeOf(e) == "turn_interrupted");
+        Assert.Equal("cancelled", interruptionEvent.GetProperty("reason").GetString());
+        Assert.DoesNotContain(events, static e => TypeOf(e) == "turn_error");
         var assistant = Assert.Single(events, static e =>
             TypeOf(e) == "message" && e.GetProperty("role").GetString() == "assistant");
         Assert.Equal("call-1", assistant.GetProperty("tool_calls")[0].GetProperty("id").GetString());
@@ -694,9 +773,11 @@ public sealed class SessionPersistenceTests
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => agent.RunAsync("do it", TestContext.Current.CancellationToken));
 
-        var error = Assert.Single(session.Events(), static e => TypeOf(e) == "error");
-        Assert.Equal("provider failed", error.GetProperty("message").GetString());
-        Assert.DoesNotContain(session.Events(), static e => TypeOf(e) == "interrupted");
+        var error = Assert.Single(session.Events(), static e => TypeOf(e) == "turn_error");
+        Assert.Equal("provider_error", error.GetProperty("error").GetProperty("kind").GetString());
+        Assert.Equal("provider failed", error.GetProperty("error").GetProperty("message").GetString());
+        Assert.DoesNotContain(session.Events(), static e => TypeOf(e) == "turn_interrupted");
+        Assert.DoesNotContain(error.EnumerateObject(), static property => property.Name is "exception" or "stack");
     }
 
     [Fact]
@@ -798,7 +879,8 @@ public sealed class SessionPersistenceTests
         new StaticContextProvider("test context"),
         session.Recorder,
         options ?? new AgentOptions("fake-model"),
-        session.Workspace);
+        session.Workspace,
+        turnMetadata: new AgentTurnMetadata(session.Log.Id, ApprovalMode.Workspace));
 
     private static Agent CreateAgent(
         IModelProvider model,
@@ -813,7 +895,8 @@ public sealed class SessionPersistenceTests
         new SessionRecorder(log),
         options,
         workspace,
-        conversation);
+        conversation,
+        new AgentTurnMetadata(log.Id, ApprovalMode.Workspace));
 
     [SupportedOSPlatform("windows")]
     private static void AssertCurrentUserOnlyAcl(string directory)
@@ -866,7 +949,10 @@ public sealed class SessionPersistenceTests
     private static WorkspaceInfo Workspace(string root) =>
         new(Path.GetFullPath(root), Path.GetFullPath(root), false);
 
-    private static string TypeOf(JsonElement element) => element.GetProperty("type").GetString()!;
+    private static string TypeOf(JsonElement element) =>
+        element.TryGetProperty("type", out var type)
+            ? type.GetString()!
+            : element.GetProperty("event").GetString()!;
 
     private static string Header(string id, string workspace, int schemaVersion = 1)
     {

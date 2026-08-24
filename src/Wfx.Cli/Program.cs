@@ -37,7 +37,8 @@ internal static class Program
         ISessionStore sessionStore,
         CancellationToken cancellationToken,
         string? userProfile = null,
-        IConsoleEnvironment? consoleEnvironment = null)
+        IConsoleEnvironment? consoleEnvironment = null,
+        Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory = null)
     {
         var console = consoleEnvironment ?? SystemConsoleEnvironment.Instance;
         try
@@ -127,6 +128,16 @@ internal static class Program
                     httpClient,
                     sessionStore,
                     console,
+                    modelProviderFactory,
+                    cancellationToken).ConfigureAwait(false),
+                CliCommand.Resume when arguments.Json => await RunJsonResumeAsync(
+                    settings,
+                    workspace,
+                    arguments,
+                    httpClient,
+                    resumedSession!,
+                    console,
+                    modelProviderFactory,
                     cancellationToken).ConfigureAwait(false),
                 CliCommand.Resume => await RunInteractiveAsync(
                     settings,
@@ -136,6 +147,7 @@ internal static class Program
                     sessionStore,
                     resumedSession,
                     console,
+                    modelProviderFactory,
                     cancellationToken).ConfigureAwait(false),
                 _ => await RunInteractiveAsync(
                     settings,
@@ -145,6 +157,7 @@ internal static class Program
                     sessionStore,
                     null,
                     console,
+                    modelProviderFactory,
                     cancellationToken).ConfigureAwait(false)
             };
         }
@@ -168,33 +181,99 @@ internal static class Program
         HttpClient httpClient,
         ISessionStore sessionStore,
         IConsoleEnvironment console,
+        Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory,
         CancellationToken cancellationToken)
     {
         EnsureRunnable(settings);
-        Console.Error.WriteLine(settings.Profile is null
-            ? $"wfx: {settings.Provider}/{settings.Model}"
-            : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
-        WarnIfYolo(settings);
+        if (!arguments.Json)
+        {
+            Console.Error.WriteLine(settings.Profile is null
+                ? $"wfx: {settings.Provider}/{settings.Model}"
+                : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
+            WarnIfYolo(settings);
+        }
 
-        using var session = OpenSession(arguments, workspace, Console.Error, "wfx: session ", sessionStore);
-
-        var provider = CreateModelProvider(settings, httpClient);
+        using var session = OpenSession(
+            arguments,
+            workspace,
+            arguments.Json ? TextWriter.Null : Console.Error,
+            "wfx: session ",
+            sessionStore);
+        var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
         var agent = CreateAgent(settings, workspace, arguments, provider, [], session, console);
-        var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
-        PrintTrailingNewline(result);
+        return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
+    }
 
-        if (result.Status is AgentRunStatus.IterationLimitReached)
+    private static async Task<int> RunJsonResumeAsync(
+        WfxSettings settings,
+        WorkspaceInfo workspace,
+        CliArguments arguments,
+        HttpClient httpClient,
+        SessionResume resumedSession,
+        IConsoleEnvironment console,
+        Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory,
+        CancellationToken cancellationToken)
+    {
+        EnsureRunnable(settings);
+        var prompt = await ReadConsoleLineAsync(cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(prompt))
         {
-            WriteIterationLimitReached(result, "raise --max-iterations to let the run continue");
-            return 2;
+            throw new ArgumentException("wfx resume --json requires one prompt on stdin.");
         }
 
-        if (arguments.Verbose)
-        {
-            Console.Error.WriteLine($"[wfx] completed in {result.Iterations} model iteration(s)");
-        }
+        var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
+        var agent = CreateAgent(
+            settings,
+            workspace,
+            arguments,
+            provider,
+            resumedSession.Transcript.Messages,
+            resumedSession.Log,
+            console);
+        return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
+    }
 
-        return 0;
+    private static async Task<int> RunTurnCommandAsync(
+        Agent agent,
+        string prompt,
+        CliArguments arguments,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
+            if (!arguments.Json)
+            {
+                PrintTrailingNewline(result);
+            }
+
+            if (result.Status is AgentRunStatus.IterationLimitReached)
+            {
+                if (!arguments.Json)
+                {
+                    WriteIterationLimitReached(result, "raise --max-iterations to let the run continue");
+                }
+
+                return arguments.Json ? 4 : 2;
+            }
+
+            if (!arguments.Json && arguments.Verbose)
+            {
+                Console.Error.WriteLine($"[wfx] completed in {result.Iterations} model iteration(s)");
+            }
+
+            return 0;
+        }
+        catch (Exception exception) when (arguments.Json && exception is OperationCanceledException or TimeoutException)
+        {
+            Console.Error.WriteLine($"wfx: {exception.Message}");
+            return 4;
+        }
+        catch (Exception exception) when (arguments.Json)
+        {
+            Console.Error.WriteLine($"wfx: {exception.Message}");
+            return 5;
+        }
     }
 
     private static async Task<int> RunInteractiveAsync(
@@ -205,6 +284,7 @@ internal static class Program
         ISessionStore sessionStore,
         SessionResume? resumedSession,
         IConsoleEnvironment console,
+        Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(settings.Model) && settings.ConfiguredModels.Count == 0)
@@ -229,7 +309,7 @@ internal static class Program
 
         Console.WriteLine();
 
-        var provider = CreateModelProvider(settings, httpClient);
+        var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
         IReadOnlyList<ModelMessage> conversation = transcript?.Messages ?? [];
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -269,7 +349,7 @@ internal static class Program
                         settings = resolution.Settings!;
                         if (resolution.TransportChanged)
                         {
-                            provider = CreateModelProvider(settings, httpClient);
+                            provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
                         }
 
                         foreach (var warning in settings.Warnings)
@@ -458,6 +538,11 @@ internal static class Program
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
+            if (arguments.Json)
+            {
+                throw new IOException($"Could not create the session required by --json: {exception.Message}", exception);
+            }
+
             Console.Error.WriteLine(
                 $"wfx: warning: Could not create session: {exception.Message}. The invocation will continue without a session.");
             return null;
@@ -493,10 +578,21 @@ internal static class Program
         var approval = new PolicyApprovalService(
             settings.Approval,
             (request, token) => PromptForApprovalAsync(request, secrets, console, token));
-        IAgentObserver observer = new ConsoleAgentObserver(arguments.Verbose, arguments.Debug, _unicodeConsole, secrets);
+        var observers = new List<IAgentObserver>();
         if (session is not null)
         {
-            observer = new CompositeAgentObserver(new SessionRecorder(session), observer);
+            observers.Add(new SessionRecorder(session));
+        }
+
+        observers.Add(new ConsoleAgentObserver(
+            arguments.Verbose,
+            arguments.Debug,
+            _unicodeConsole,
+            secrets,
+            suppressOutput: arguments.Json));
+        if (arguments.Json)
+        {
+            observers.Add(new NdjsonAgentObserver(Console.Out));
         }
 
         return new Agent(
@@ -504,24 +600,31 @@ internal static class Program
             tools,
             approval,
             context,
-            observer,
+            new CompositeAgentObserver([.. observers]),
             new AgentOptions(
                 new EndpointIdentity(settings.Profile, settings.Provider, settings.Protocol, settings.Model),
                 settings.MaxIterations),
             workspace.Root,
-            conversation);
+            conversation,
+            new AgentTurnMetadata(session?.Id ?? string.Empty, settings.Approval));
     }
 
-    private static IModelProvider CreateModelProvider(WfxSettings settings, HttpClient httpClient) =>
-        ModelTransports.Create(settings.Protocol, httpClient, new OpenAiProviderOptions
-        {
-            BaseUri = settings.BaseUri,
-            ApiKey = settings.ApiKey,
-            Headers = settings.Headers,
-            Timeout = settings.Timeout,
-            IncludeStreamOptions = settings.Provider.Equals("openai", StringComparison.OrdinalIgnoreCase)
-                || settings.Provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase)
-        });
+    private static IModelProvider CreateModelProvider(
+        WfxSettings settings,
+        HttpClient httpClient,
+        Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory) =>
+        modelProviderFactory?.Invoke(settings, httpClient) ?? ModelTransports.Create(
+            settings.Protocol,
+            httpClient,
+            new OpenAiProviderOptions
+            {
+                BaseUri = settings.BaseUri,
+                ApiKey = settings.ApiKey,
+                Headers = settings.Headers,
+                Timeout = settings.Timeout,
+                IncludeStreamOptions = settings.Provider.Equals("openai", StringComparison.OrdinalIgnoreCase)
+                    || settings.Provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase)
+            });
 
     private static IReadOnlyList<string> ProviderSecrets(WfxSettings settings)
     {
@@ -751,8 +854,9 @@ internal static class Program
               --max-iterations <count>      Agent loop limit (1-100)
               --verbose                     Show timing and progress details
               --debug                       Show tool result diagnostics
+              --json                        Machine-readable output: NDJSON events for run/resume,
+                                            one result object for sessions/config/models
               --no-session                  Do not persist a session log for this invocation
-              --json                        Machine-readable JSON for sessions, config, and models
               --id <session-id>             Resume a specific session (only with wfx resume)
               --force                       Rebind the session selected with --id
               --help                        Show help
@@ -765,6 +869,9 @@ internal static class Program
               /exit, /quit                  End the session
 
             Resume a session in a new process with wfx resume, or wfx resume --id <session-id>.
+            wfx run --json streams one event per line. wfx resume --id <session-id> --json reads one
+            prompt from stdin and streams the resumed turn. The stream is credential-adjacent; do not
+            send it to shared logs without reviewing its contents.
 
             Machine-readable output: wfx sessions --json, wfx config --json, and wfx models --json
             write one JSON result object to stdout, not an event stream. Shapes carry schema_version
@@ -791,7 +898,9 @@ internal static class Program
               1    error
               2    config error, or run stopped at the iteration limit (--max-iterations)
               3    wfx run or wfx resume refused to start: approval needs a terminal
-              130  cancelled
+              4    JSON turn interrupted: cancelled, timeout, or maximum iterations
+              5    JSON turn error: provider, tool, protocol, or configuration
+              130  human-mode turn cancelled
             """);
     }
 }

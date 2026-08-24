@@ -28,14 +28,16 @@ internal static class CliRunner
         ISessionStore sessionStore,
         CancellationToken cancellationToken,
         string? userProfile = null,
-        IConsoleEnvironment? consoleEnvironment = null) =>
+        IConsoleEnvironment? consoleEnvironment = null,
+        Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory = null) =>
         Program.RunAsync(
             args,
             httpClient,
             sessionStore,
             cancellationToken,
             userProfile,
-            consoleEnvironment ?? FakeConsoleEnvironment.Terminal);
+            consoleEnvironment ?? FakeConsoleEnvironment.Terminal,
+            modelProviderFactory);
 
     private sealed class UnexpectedRequestHandler(string message) : HttpMessageHandler
     {

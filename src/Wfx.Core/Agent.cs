@@ -45,6 +45,34 @@ public sealed record AgentRunResult(
 
 public interface IAgentObserver
 {
+    ValueTask OnEventAsync(AgentEvent agentEvent, CancellationToken cancellationToken) => agentEvent switch
+    {
+        TurnStartedEvent started => OnTurnStartedAsync(started.Endpoint, cancellationToken),
+        MessageEvent message => OnMessageAsync(message.Message, cancellationToken),
+        ToolStartedEvent started => OnToolStartedAsync(
+            started.Name,
+            started.ArgumentsJson,
+            started.ApprovalLevel,
+            cancellationToken),
+        ToolCompletedEvent completed => OnToolCompletedAsync(
+            completed.Name,
+            completed.Result,
+            completed.Duration,
+            cancellationToken),
+        ToolRejectedEvent rejected => OnToolRejectedAsync(
+            rejected.Name,
+            rejected.ArgumentsJson,
+            rejected.Reason,
+            cancellationToken),
+        UsageEvent usage => OnUsageAsync(usage.Usage, cancellationToken),
+        TurnCompletedEvent => ValueTask.CompletedTask,
+        TurnInterruptedEvent => OnTurnInterruptedAsync(cancellationToken),
+        TurnErrorEvent error => OnTurnErrorAsync(
+            error.Exception ?? new InvalidOperationException(error.Error.Message),
+            cancellationToken),
+        _ => throw new ArgumentOutOfRangeException(nameof(agentEvent), agentEvent, "Unknown agent event.")
+    };
+
     ValueTask OnModelTextAsync(string text, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
     ValueTask OnToolStartedAsync(
@@ -118,6 +146,8 @@ public sealed class Agent : IAgent
     private readonly AgentOptions _options;
     private readonly string _workspaceRoot;
     private readonly IReadOnlyList<ModelMessage> _conversation;
+    private readonly AgentTurnMetadata _turnMetadata;
+    private readonly TimeProvider _time;
 
     public Agent(
         IModelProvider modelProvider,
@@ -127,7 +157,9 @@ public sealed class Agent : IAgent
         IAgentObserver observer,
         AgentOptions options,
         string workspaceRoot,
-        IReadOnlyList<ModelMessage>? conversation = null)
+        IReadOnlyList<ModelMessage>? conversation = null,
+        AgentTurnMetadata? turnMetadata = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Model);
         _modelProvider = modelProvider;
@@ -138,31 +170,68 @@ public sealed class Agent : IAgent
         _options = options;
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         _conversation = conversation?.ToArray() ?? [];
+        _turnMetadata = turnMetadata ?? new AgentTurnMetadata(string.Empty, ApprovalMode.Always);
+        _time = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<AgentRunResult> RunAsync(string prompt, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prompt);
-        await _observer.OnTurnStartedAsync(_options.Endpoint, cancellationToken).ConfigureAwait(false);
+        await _observer.OnEventAsync(
+            new TurnStartedEvent(
+                _turnMetadata.SessionId,
+                _workspaceRoot,
+                _options.Endpoint,
+                _turnMetadata.ApprovalMode,
+                _time.GetUtcNow()),
+            cancellationToken).ConfigureAwait(false);
+        var execution = new AgentExecutionState();
         try
         {
-            return await RunTurnAsync(prompt, cancellationToken).ConfigureAwait(false);
+            return await RunTurnAsync(prompt, execution, cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            await _observer.OnEventAsync(
+                new TurnInterruptedEvent(
+                    _turnMetadata.SessionId,
+                    AgentInterruptionReason.Timeout,
+                    _time.GetUtcNow()),
+                CancellationToken.None).ConfigureAwait(false);
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await _observer.OnTurnInterruptedAsync(CancellationToken.None).ConfigureAwait(false);
+            await _observer.OnEventAsync(
+                new TurnInterruptedEvent(
+                    _turnMetadata.SessionId,
+                    AgentInterruptionReason.Cancelled,
+                    _time.GetUtcNow()),
+                CancellationToken.None).ConfigureAwait(false);
             throw;
         }
         catch (Exception exception)
         {
-            await _observer.OnTurnErrorAsync(exception, CancellationToken.None).ConfigureAwait(false);
+            await _observer.OnEventAsync(
+                new TurnErrorEvent(
+                    _turnMetadata.SessionId,
+                    new AgentError(execution.ErrorKind, exception.Message),
+                    _time.GetUtcNow())
+                {
+                    Exception = exception
+                },
+                CancellationToken.None).ConfigureAwait(false);
             throw;
         }
     }
 
-    private async Task<AgentRunResult> RunTurnAsync(string prompt, CancellationToken cancellationToken)
+    private async Task<AgentRunResult> RunTurnAsync(
+        string prompt,
+        AgentExecutionState execution,
+        CancellationToken cancellationToken)
     {
         var messages = new List<ModelMessage>(_conversation);
+        var totalUsage = new UsageAccumulator();
         if (messages.Count == 0)
         {
             var supplementalContext = await _context.GetContextAsync(cancellationToken).ConfigureAwait(false);
@@ -171,16 +240,21 @@ public sealed class Agent : IAgent
                 : $"{BaseSystemPrompt}\n\nWorkspace context and project instructions:\n{supplementalContext}";
             var system = new ModelMessage(ModelRole.System, systemPrompt);
             messages.Add(system);
-            await _observer.OnMessageAsync(system, cancellationToken).ConfigureAwait(false);
+            await _observer.OnEventAsync(
+                new MessageEvent(system, _time.GetUtcNow()),
+                cancellationToken).ConfigureAwait(false);
         }
 
         var user = new ModelMessage(ModelRole.User, prompt);
         messages.Add(user);
-        await _observer.OnMessageAsync(user, cancellationToken).ConfigureAwait(false);
+        await _observer.OnEventAsync(
+            new MessageEvent(user, _time.GetUtcNow()),
+            cancellationToken).ConfigureAwait(false);
 
         var assistantTexts = new List<string>();
         for (var iteration = 1; iteration <= _options.MaxIterations; iteration++)
         {
+            execution.ErrorKind = AgentErrorKind.ProviderError;
             ModelCompleted? completed = null;
             await foreach (var modelEvent in _modelProvider.StreamAsync(
                 new ModelRequest(_options.Model, messages, _tools.Definitions),
@@ -197,6 +271,7 @@ public sealed class Agent : IAgent
                 }
             }
 
+            execution.ErrorKind = AgentErrorKind.ProtocolError;
             if (completed is null)
             {
                 throw new InvalidOperationException("The model stream ended without a completed response.");
@@ -209,10 +284,15 @@ public sealed class Agent : IAgent
             }
 
             messages.Add(assistant);
-            await _observer.OnMessageAsync(assistant, cancellationToken).ConfigureAwait(false);
+            await _observer.OnEventAsync(
+                new MessageEvent(assistant, _time.GetUtcNow()),
+                cancellationToken).ConfigureAwait(false);
             if (completed.Usage is not null)
             {
-                await _observer.OnUsageAsync(completed.Usage, cancellationToken).ConfigureAwait(false);
+                totalUsage.Add(completed.Usage);
+                await _observer.OnEventAsync(
+                    new UsageEvent(completed.Usage, _time.GetUtcNow()),
+                    cancellationToken).ConfigureAwait(false);
             }
 
             if (!string.IsNullOrEmpty(assistant.Content))
@@ -222,34 +302,56 @@ public sealed class Agent : IAgent
 
             if (assistant.ToolCalls is not { Count: > 0 })
             {
-                return new AgentRunResult(assistant.Content ?? string.Empty, iteration, messages, AgentRunStatus.Completed);
+                var result = new AgentRunResult(
+                    assistant.Content ?? string.Empty,
+                    iteration,
+                    messages,
+                    AgentRunStatus.Completed);
+                await _observer.OnEventAsync(
+                    new TurnCompletedEvent(
+                        _turnMetadata.SessionId,
+                        iteration,
+                        result.FinalResponse,
+                        totalUsage.ToModelUsage(),
+                        _time.GetUtcNow()),
+                    cancellationToken).ConfigureAwait(false);
+                return result;
             }
 
+            execution.ErrorKind = AgentErrorKind.ToolError;
             foreach (var call in assistant.ToolCalls)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var result = await ExecuteToolAsync(call, cancellationToken).ConfigureAwait(false);
-                // Redact secrets exactly once, here at ingestion, so the model's view,
-                // in-memory state, and any persisted transcript hold identical text. The
-                // observer received the raw result for display (its redaction is separate).
+                // Redact secrets exactly once at ingestion so observers, the model's view,
+                // in-memory state, and any persisted transcript hold identical text.
                 var toolMessage = new ModelMessage(
                     ModelRole.Tool,
-                    result.ToProtocolJson(SecretRedactor.Redact),
+                    result.ToProtocolJson(),
                     ToolCallId: call.Id,
                     Name: call.Name);
                 messages.Add(toolMessage);
-                await _observer.OnMessageAsync(toolMessage, cancellationToken).ConfigureAwait(false);
+                await _observer.OnEventAsync(
+                    new MessageEvent(toolMessage, _time.GetUtcNow()),
+                    cancellationToken).ConfigureAwait(false);
             }
         }
 
         var lastAssistant = messages.Last(static message => message.Role == ModelRole.Assistant);
-        return new AgentRunResult(
+        var interruptedResult = new AgentRunResult(
             lastAssistant.Content ?? string.Empty,
             _options.MaxIterations,
             messages,
             AgentRunStatus.IterationLimitReached,
             Note: $"Iteration limit of {_options.MaxIterations} model iteration(s) reached.",
             AccumulatedText: string.Join("\n", assistantTexts));
+        await _observer.OnEventAsync(
+            new TurnInterruptedEvent(
+                _turnMetadata.SessionId,
+                AgentInterruptionReason.MaxIterations,
+                _time.GetUtcNow()),
+            cancellationToken).ConfigureAwait(false);
+        return interruptedResult;
     }
 
     private async ValueTask<ToolResult> RejectAsync(
@@ -257,8 +359,14 @@ public sealed class Agent : IAgent
         string reason,
         CancellationToken cancellationToken)
     {
-        await _observer.OnToolRejectedAsync(call.Name, call.ArgumentsJson, reason, cancellationToken)
-            .ConfigureAwait(false);
+        await _observer.OnEventAsync(
+            new ToolRejectedEvent(
+                call.Id,
+                call.Name,
+                call.ArgumentsJson,
+                reason,
+                _time.GetUtcNow()),
+            cancellationToken).ConfigureAwait(false);
         return ToolResult.Fail(reason);
     }
 
@@ -302,8 +410,14 @@ public sealed class Agent : IAgent
                     cancellationToken).ConfigureAwait(false);
             }
 
-            await _observer.OnToolStartedAsync(call.Name, call.ArgumentsJson, level, cancellationToken)
-                .ConfigureAwait(false);
+            await _observer.OnEventAsync(
+                new ToolStartedEvent(
+                    call.Id,
+                    call.Name,
+                    call.ArgumentsJson,
+                    level,
+                    _time.GetUtcNow()),
+                cancellationToken).ConfigureAwait(false);
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
             ToolResult result;
             try
@@ -323,8 +437,61 @@ public sealed class Agent : IAgent
             }
 
             var duration = System.Diagnostics.Stopwatch.GetElapsedTime(started);
-            await _observer.OnToolCompletedAsync(call.Name, result, duration, cancellationToken).ConfigureAwait(false);
+            result = Redact(result);
+            await _observer.OnEventAsync(
+                new ToolCompletedEvent(call.Id, call.Name, result, duration, _time.GetUtcNow()),
+                cancellationToken).ConfigureAwait(false);
             return result;
         }
+    }
+
+    private static ToolResult Redact(ToolResult result)
+    {
+        IReadOnlyDictionary<string, string>? metadata = null;
+        if (result.Metadata is not null)
+        {
+            metadata = result.Metadata.ToDictionary(
+                static pair => pair.Key,
+                static pair => SecretRedactor.Redact(pair.Value),
+                StringComparer.Ordinal);
+        }
+
+        return new ToolResult(
+            result.Success,
+            SecretRedactor.Redact(result.Output),
+            result.Error is null ? null : SecretRedactor.Redact(result.Error),
+            metadata);
+    }
+
+    private sealed class AgentExecutionState
+    {
+        public AgentErrorKind ErrorKind { get; set; } = AgentErrorKind.ConfigError;
+    }
+
+    private sealed class UsageAccumulator
+    {
+        private long _inputTokens;
+        private long _outputTokens;
+        private bool _hasInputTokens;
+        private bool _hasOutputTokens;
+
+        public void Add(ModelUsage usage)
+        {
+            if (usage.InputTokens is { } inputTokens)
+            {
+                _inputTokens += inputTokens;
+                _hasInputTokens = true;
+            }
+
+            if (usage.OutputTokens is { } outputTokens)
+            {
+                _outputTokens += outputTokens;
+                _hasOutputTokens = true;
+            }
+        }
+
+        public ModelUsage ToModelUsage() => new(
+            _hasInputTokens ? _inputTokens : null,
+            _hasOutputTokens ? _outputTokens : null);
     }
 }

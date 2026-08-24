@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:wfx:events:v1",
+  "title": "WFX event stream v1",
+  "description": "One JSON object per line. The turn_started event selects this schema version for the turn.",
+  "oneOf": [
+    { "$ref": "#/$defs/turn_started" },
+    { "$ref": "#/$defs/message" },
+    { "$ref": "#/$defs/tool_started" },
+    { "$ref": "#/$defs/tool_completed" },
+    { "$ref": "#/$defs/tool_rejected" },
+    { "$ref": "#/$defs/usage" },
+    { "$ref": "#/$defs/turn_completed" },
+    { "$ref": "#/$defs/turn_interrupted" },
+    { "$ref": "#/$defs/turn_error" }
+  ],
+  "$defs": {
+    "endpoint": {
+      "type": "object",
+      "required": ["profile", "provider", "protocol", "model"],
+      "properties": {
+        "profile": { "type": ["string", "null"], "x-wfx-visibility": "public" },
+        "provider": { "type": "string", "x-wfx-visibility": "public" },
+        "protocol": { "type": "string", "x-wfx-visibility": "public" },
+        "model": { "type": "string", "x-wfx-visibility": "public" }
+      },
+      "additionalProperties": true
+    },
+    "usage_values": {
+      "type": "object",
+      "required": ["input_tokens", "output_tokens", "total_tokens"],
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"], "minimum": 0, "x-wfx-visibility": "public" },
+        "output_tokens": { "type": ["integer", "null"], "minimum": 0, "x-wfx-visibility": "public" },
+        "total_tokens": { "type": ["integer", "null"], "minimum": 0, "x-wfx-visibility": "public" }
+      },
+      "additionalProperties": true
+    },
+    "tool_call": {
+      "type": "object",
+      "required": ["id", "name", "arguments"],
+      "properties": {
+        "id": { "type": "string", "x-wfx-visibility": "public" },
+        "name": { "type": "string", "x-wfx-visibility": "public" },
+        "arguments": { "type": "string", "x-wfx-visibility": "public" }
+      },
+      "additionalProperties": true
+    },
+    "turn_started": {
+      "type": "object",
+      "required": ["event", "schema_version", "session_id", "workspace", "endpoint", "approval_mode", "started_at"],
+      "properties": {
+        "event": { "const": "turn_started", "x-wfx-visibility": "public" },
+        "schema_version": { "const": 1, "x-wfx-visibility": "public" },
+        "session_id": { "type": "string", "minLength": 1, "x-wfx-visibility": "public" },
+        "workspace": { "type": "string", "minLength": 1, "x-wfx-visibility": "public" },
+        "endpoint": { "$ref": "#/$defs/endpoint", "x-wfx-visibility": "public" },
+        "approval_mode": { "enum": ["always", "workspace", "never", "yolo"], "x-wfx-visibility": "public" },
+        "started_at": { "type": "string", "format": "date-time", "x-wfx-visibility": "public" }
+      },
+      "additionalProperties": true
+    },
+    "message": {
+      "type": "object",
+      "required": ["event", "role", "content", "at"],
+      "properties": {
+        "event": { "const": "message", "x-wfx-visibility": "public" },
+        "role": { "enum": ["system", "user", "assistant", "tool"], "x-wfx-visibility": "public" },
+        "content": { "type": ["string", "null"], "x-wfx-visibility": "public" },
+        "tool_calls": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/tool_call" },
+          "x-wfx-visibility": "public"
+        },
+        "tool_call_id": { "type": "string", "x-wfx-visibility": "public" },
+        "name": { "type": "string", "x-wfx-visibility": "public" },
+        "at": { "type": "string", "format": "date-time", "x-wfx-visibility": "public" },
+        "provider_items": { "x-wfx-visibility": "internal" }
+      },
+      "additionalProperties": true
+    },
+    "tool_started": {
+      "type": "object",
+      "required": ["event", "call_id", "name", "arguments_json", "approval_level", "at"],
+      "properties": {
+        "event": { "const": "tool_started", "x-wfx-visibility": "public" },
+        "call_id": { "type": "string", "x-wfx-visibility": "public" },
+        "name": { "type": "string", "x-wfx-visibility": "public" },
+        "arguments_json": { "type": "string", "x-wfx-visibility": "public" },
+        "approval_level": {
+          "enum": ["read_only", "workspace_write", "system_change", "dangerous"],
+          "x-wfx-visibility": "public"
+        },
+        "at": { "type": "string", "format": "date-time", "x-wfx-visibility": "public" }
+      },
+      "additionalProperties": true
+    },
+    "tool_completed": {
+      "type": "object",
+      "required": ["event", "call_id", "name", "duration_ms", "outcome", "result", "at"],
+      "properties": {
+        "event": { "const": "tool_completed", "x-wfx-visibility": "public" },
+        "call_id": { "type": "string", "x-wfx-visibility": "public" },
+        "name": { "type": "string", "x-wfx-visibility": "public" },
+        "duration_ms": { "type": "number", "minimum": 0, "x-wfx-visibility": "public" },
+        "outcome": { "enum": ["completed", "failed"], "x-wfx-visibility": "public" },
+        "result": {
+          "type": "object",
+          "required": ["content", "is_error"],
+          "properties": {
+            "content": { "type": "string", "x-wfx-visibility": "public" },
+            "is_error": { "type": "boolean", "x-wfx-visibility": "public" }
+          },
+          "additionalProperties": true,
+          "x-wfx-visibility": "public"
+        },
+        "at": { "type": "string", "format": "date-time", "x-wfx-visibility": "public" }
+      },
+      "additionalProperties": true
+    },
+    "tool_rejected": {
+      "type": "object",
+      "required": ["event", "call_id", "name", "arguments_json", "reason", "at"],
+      "properties": {
+        "event": { "const": "tool_rejected", "x-wfx-visibility": "public" },
+        "call_id": { "type": "string", "x-wfx-visibility": "public" },
+        "name": { "type": "string", "x-wfx-visibility": "public" },
+        "arguments_json": { "type": "string", "x-wfx-visibility": "public" },
+        "reason": { "type": "string", "x-wfx-visibility": "public" },
+        "at": { "type": "string", "format": "date-time", "x-wfx-visibility": "public" }
+      },
+      "additionalProperties": true
+    },
+    "usage": {
+      "type": "object",
+      "required": ["event", "input_tokens", "output_tokens", "total_tokens", "at"],
+      "properties": {
+        "event": { "const": "usage", "x-wfx-visibility": "public" },
+        "input_tokens": { "type": ["integer", "null"], "minimum": 0, "x-wfx-visibility": "public" },
+        "output_tokens": { "type": ["integer", "null"], "minimum": 0, "x-wfx-visibility": "public" },
+        "total_tokens": { "type": ["integer", "null"], "minimum": 0, "x-wfx-visibility": "public" },
+        "at": { "type": "string", "format": "date-time", "x-wfx-visibility": "public" },
+        "provider_usage": { "x-wfx-visibility": "internal" }
+      },
+      "additionalProperties": true
+    },
+    "turn_completed": {
+      "type": "object",
+      "required": ["event", "session_id", "iterations", "final_message", "total_usage", "ended_at"],
+      "properties": {
+        "event": { "const": "turn_completed", "x-wfx-visibility": "public" },
+        "session_id": { "type": "string", "minLength": 1, "x-wfx-visibility": "public" },
+        "iterations": { "type": "integer", "minimum": 1, "x-wfx-visibility": "public" },
+        "final_message": { "type": "string", "x-wfx-visibility": "public" },
+        "total_usage": { "$ref": "#/$defs/usage_values", "x-wfx-visibility": "public" },
+        "ended_at": { "type": "string", "format": "date-time", "x-wfx-visibility": "public" }
+      },
+      "additionalProperties": true
+    },
+    "turn_interrupted": {
+      "type": "object",
+      "required": ["event", "session_id", "reason", "at"],
+      "properties": {
+        "event": { "const": "turn_interrupted", "x-wfx-visibility": "public" },
+        "session_id": { "type": "string", "minLength": 1, "x-wfx-visibility": "public" },
+        "reason": { "enum": ["cancelled", "timeout", "max_iterations"], "x-wfx-visibility": "public" },
+        "at": { "type": "string", "format": "date-time", "x-wfx-visibility": "public" }
+      },
+      "additionalProperties": true
+    },
+    "turn_error": {
+      "type": "object",
+      "required": ["event", "session_id", "error", "at"],
+      "properties": {
+        "event": { "const": "turn_error", "x-wfx-visibility": "public" },
+        "session_id": { "type": "string", "minLength": 1, "x-wfx-visibility": "public" },
+        "error": {
+          "type": "object",
+          "required": ["kind", "message"],
+          "properties": {
+            "kind": {
+              "enum": ["provider_error", "tool_error", "protocol_error", "config_error"],
+              "x-wfx-visibility": "public"
+            },
+            "message": { "type": "string", "x-wfx-visibility": "public" }
+          },
+          "additionalProperties": true,
+          "x-wfx-visibility": "public"
+        },
+        "at": { "type": "string", "format": "date-time", "x-wfx-visibility": "public" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

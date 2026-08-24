@@ -10,42 +10,55 @@ namespace Wfx.Core;
 public sealed class SessionRecorder : IAgentObserver
 {
     private readonly SessionLog _log;
+    private readonly TimeProvider _time;
 
-    public SessionRecorder(SessionLog log)
+    public SessionRecorder(SessionLog log, TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(log);
         _log = log;
+        _time = timeProvider ?? TimeProvider.System;
     }
 
-    public ValueTask OnTurnStartedAsync(EndpointIdentity endpoint, CancellationToken cancellationToken)
+    public ValueTask OnEventAsync(AgentEvent agentEvent, CancellationToken cancellationToken)
     {
-        TryWrite(() => _log.WriteTurnStarted(endpoint));
+        var persistedEvent = agentEvent switch
+        {
+            TurnStartedEvent { SessionId.Length: 0 } started => started with { SessionId = _log.Id },
+            TurnCompletedEvent { SessionId.Length: 0 } completed => completed with { SessionId = _log.Id },
+            TurnInterruptedEvent { SessionId.Length: 0 } interrupted => interrupted with { SessionId = _log.Id },
+            TurnErrorEvent { SessionId.Length: 0 } error => error with { SessionId = _log.Id },
+            _ => agentEvent
+        };
+        TryWrite(() => _log.WriteAgentEvent(persistedEvent));
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask OnMessageAsync(ModelMessage message, CancellationToken cancellationToken)
-    {
-        TryWrite(() => _log.WriteMessage(message));
-        return ValueTask.CompletedTask;
-    }
+    public ValueTask OnTurnStartedAsync(EndpointIdentity endpoint, CancellationToken cancellationToken) =>
+        OnEventAsync(
+            new TurnStartedEvent(_log.Id, string.Empty, endpoint, ApprovalMode.Always, _time.GetUtcNow()),
+            cancellationToken);
 
-    public ValueTask OnUsageAsync(ModelUsage usage, CancellationToken cancellationToken)
-    {
-        TryWrite(() => _log.WriteUsage(usage));
-        return ValueTask.CompletedTask;
-    }
+    public ValueTask OnMessageAsync(ModelMessage message, CancellationToken cancellationToken) =>
+        OnEventAsync(new MessageEvent(message, _time.GetUtcNow()), cancellationToken);
 
-    public ValueTask OnTurnInterruptedAsync(CancellationToken cancellationToken)
-    {
-        TryWrite(_log.WriteInterrupted);
-        return ValueTask.CompletedTask;
-    }
+    public ValueTask OnUsageAsync(ModelUsage usage, CancellationToken cancellationToken) =>
+        OnEventAsync(new UsageEvent(usage, _time.GetUtcNow()), cancellationToken);
 
-    public ValueTask OnTurnErrorAsync(Exception exception, CancellationToken cancellationToken)
-    {
-        TryWrite(() => _log.WriteError(exception));
-        return ValueTask.CompletedTask;
-    }
+    public ValueTask OnTurnInterruptedAsync(CancellationToken cancellationToken) =>
+        OnEventAsync(
+            new TurnInterruptedEvent(_log.Id, AgentInterruptionReason.Cancelled, _time.GetUtcNow()),
+            cancellationToken);
+
+    public ValueTask OnTurnErrorAsync(Exception exception, CancellationToken cancellationToken) =>
+        OnEventAsync(
+            new TurnErrorEvent(
+                _log.Id,
+                new AgentError(AgentErrorKind.ProviderError, exception.Message),
+                _time.GetUtcNow())
+            {
+                Exception = exception
+            },
+            cancellationToken);
 
     private static void TryWrite(Action write)
     {

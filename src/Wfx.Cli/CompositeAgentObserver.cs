@@ -4,6 +4,9 @@ namespace Wfx.Cli;
 
 internal sealed class CompositeAgentObserver(params IAgentObserver[] observers) : IAgentObserver
 {
+    public ValueTask OnEventAsync(AgentEvent agentEvent, CancellationToken cancellationToken) =>
+        FanOut(observer => observer.OnEventAsync(agentEvent, cancellationToken));
+
     public ValueTask OnModelTextAsync(string text, CancellationToken cancellationToken) =>
         FanOut(observer => observer.OnModelTextAsync(text, cancellationToken));
 

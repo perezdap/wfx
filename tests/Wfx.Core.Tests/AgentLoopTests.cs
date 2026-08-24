@@ -93,6 +93,75 @@ public sealed class AgentLoopTests
     }
 
     [Fact]
+    public async Task EmitsTypedToolEventsWithModelCallIdsAndCompletionTotals()
+    {
+        using var workspace = new TemporaryDirectory();
+        var model = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("provider-call-42", "echo", "{\"value\":\"hello\"}")]),
+            new ModelMessage(ModelRole.Assistant, "finished")
+        ], usage: new ModelUsage(10, 5));
+        var observer = new TypedRecordingObserver();
+        var agent = CreateAgent(
+            model,
+            workspace.Path,
+            observer: observer,
+            metadata: new AgentTurnMetadata("session-42", ApprovalMode.Workspace));
+
+        await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        var started = Assert.Single(observer.Events.OfType<ToolStartedEvent>());
+        Assert.Equal("provider-call-42", started.CallId);
+        Assert.Equal("echo", started.Name);
+        Assert.Equal("{\"value\":\"hello\"}", started.ArgumentsJson);
+        Assert.Equal(ApprovalLevel.ReadOnly, started.ApprovalLevel);
+
+        var completed = Assert.Single(observer.Events.OfType<ToolCompletedEvent>());
+        Assert.Equal("provider-call-42", completed.CallId);
+        Assert.Equal("echo", completed.Name);
+        Assert.True(completed.Result.Success);
+        Assert.True(completed.Duration >= TimeSpan.Zero);
+
+        var terminal = Assert.Single(observer.Events.OfType<TurnCompletedEvent>());
+        Assert.Equal("session-42", terminal.SessionId);
+        Assert.Equal(2, terminal.Iterations);
+        Assert.Equal("finished", terminal.FinalMessage);
+        Assert.Equal(new ModelUsage(20, 10), terminal.TotalUsage);
+    }
+
+    [Fact]
+    public void ExplicitEventSerializerWritesContractShapesAndRawProviderItems()
+    {
+        var at = new DateTimeOffset(2026, 8, 22, 15, 4, 5, TimeSpan.Zero);
+        var message = new MessageEvent(
+            new ModelMessage(
+                ModelRole.Assistant,
+                "calling",
+                [new ModelToolCall("call-1", "echo", "{\"value\":\"hello\"}")],
+                ProviderItemsJson: """[{"type":"reasoning","id":"rs-1"}]"""),
+            at);
+
+        using var document = JsonDocument.Parse(Serialize(message));
+        var root = document.RootElement;
+        Assert.Equal("message", root.GetProperty("event").GetString());
+        Assert.False(root.TryGetProperty("schema_version", out _));
+        Assert.Equal(JsonValueKind.Array, root.GetProperty("provider_items").ValueKind);
+        Assert.Equal("call-1", root.GetProperty("tool_calls")[0].GetProperty("id").GetString());
+
+        var started = new ToolStartedEvent(
+            "call-1",
+            "echo",
+            "{\"value\":\"hello\"}",
+            ApprovalLevel.ReadOnly,
+            at);
+        using var startedDocument = JsonDocument.Parse(Serialize(started));
+        Assert.Equal(
+            "{\"value\":\"hello\"}",
+            startedDocument.RootElement.GetProperty("arguments_json").GetString());
+        Assert.Equal(JsonValueKind.String, startedDocument.RootElement.GetProperty("arguments_json").ValueKind);
+    }
+
+    [Fact]
     public async Task DeniedToolReturnsStructuredFailureAndDoesNotExecute()
     {
         using var workspace = new TemporaryDirectory();
@@ -133,12 +202,13 @@ public sealed class AgentLoopTests
             new ModelMessage(ModelRole.Assistant, "stopped")
         ]);
         var observer = new RecordingObserver();
+        var typed = new TypedRecordingObserver();
         var agent = new Agent(
             model,
             new ToolRegistry([new EchoTool()]),
             new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(true)),
             new StaticContextProvider("test context"),
-            observer,
+            new TestCompositeObserver(typed, observer),
             new AgentOptions("fake-model"),
             workspace.Path);
 
@@ -149,6 +219,10 @@ public sealed class AgentLoopTests
         Assert.Equal(toolName, rejected.Name);
         Assert.Equal(argumentsJson, rejected.ArgumentsJson);
         Assert.Contains(expectedReason, rejected.Reason, StringComparison.Ordinal);
+        var typedRejected = Assert.Single(typed.Events.OfType<ToolRejectedEvent>());
+        Assert.Equal("call-1", typedRejected.CallId);
+        Assert.Equal(toolName, typedRejected.Name);
+        Assert.Equal(argumentsJson, typedRejected.ArgumentsJson);
     }
 
     [Fact]
@@ -256,6 +330,51 @@ public sealed class AgentLoopTests
     }
 
     [Fact]
+    public async Task EmitsTypedMaxIterationsInterruptionInsteadOfCompletion()
+    {
+        using var workspace = new TemporaryDirectory();
+        var model = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, "partial",
+            [new ModelToolCall("call-1", "echo", "{\"value\":\"a\"}")])
+        ]);
+        var observer = new TypedRecordingObserver();
+        var agent = CreateAgent(
+            model,
+            workspace.Path,
+            maxIterations: 1,
+            observer: observer,
+            metadata: new AgentTurnMetadata("session-limit", ApprovalMode.Never));
+
+        var result = await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        Assert.Equal(AgentRunStatus.IterationLimitReached, result.Status);
+        var interrupted = Assert.Single(observer.Events.OfType<TurnInterruptedEvent>());
+        Assert.Equal("session-limit", interrupted.SessionId);
+        Assert.Equal(AgentInterruptionReason.MaxIterations, interrupted.Reason);
+        Assert.Empty(observer.Events.OfType<TurnCompletedEvent>());
+    }
+
+    [Fact]
+    public async Task EmitsTypedTimeoutInterruption()
+    {
+        using var workspace = new TemporaryDirectory();
+        var observer = new TypedRecordingObserver();
+        var agent = CreateAgent(
+            new ThrowingModelProvider(new TimeoutException("provider timed out")),
+            workspace.Path,
+            observer: observer,
+            metadata: new AgentTurnMetadata("session-timeout", ApprovalMode.Never));
+
+        await Assert.ThrowsAsync<TimeoutException>(
+            () => agent.RunAsync("do it", TestContext.Current.CancellationToken));
+
+        var interrupted = Assert.Single(observer.Events.OfType<TurnInterruptedEvent>());
+        Assert.Equal("session-timeout", interrupted.SessionId);
+        Assert.Equal(AgentInterruptionReason.Timeout, interrupted.Reason);
+        Assert.Empty(observer.Events.OfType<TurnErrorEvent>());
+    }
+
+    [Fact]
     public async Task NotifiesInterruptionAsADistinctOutcome()
     {
         using var workspace = new TemporaryDirectory();
@@ -265,13 +384,22 @@ public sealed class AgentLoopTests
             [new ModelToolCall("call-1", "interrupt", "{}")])
         ]);
         var observer = new RecordingObserver();
-        var agent = CreateAgent(model, workspace.Path, observer: observer, tool: new InterruptingTool(interruption));
+        var typed = new TypedRecordingObserver();
+        var agent = CreateAgent(
+            model,
+            workspace.Path,
+            observer: new TestCompositeObserver(typed, observer),
+            tool: new InterruptingTool(interruption),
+            metadata: new AgentTurnMetadata("session-cancelled", ApprovalMode.Never));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => agent.RunAsync("do it", interruption.Token));
 
         Assert.Equal(1, observer.Interruptions);
         Assert.Empty(observer.Errors);
+        var interrupted = Assert.Single(typed.Events.OfType<TurnInterruptedEvent>());
+        Assert.Equal("session-cancelled", interrupted.SessionId);
+        Assert.Equal(AgentInterruptionReason.Cancelled, interrupted.Reason);
     }
 
     [Fact]
@@ -289,6 +417,30 @@ public sealed class AgentLoopTests
 
         Assert.Same(exception, Assert.Single(observer.Errors));
         Assert.Equal(0, observer.Interruptions);
+    }
+
+    [Fact]
+    public async Task EmitsClassifiedTypedTurnErrorWithoutLosingLegacyException()
+    {
+        using var workspace = new TemporaryDirectory();
+        var failure = new InvalidOperationException("provider failed");
+        var typed = new TypedRecordingObserver();
+        var legacy = new RecordingObserver();
+        var observer = new TestCompositeObserver(typed, legacy);
+        var agent = CreateAgent(
+            new ThrowingModelProvider(failure),
+            workspace.Path,
+            observer: observer,
+            metadata: new AgentTurnMetadata("session-error", ApprovalMode.Never));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => agent.RunAsync("do it", TestContext.Current.CancellationToken));
+
+        var error = Assert.Single(typed.Events.OfType<TurnErrorEvent>());
+        Assert.Equal("session-error", error.SessionId);
+        Assert.Equal(AgentErrorKind.ProviderError, error.Error.Kind);
+        Assert.Equal("provider failed", error.Error.Message);
+        Assert.Same(failure, Assert.Single(legacy.Errors));
     }
 
     [Fact]
@@ -431,20 +583,33 @@ public sealed class AgentLoopTests
         Assert.Equal("second answer", messages[4].Content);
     }
 
+    private static string Serialize(AgentEvent agentEvent)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            AgentEventJson.Write(writer, agentEvent);
+        }
+
+        return System.Text.Encoding.UTF8.GetString(stream.ToArray());
+    }
+
     private static Agent CreateAgent(
         IModelProvider model,
         string workspaceRoot,
         int maxIterations = 24,
         IAgentObserver? observer = null,
         ITool? tool = null,
-        AgentOptions? options = null) => new(
+        AgentOptions? options = null,
+        AgentTurnMetadata? metadata = null) => new(
         model,
         new ToolRegistry([tool ?? new EchoTool()]),
         new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
         new StaticContextProvider("test context"),
         observer ?? new SilentObserver(),
         options ?? new AgentOptions("fake-model", maxIterations),
-        workspaceRoot);
+        workspaceRoot,
+        turnMetadata: metadata);
 
     private sealed class SequenceModelProvider(
         IReadOnlyList<ModelMessage> responses,
@@ -566,6 +731,28 @@ public sealed class AgentLoopTests
     }
 
     private sealed class SilentObserver : IAgentObserver;
+
+    private sealed class TypedRecordingObserver : IAgentObserver
+    {
+        public List<AgentEvent> Events { get; } = [];
+
+        public ValueTask OnEventAsync(AgentEvent agentEvent, CancellationToken cancellationToken)
+        {
+            Events.Add(agentEvent);
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class TestCompositeObserver(params IAgentObserver[] observers) : IAgentObserver
+    {
+        public async ValueTask OnEventAsync(AgentEvent agentEvent, CancellationToken cancellationToken)
+        {
+            foreach (var observer in observers)
+            {
+                await observer.OnEventAsync(agentEvent, cancellationToken);
+            }
+        }
+    }
 
     private sealed class RecordingObserver : IAgentObserver
     {

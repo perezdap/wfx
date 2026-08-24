@@ -177,6 +177,18 @@ internal sealed record CliArguments(
             throw new ArgumentException("--force requires --id to select the session to rebind.");
         }
 
+        if (json && command == CliCommand.Interactive && !showHelp && !showVersion)
+        {
+            throw new ArgumentException(
+                "--json is only valid with a subcommand: wfx run --json, wfx resume --json, " +
+                "wfx sessions --json, wfx config --json, or wfx models --json.");
+        }
+
+        if (json && noSession && command == CliCommand.Run)
+        {
+            throw new ArgumentException("--json cannot be combined with --no-session because the event stream requires a resumable session ID.");
+        }
+
         return new CliArguments(
             command,
             prompt,
