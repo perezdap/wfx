@@ -138,9 +138,9 @@ public sealed class SessionListingTests
         var workspace = System.IO.Path.Combine(temp.Path, "workspace");
         using (var log = store.Create(workspace))
         {
-            log.WriteTurnStarted(new EndpointIdentity(null, "openai", "chat_completions", "first-model"));
+            WriteTurnStarted(log, workspace, new EndpointIdentity(null, "openai", "chat_completions", "first-model"));
             log.WriteMessage(new ModelMessage(ModelRole.Assistant, "first turn"));
-            log.WriteTurnStarted(new EndpointIdentity("deep", "openrouter", "responses", "second-model"));
+            WriteTurnStarted(log, workspace, new EndpointIdentity("deep", "openrouter", "responses", "second-model"));
             log.WriteMessage(new ModelMessage(ModelRole.Assistant, "second turn"));
         }
 
@@ -198,7 +198,7 @@ public sealed class SessionListingTests
         var store = new SessionStore(System.IO.Path.Combine(temp.Path, "sessions"));
         var workspace = System.IO.Path.Combine(temp.Path, "workspace");
         var log = store.Create(workspace);
-        log.WriteTurnStarted(new EndpointIdentity(null, "openai", "chat_completions", "durable-model"));
+        WriteTurnStarted(log, workspace, new EndpointIdentity(null, "openai", "chat_completions", "durable-model"));
         var path = log.FilePath;
         log.Dispose();
         System.IO.File.AppendAllText(path, "{malformed later history}\n");
@@ -218,7 +218,7 @@ public sealed class SessionListingTests
         var workspace = System.IO.Path.Combine(temp.Path, "workspace");
         using (var log = store.Create(workspace))
         {
-            log.WriteTurnStarted(new EndpointIdentity(null, "openai", "chat_completions", "buried-model"));
+            WriteTurnStarted(log, workspace, new EndpointIdentity(null, "openai", "chat_completions", "buried-model"));
             // More than one 64 KB tail-scan chunk of traffic after the last turn_started.
             log.WriteMessage(new ModelMessage(ModelRole.Assistant, new string('x', 160 * 1024)));
         }
@@ -256,4 +256,10 @@ public sealed class SessionListingTests
         Assert.Equal(root.GetProperty("workspace").GetString(), summary.Workspace);
         Assert.Equal(new FileInfo(path).Length, summary.SizeBytes);
     }
+
+    // Writes a typed turn_started event the way the agent loop does, so listing exercises the
+    // v2 transcript shape rather than a hand-written line.
+    private static void WriteTurnStarted(SessionLog log, string workspace, EndpointIdentity endpoint) =>
+        log.WriteAgentEvent(
+            new TurnStartedEvent(log.Id, workspace, endpoint, ApprovalMode.Workspace, DateTimeOffset.UtcNow));
 }

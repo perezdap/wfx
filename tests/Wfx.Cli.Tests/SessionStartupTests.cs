@@ -338,7 +338,7 @@ public sealed class SessionStartupTests
             Assert.Contains($"Resumed session: {created.Id}", console.Output.ToString());
             var events = File.ReadAllLines(created.FilePath);
             Assert.Equal(1, events.Count(static line => line.Contains("\"type\":\"header\"", StringComparison.Ordinal)));
-            Assert.Equal(2, events.Count(static line => line.Contains("\"type\":\"turn_started\"", StringComparison.Ordinal)));
+            Assert.Equal(2, events.Count(static line => line.Contains("\"event\":\"turn_started\"", StringComparison.Ordinal)));
             Assert.Contains(events, static line => line.Contains("\"content\":\"next\"", StringComparison.Ordinal));
         }
         finally
@@ -437,13 +437,14 @@ public sealed class SessionStartupTests
 
             Assert.Equal(0, exitCode);
             var turnLines = File.ReadAllLines(created.FilePath)
-                .Where(static line => line.Contains("\"type\":\"turn_started\"", StringComparison.Ordinal))
+                .Where(static line => line.Contains("\"event\":\"turn_started\"", StringComparison.Ordinal))
                 .ToArray();
             using var turn = JsonDocument.Parse(turnLines[^1]);
-            Assert.Equal("recorded", turn.RootElement.GetProperty("profile").GetString());
-            Assert.Equal("local", turn.RootElement.GetProperty("provider").GetString());
-            Assert.Equal("chat_completions", turn.RootElement.GetProperty("protocol").GetString());
-            Assert.Equal("recorded-model", turn.RootElement.GetProperty("model").GetString());
+            var endpoint = turn.RootElement.GetProperty("endpoint");
+            Assert.Equal("recorded", endpoint.GetProperty("profile").GetString());
+            Assert.Equal("local", endpoint.GetProperty("provider").GetString());
+            Assert.Equal("chat_completions", endpoint.GetProperty("protocol").GetString());
+            Assert.Equal("recorded-model", endpoint.GetProperty("model").GetString());
         }
         finally
         {
@@ -519,15 +520,16 @@ public sealed class SessionStartupTests
             }
 
             var turnLines = File.ReadAllLines(created.FilePath)
-                .Where(static line => line.Contains("\"type\":\"turn_started\"", StringComparison.Ordinal))
+                .Where(static line => line.Contains("\"event\":\"turn_started\"", StringComparison.Ordinal))
                 .ToArray();
             using var turn = JsonDocument.Parse(turnLines[^1]);
+            var endpoint = turn.RootElement.GetProperty("endpoint");
             Assert.Equal(
                 expectOverrideNotice ? profile : "recorded",
-                turn.RootElement.GetProperty("profile").GetString());
-            Assert.Equal("local", turn.RootElement.GetProperty("provider").GetString());
-            Assert.Equal("chat_completions", turn.RootElement.GetProperty("protocol").GetString());
-            Assert.Equal(expectedModel, turn.RootElement.GetProperty("model").GetString());
+                endpoint.GetProperty("profile").GetString());
+            Assert.Equal("local", endpoint.GetProperty("provider").GetString());
+            Assert.Equal("chat_completions", endpoint.GetProperty("protocol").GetString());
+            Assert.Equal(expectedModel, endpoint.GetProperty("model").GetString());
         }
         finally
         {
@@ -571,12 +573,13 @@ public sealed class SessionStartupTests
 
             Assert.Equal(0, exitCode);
             var turnLines = File.ReadAllLines(created.FilePath)
-                .Where(static line => line.Contains("\"type\":\"turn_started\"", StringComparison.Ordinal))
+                .Where(static line => line.Contains("\"event\":\"turn_started\"", StringComparison.Ordinal))
                 .ToArray();
             using var turn = JsonDocument.Parse(turnLines[^1]);
-            Assert.Equal("openai", turn.RootElement.GetProperty("provider").GetString());
-            Assert.Equal("chat_completions", turn.RootElement.GetProperty("protocol").GetString());
-            Assert.Equal(expectedModel, turn.RootElement.GetProperty("model").GetString());
+            var endpoint = turn.RootElement.GetProperty("endpoint");
+            Assert.Equal("openai", endpoint.GetProperty("provider").GetString());
+            Assert.Equal("chat_completions", endpoint.GetProperty("protocol").GetString());
+            Assert.Equal(expectedModel, endpoint.GetProperty("model").GetString());
         }
         finally
         {

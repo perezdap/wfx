@@ -4,9 +4,8 @@ namespace Wfx.Cli.Tests;
 
 /// <summary>
 /// A deliberately small JSON Schema validator covering exactly the constructs the published
-/// docs/schemas/ result schemas use (type, required, properties, items, $ref into $defs,
-/// const, enum). Keeps the tests dependency-free and Native AOT-friendly, matching the
-/// validation approach used for the event stream schema.
+/// docs/schemas/ schemas use (type, required, properties, items, $ref into $defs, const,
+/// enum, minLength, minimum, oneOf). Keeps the tests dependency-free and Native AOT-friendly.
 /// </summary>
 internal static class JsonSchemaValidator
 {
@@ -31,6 +30,28 @@ internal static class JsonSchemaValidator
             return;
         }
 
+        if (schema.TryGetProperty("oneOf", out var oneOf))
+        {
+            var firstBranchError = string.Empty;
+            foreach (var branch in oneOf.EnumerateArray())
+            {
+                var candidateErrors = new List<string>();
+                Validate(instance, branch, rootSchema, path, candidateErrors);
+                if (candidateErrors.Count == 0)
+                {
+                    return;
+                }
+
+                if (firstBranchError.Length == 0)
+                {
+                    firstBranchError = candidateErrors[0];
+                }
+            }
+
+            errors.Add($"{path}: matches none of the oneOf branches. First branch: {firstBranchError}.");
+            return;
+        }
+
         if (schema.TryGetProperty("const", out var constant) && !JsonElement.DeepEquals(instance, constant))
         {
             errors.Add($"{path}: expected const {constant}, got {instance}.");
@@ -46,6 +67,20 @@ internal static class JsonSchemaValidator
         {
             errors.Add($"{path}: value {instance} does not match type {type}.");
             return;
+        }
+
+        if (schema.TryGetProperty("minLength", out var minLength) &&
+            instance.ValueKind == JsonValueKind.String &&
+            instance.GetString()!.Length < minLength.GetInt32())
+        {
+            errors.Add($"{path}: string shorter than minLength {minLength.GetInt32()}.");
+        }
+
+        if (schema.TryGetProperty("minimum", out var minimum) &&
+            instance.ValueKind == JsonValueKind.Number &&
+            instance.GetDouble() < minimum.GetDouble())
+        {
+            errors.Add($"{path}: value {instance} is below minimum {minimum.GetDouble()}.");
         }
 
         if (instance.ValueKind == JsonValueKind.Object)
