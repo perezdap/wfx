@@ -252,6 +252,20 @@ public sealed class SessionPersistenceTests
     }
 
     [Fact]
+    public void ForcedResumeRequiresAnExplicitSessionIdAtTheCoreSeam()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        var store = new SessionStore(sessions.Path);
+
+        var exception = Assert.Throws<ArgumentException>(
+            () => SessionResume.Open(store, Workspace(workspace.Path), force: true));
+
+        Assert.Equal("sessionId", exception.ParamName);
+        Assert.Contains("explicit session ID", exception.Message);
+    }
+
+    [Fact]
     public void ResumeRefusesWorkspaceMismatchAndForceRebindsPersistently()
     {
         using var sessions = new TemporaryDirectory();

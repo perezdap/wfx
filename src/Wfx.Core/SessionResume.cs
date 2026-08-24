@@ -40,6 +40,13 @@ public sealed class SessionResume : IDisposable
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(currentWorkspace);
+        if (force && sessionId is null)
+        {
+            throw new ArgumentException(
+                "Forced workspace rebinding requires an explicit session ID.",
+                nameof(sessionId));
+        }
+
         var workspace = WorkspacePath.NormalizeRoot(currentWorkspace.Root);
         var selectedId = sessionId;
         if (selectedId is null)
