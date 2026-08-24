@@ -206,6 +206,29 @@ public sealed class ConfigurationTests
         return new string(chars);
     }
 
+    [Theory]
+    [InlineData(ApprovalMode.Always, "always")]
+    [InlineData(ApprovalMode.Workspace, "workspace")]
+    [InlineData(ApprovalMode.Never, "never")]
+    [InlineData(ApprovalMode.AllowAll, "yolo")]
+    public void FormatApprovalMode_UsesConfigurationNames(ApprovalMode mode, string expected)
+    {
+        Assert.Equal(expected, WfxConfiguration.FormatApprovalMode(mode));
+    }
+
+    [Fact]
+    public void Load_AcceptsYoloFromEnvironment()
+    {
+        using var workspace = new TemporaryDirectory();
+
+        var result = WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?> { ["WFX_APPROVAL"] = "yolo" },
+            userProfile: Path.Combine(workspace.Path, "missing-profile"));
+
+        Assert.Equal(ApprovalMode.AllowAll, result.Approval);
+    }
+
     [Fact]
     public void Load_RejectsInvalidApprovalFromEnvironment()
     {
@@ -216,6 +239,6 @@ public sealed class ConfigurationTests
             environment: new Dictionary<string, string?> { ["WFX_APPROVAL"] = "sometimes" },
             userProfile: Path.Combine(workspace.Path, "missing-profile")));
 
-        Assert.Contains("always, workspace, or never", exception.Message);
+        Assert.Contains("always, workspace, never, or yolo", exception.Message);
     }
 }

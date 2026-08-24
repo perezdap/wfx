@@ -230,6 +230,7 @@ A session remains bound to its recorded workspace. Resuming it elsewhere refuses
 | `always` | allow | prompt | prompt | prompt |
 | `workspace` | allow | allow | prompt | prompt |
 | `never` | allow | deny | deny | deny |
+| `yolo` | allow | allow | allow | allow |
 
 PowerShell is classified conservatively. Known inspection commands are read-only, build/test commands are workspace writes, known system-management commands are system changes, destructive disk/root operations are dangerous, and unrecognized scripts default to system change. `Env:` provider reads and `$env:` access are system changes, never read-only.
 
@@ -249,6 +250,7 @@ WFX takes inspiration from the small, native, model-agnostic philosophy of [Verc
 - Child processes omit secret-bearing environment variables by default: names matching `*_API_KEY`, `*_TOKEN`, or `*_SECRET`, plus `WFX_API_KEY`, `OPENAI_API_KEY`, and `OPENROUTER_API_KEY`. The `powershell` tool can restore specific parent variables with `inherit_environment`, which is classified as at least a system change. Scrubbed values are never logged.
 - Child processes set `GIT_PAGER=cat` and `PAGER=cat` by default. An explicit process-environment overlay still wins.
 - `--approval never` means deny mutations rather than silently execute them.
+- `--approval yolo` (or `--yolo`) bypasses tool approval prompts. Workspace path checks still apply. Use it only in a workspace you are willing to lose. Do not put `yolo` in a shared project config.
 
 See [risks.md](docs/risks.md) for remaining limitations.
 

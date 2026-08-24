@@ -4,7 +4,8 @@ public enum ApprovalMode
 {
     Always,
     Workspace,
-    Never
+    Never,
+    AllowAll
 }
 
 public sealed record ApprovalRequest(
@@ -33,7 +34,7 @@ public sealed class PolicyApprovalService : IApprovalService
 
     public ValueTask<bool> ApproveAsync(ApprovalRequest request, CancellationToken cancellationToken = default)
     {
-        if (request.Level == ApprovalLevel.ReadOnly)
+        if (request.Level == ApprovalLevel.ReadOnly || _mode == ApprovalMode.AllowAll)
         {
             return ValueTask.FromResult(true);
         }

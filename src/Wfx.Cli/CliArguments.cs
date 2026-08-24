@@ -44,6 +44,7 @@ internal sealed record CliArguments(
         var showHelp = false;
         var showVersion = false;
         var commandSelected = false;
+        var yoloSpecified = false;
 
         for (var index = 0; index < args.Length; index++)
         {
@@ -95,14 +96,19 @@ internal sealed record CliArguments(
                 case "--max-iterations":
                     maxIterations = ParseInteger(RequireValue(args, ref index, argument), argument, 1, 100);
                     break;
+                case "--yolo":
+                    EnsureYoloCompatible(approval);
+                    approval = ApprovalMode.AllowAll;
+                    yoloSpecified = true;
+                    break;
                 case "--approval":
-                    approval = RequireValue(args, ref index, argument).ToLowerInvariant() switch
+                    var nextApproval = ParseApproval(RequireValue(args, ref index, argument));
+                    if (yoloSpecified)
                     {
-                        "always" => ApprovalMode.Always,
-                        "workspace" => ApprovalMode.Workspace,
-                        "never" => ApprovalMode.Never,
-                        _ => throw new ArgumentException("--approval must be always, workspace, or never.")
-                    };
+                        EnsureYoloCompatible(nextApproval);
+                    }
+
+                    approval = nextApproval;
                     break;
                 case "run" when !commandSelected:
                     command = CliCommand.Run;
@@ -187,6 +193,24 @@ internal sealed record CliArguments(
             force,
             showHelp,
             showVersion);
+    }
+
+    private static ApprovalMode ParseApproval(string value)
+    {
+        if (WfxConfiguration.TryParseApprovalMode(value, out var mode))
+        {
+            return mode;
+        }
+
+        throw new ArgumentException("--approval must be always, workspace, never, or yolo.");
+    }
+
+    private static void EnsureYoloCompatible(ApprovalMode? mode)
+    {
+        if (mode is { } value && value != ApprovalMode.AllowAll)
+        {
+            throw new ArgumentException("Approval mode was specified more than once with different values.");
+        }
     }
 
     private static string RequireValue(string[] args, ref int index, string option)

@@ -135,6 +135,7 @@ internal static class Program
         Console.Error.WriteLine(settings.Profile is null
             ? $"wfx: {settings.Provider}/{settings.Model}"
             : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
+        WarnIfYolo(settings);
 
         using var session = OpenSession(arguments, workspace, Console.Error, "wfx: session ", sessionStore);
 
@@ -175,6 +176,7 @@ internal static class Program
         Console.WriteLine();
         PrintActiveModel(settings);
         Console.WriteLine($"Workspace: {workspace.Root}");
+        WarnIfYolo(settings);
         using var createdSession = resumedSession is null
             ? OpenSession(arguments, workspace, Console.Out, "Session: ", sessionStore)
             : null;
@@ -347,6 +349,15 @@ internal static class Program
 
         readCompleted.Cancel();
         return await readLine.ConfigureAwait(false);
+    }
+
+    private static void WarnIfYolo(WfxSettings settings)
+    {
+        if (settings.Approval == ApprovalMode.AllowAll)
+        {
+            Console.Error.WriteLine(
+                "wfx: warning: approval is yolo; tool prompts are bypassed. Workspace path checks still apply.");
+        }
     }
 
     private static void PrintActiveModel(WfxSettings settings)
@@ -560,7 +571,7 @@ internal static class Program
     private static int PrintConfig(WfxSettings settings, WorkspaceInfo workspace, string? userProfile)
     {
         PrintModels(settings, workspace);
-        Console.WriteLine($"Approval: {settings.Approval.ToString().ToLowerInvariant()}");
+        Console.WriteLine($"Approval: {WfxConfiguration.FormatApprovalMode(settings.Approval)}");
         Console.WriteLine($"Timeout: {settings.Timeout.TotalSeconds:F0}s");
         Console.WriteLine($"Maximum iterations: {settings.MaxIterations}");
         Console.WriteLine($"Project config: {Path.Combine(workspace.Root, ".wfx", "config.json")}");
@@ -650,7 +661,8 @@ internal static class Program
               --protocol <name>             chat_completions, responses, or anthropic_messages (reserved)
               --provider <name>             openai, openrouter, anthropic, local, or a custom name
               --base-url <url>              OpenAI-compatible API base URL
-              --approval <mode>             always, workspace, or never
+              --approval <mode>             always, workspace, never, or yolo
+              --yolo                        Bypass tool approval prompts (same as --approval yolo)
               --timeout <seconds>           Provider timeout (1-3600)
               --max-iterations <count>      Agent loop limit (1-100)
               --verbose                     Show timing and progress details
