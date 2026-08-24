@@ -65,3 +65,41 @@ _Avoid_: reasoning, raw response, native message
 **Interrupted turn**:
 A turn cancelled before it completed. It is recorded as such, and any trailing model request it left unanswered — tool calls with no results — is not replayed on resume.
 _Avoid_: aborted, cancelled turn (in the record), partial turn
+
+### Noninteractive contract
+
+**Noninteractive contract**:
+The scriptable surface `wfx` exposes when driven by another program rather than a human at a terminal: machine output on stdout, a documented exit-code table, and a startup approval gate that refuses ambiguous configurations. Covers `run`, `resume`, `sessions`, `config`, and `models`.
+_Avoid_: machine mode, batch mode, headless (headless refers to the embeddable core, not this contract), scripting mode
+
+**Event stream**:
+The NDJSON output written to stdout by `--json` on turn commands (`run`, `resume`): one JSON object per line, one per agent event, drawn from the same event vocabulary as the session transcript (`turn_started`, `message`, `tool_started`, `tool_completed`, `tool_rejected`, `usage`, `turn_completed`, `turn_interrupted`, `turn_error`). The first line of any turn is always `turn_started` and carries the session ID.
+_Avoid_: JSON output, log, trace, NDJSON log
+
+**Result object**:
+The single JSON object written to stdout by `--json` on non-turn commands (`sessions`, `config`, `models`). A result object is not an event and does not carry a per-event `schema_version`; its shape is defined per command in the JSON Schema, with `schema_version` at the top level.
+_Avoid_: response, output object, one-shot event
+
+**Turn command**:
+A `wfx` subcommand that runs the agent loop — currently `run` and `resume`. Turn commands emit an event stream under `--json`. Non-turn commands (`sessions`, `config`, `models`) emit a result object.
+_Avoid_: agent command, loop command
+
+**Public field**:
+A field in `--json` output documented in the JSON Schema as part of the contract. Public fields are append-only within a schema version; removing or renaming one bumps the version. Fields not marked public are internal and may change without a bump. Applies to both event streams and result objects.
+_Avoid_: stable field, contract field
+
+**Internal field**:
+A field emitted on stdout but not part of the contract — provider items, raw endpoint payloads, and other consumer-hostile shapes. Present because the event stream is a projection of the transcript, but callers must not depend on them.
+_Avoid_: private field, unstable field
+
+**Schema version**:
+The `schema_version` value on the `turn_started` event, naming the contract that governs the rest of that turn's stream. Bumped when a public field is renamed or removed; additive changes do not bump. Result objects carry their own per-command `schema_version` at the top level.
+_Avoid_: protocol version, stream version, event version
+
+**Startup approval gate**:
+The check `wfx` performs before starting a turn when stdin is not a TTY: if the active approval mode can prompt (`always` or `workspace`), the process exits with a usage error naming the two accepted fixes (`--approval never` or `--yolo`). Distinct from per-tool approval decisions, which continue to flow through `OnToolRejectedAsync` as structured rejections the model can see.
+_Avoid_: approval check, TTY gate, noninteractive check
+
+**Presentation flag**:
+A flag that affects only human-facing decoration on stderr — spinners, ANSI, progress dots, tool-call summary lines. `--quiet` is the presentation flag; under `--json` it silences stderr chatter, under human output it silences spinners and ANSI. Presentation flags never change what appears on stdout.
+_Avoid_: output flag, verbosity flag (verbosity is separate)
