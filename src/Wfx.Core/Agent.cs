@@ -10,21 +10,21 @@ public sealed record EndpointIdentity(string? Profile, string Provider, string P
 
 public sealed record AgentOptions
 {
-    public AgentOptions(string model, int maxIterations = 24)
+    public AgentOptions(string model, int? maxIterations = 24)
         : this(new EndpointIdentity(null, "openai", "chat_completions", model), maxIterations)
     {
     }
 
-    public AgentOptions(EndpointIdentity endpoint, int maxIterations = 24)
+    public AgentOptions(EndpointIdentity endpoint, int? maxIterations = 24)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
         Endpoint = endpoint;
-        MaxIterations = Math.Clamp(maxIterations, 1, 100);
+        MaxIterations = maxIterations is null ? null : Math.Clamp(maxIterations.Value, 1, 100);
     }
 
     public string Model => Endpoint.Model;
 
-    public int MaxIterations { get; }
+    public int? MaxIterations { get; }
 
     public EndpointIdentity Endpoint { get; }
 }
@@ -252,8 +252,10 @@ public sealed class Agent : IAgent
             cancellationToken).ConfigureAwait(false);
 
         var assistantTexts = new List<string>();
-        for (var iteration = 1; iteration <= _options.MaxIterations; iteration++)
+        var iteration = 0;
+        while (!_options.MaxIterations.HasValue || iteration < _options.MaxIterations.Value)
         {
+            iteration++;
             execution.ErrorKind = AgentErrorKind.ProviderError;
             ModelCompleted? completed = null;
             await foreach (var modelEvent in _modelProvider.StreamAsync(
@@ -340,10 +342,10 @@ public sealed class Agent : IAgent
         var lastAssistant = messages.Last(static message => message.Role == ModelRole.Assistant);
         var interruptedResult = new AgentRunResult(
             lastAssistant.Content ?? string.Empty,
-            _options.MaxIterations,
+            iteration,
             messages,
             AgentRunStatus.IterationLimitReached,
-            Note: $"Iteration limit of {_options.MaxIterations} model iteration(s) reached.",
+            Note: $"Iteration limit of {iteration} model iteration(s) reached",
             AccumulatedText: string.Join("\n", assistantTexts));
         await _observer.OnEventAsync(
             new TurnInterruptedEvent(

@@ -200,7 +200,7 @@ internal static class Program
             "wfx: session ",
             sessionStore);
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
-        var agent = CreateAgent(settings, workspace, arguments, provider, [], session, console);
+        var agent = CreateAgent(settings, workspace, arguments, provider, settings.MaxIterations, [], session, console);
         return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
     }
 
@@ -227,6 +227,7 @@ internal static class Program
             workspace,
             arguments,
             provider,
+            settings.MaxIterations,
             resumedSession.Transcript.Messages,
             resumedSession.Log,
             console);
@@ -254,7 +255,7 @@ internal static class Program
                     WriteIterationLimitReached(result, "raise --max-iterations to let the run continue");
                 }
 
-                return arguments.Json ? 4 : 2;
+                return 4;
             }
 
             if (!arguments.Json && arguments.Verbose)
@@ -363,17 +364,10 @@ internal static class Program
             try
             {
                 EnsureRunnable(settings);
-                var agent = CreateAgent(settings, workspace, arguments, provider, conversation, session, console);
+                var agent = CreateAgent(settings, workspace, arguments, provider, null, conversation, session, console);
                 var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
                 conversation = result.Messages;
                 PrintTrailingNewline(result);
-
-                if (result.Status is AgentRunStatus.IterationLimitReached)
-                {
-                    WriteIterationLimitReached(
-                        result,
-                        "raise --max-iterations or restate the task to continue");
-                }
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -560,6 +554,7 @@ internal static class Program
         WorkspaceInfo workspace,
         CliArguments arguments,
         IModelProvider provider,
+        int? maxIterations,
         IReadOnlyList<ModelMessage> conversation,
         SessionLog? session,
         IConsoleEnvironment console)
@@ -599,7 +594,7 @@ internal static class Program
             new CompositeAgentObserver([.. observers]),
             new AgentOptions(
                 new EndpointIdentity(settings.Profile, settings.Provider, settings.Protocol, settings.Model),
-                settings.MaxIterations),
+                maxIterations),
             workspace.Root,
             conversation,
             new AgentTurnMetadata(session?.Id ?? string.Empty, settings.Approval));
@@ -847,7 +842,8 @@ internal static class Program
               --approval <mode>             always, workspace, never, or yolo
               --yolo                        Bypass tool approval prompts (same as --approval yolo)
               --timeout <seconds>           Provider timeout (1-3600)
-              --max-iterations <count>      Agent loop limit (1-100)
+              --max-iterations <count>      Noninteractive loop limit (1-100; default 24)
+                                            Interactive mode is unlimited
               --verbose                     Show timing and progress details
               --debug                       Show tool result diagnostics
               --json                        Machine-readable output: NDJSON events for run/resume,
@@ -892,9 +888,9 @@ internal static class Program
             Exit codes:
               0    success
               1    error
-              2    config error, or run stopped at the iteration limit (--max-iterations)
+              2    config error
               3    wfx run or wfx resume refused to start: approval needs a terminal
-              4    JSON turn interrupted: cancelled, timeout, or maximum iterations
+              4    run stopped at maximum iterations, or JSON turn interrupted
               5    JSON turn error: provider, tool, protocol, or configuration
               130  human-mode turn cancelled
             """);

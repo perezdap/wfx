@@ -56,6 +56,32 @@ public sealed class SessionStartupTests
     }
 
     [Fact]
+    public async Task InteractiveTurnContinuesBeyondTheDefaultIterationLimit()
+    {
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient("The injected provider must be used.");
+        using var console = new ConsoleCapture("do it\n/exit\n");
+        var responses = Enumerable.Range(1, 25)
+            .Select(static index => new ModelCompleted(new ModelMessage(
+                ModelRole.Assistant,
+                null,
+                [new ModelToolCall($"call-{index}", "missing_tool", "{}")])))
+            .Append(new ModelCompleted(new ModelMessage(ModelRole.Assistant, "finished")))
+            .ToArray();
+        var provider = new QueuedModelProvider(responses);
+
+        var exitCode = await CliRunner.RunAsync(
+            [.. InteractiveArguments, "--approval", "never", "--no-session"],
+            httpClient,
+            new TestSessionStore(),
+            TestContext.Current.CancellationToken,
+            modelProviderFactory: (_, _) => provider);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(26, provider.RequestCount);
+        Assert.DoesNotContain("Iteration limit", console.ErrorText);
+    }
+
+    [Fact]
     public async Task SessionAnnouncementFailureDisposesSessionAndFailsRun()
     {
         var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");
@@ -714,6 +740,20 @@ public sealed class SessionStartupTests
     ];
 
     private static HttpClient CreateHttpClient() => CliRunner.CreateCompletedHttpClient();
+
+    private sealed class QueuedModelProvider(IReadOnlyList<ModelCompleted> responses) : IModelProvider
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
+            ModelRequest request,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return responses[RequestCount++];
+        }
+    }
 
     private sealed class SessionAnnouncementFailingWriter : TextWriter
     {
