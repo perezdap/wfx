@@ -80,6 +80,7 @@ public sealed class SessionStartupTests
             foreach (var argument in new[]
             {
                 "--provider", "local",
+                "--protocol", "chat_completions",
                 "--base-url", new Uri(server.BaseUri, "v1").AbsoluteUri,
                 "--model", "fake-model",
                 "--approval", "never",
