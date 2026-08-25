@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using Wfx.Core;
@@ -56,29 +58,79 @@ public sealed class SessionStartupTests
     }
 
     [Fact]
-    public async Task InteractiveTurnContinuesBeyondTheDefaultIterationLimit()
+    public async Task InteractiveExecutableContinuesBeyondTheDefaultIterationLimit()
     {
-        using var httpClient = CliRunner.CreateUnexpectedHttpClient("The injected provider must be used.");
-        using var console = new ConsoleCapture("do it\n/exit\n");
-        var responses = Enumerable.Range(1, 25)
-            .Select(static index => new ModelCompleted(new ModelMessage(
-                ModelRole.Assistant,
-                null,
-                [new ModelToolCall($"call-{index}", "missing_tool", "{}")])))
-            .Append(new ModelCompleted(new ModelMessage(ModelRole.Assistant, "finished")))
-            .ToArray();
-        var provider = new QueuedModelProvider(responses);
+        var workspace = Directory.CreateTempSubdirectory("wfx-cli-process-tests-");
+        await using var server = new ScriptedModelServer();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        cancellation.CancelAfter(TimeSpan.FromSeconds(30));
+        try
+        {
+            var executable = WfxExecutablePath();
+            Assert.True(File.Exists(executable), $"WFX executable was not found: {executable}");
+            var startInfo = new ProcessStartInfo(executable)
+            {
+                WorkingDirectory = workspace.FullName,
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            foreach (var argument in new[]
+            {
+                "--provider", "local",
+                "--base-url", new Uri(server.BaseUri, "v1").AbsoluteUri,
+                "--model", "fake-model",
+                "--approval", "never",
+                "--no-session"
+            })
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
 
-        var exitCode = await CliRunner.RunAsync(
-            [.. InteractiveArguments, "--approval", "never", "--no-session"],
-            httpClient,
-            new TestSessionStore(),
-            TestContext.Current.CancellationToken,
-            modelProviderFactory: (_, _) => provider);
+            foreach (var variable in startInfo.Environment.Keys
+                .Where(static key => key.StartsWith("WFX_", StringComparison.OrdinalIgnoreCase))
+                .ToArray())
+            {
+                startInfo.Environment.Remove(variable);
+            }
 
-        Assert.Equal(0, exitCode);
-        Assert.Equal(26, provider.RequestCount);
-        Assert.DoesNotContain("Iteration limit", console.ErrorText);
+            startInfo.Environment["USERPROFILE"] = workspace.FullName;
+            startInfo.Environment["HOME"] = workspace.FullName;
+            using var process = Process.Start(startInfo);
+            Assert.NotNull(process);
+            try
+            {
+                var outputTask = process.StandardOutput.ReadToEndAsync(cancellation.Token);
+                var errorTask = process.StandardError.ReadToEndAsync(cancellation.Token);
+                await process.StandardInput.WriteLineAsync("do it".AsMemory(), cancellation.Token);
+                await process.StandardInput.WriteLineAsync("/exit".AsMemory(), cancellation.Token);
+                process.StandardInput.Close();
+
+                await process.WaitForExitAsync(cancellation.Token);
+                await server.Completion.WaitAsync(cancellation.Token);
+                var output = await outputTask;
+                var error = await errorTask;
+
+                Assert.Equal(0, process.ExitCode);
+                Assert.Equal(26, server.RequestCount);
+                Assert.Contains("finished", output);
+                Assert.DoesNotContain("Iteration limit", error);
+            }
+            finally
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync(CancellationToken.None);
+                }
+            }
+        }
+        finally
+        {
+            Directory.Delete(workspace.FullName, recursive: true);
+        }
     }
 
     [Fact]
@@ -741,17 +793,111 @@ public sealed class SessionStartupTests
 
     private static HttpClient CreateHttpClient() => CliRunner.CreateCompletedHttpClient();
 
-    private sealed class QueuedModelProvider(IReadOnlyList<ModelCompleted> responses) : IModelProvider
+    private static string WfxExecutablePath()
     {
-        public int RequestCount { get; private set; }
+        var configuration = AppContext.BaseDirectory.Contains(
+            $"{Path.DirectorySeparatorChar}Release{Path.DirectorySeparatorChar}",
+            StringComparison.OrdinalIgnoreCase)
+            ? "Release"
+            : "Debug";
+        return Path.Combine(
+            WorkspaceInfo.Discover().Root,
+            "src",
+            "Wfx.Cli",
+            "bin",
+            configuration,
+            "net10.0",
+            "wfx.exe");
+    }
 
-        public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
-            ModelRequest request,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    private sealed class ScriptedModelServer : IAsyncDisposable
+    {
+        private readonly HttpListener _listener;
+        private readonly Task _completion;
+        private int _requestCount;
+
+        public ScriptedModelServer()
         {
-            await Task.Yield();
-            cancellationToken.ThrowIfCancellationRequested();
-            yield return responses[RequestCount++];
+            (_listener, BaseUri) = StartListener();
+            _completion = ServeAsync();
+        }
+
+        public Uri BaseUri { get; }
+
+        public Task Completion => _completion;
+
+        public int RequestCount => Volatile.Read(ref _requestCount);
+
+        public async ValueTask DisposeAsync()
+        {
+            _listener.Close();
+            try
+            {
+                await _completion.ConfigureAwait(false);
+            }
+            catch (HttpListenerException)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
+        private static (HttpListener Listener, Uri BaseUri) StartListener()
+        {
+            for (var attempt = 1; attempt <= 10; attempt++)
+            {
+                using var portProbe = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+                portProbe.Start();
+                var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+                portProbe.Stop();
+                var baseUri = new Uri($"http://127.0.0.1:{port}/");
+                var listener = new HttpListener();
+                listener.Prefixes.Add(baseUri.AbsoluteUri);
+                try
+                {
+                    listener.Start();
+                    return (listener, baseUri);
+                }
+                catch (HttpListenerException)
+                {
+                    listener.Close();
+                    if (attempt == 10)
+                    {
+                        throw;
+                    }
+                }
+            }
+
+            throw new InvalidOperationException("Could not start the scripted model server.");
+        }
+
+        private async Task ServeAsync()
+        {
+            for (var request = 1; request <= 26; request++)
+            {
+                var context = await _listener.GetContextAsync().ConfigureAwait(false);
+                Interlocked.Increment(ref _requestCount);
+                var body = request <= 25
+                    ? """
+                        data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-id","function":{"name":"missing_tool","arguments":"{}"}}]}}]}
+
+                        data: [DONE]
+
+                        """.Replace("call-id", $"call-{request}", StringComparison.Ordinal)
+                    : """
+                        data: {"choices":[{"delta":{"content":"finished"}}]}
+
+                        data: [DONE]
+
+                        """;
+                var bytes = Encoding.UTF8.GetBytes(body);
+                context.Response.ContentType = "text/event-stream";
+                context.Response.ContentLength64 = bytes.Length;
+                context.Response.KeepAlive = false;
+                await context.Response.OutputStream.WriteAsync(bytes).ConfigureAwait(false);
+                context.Response.Close();
+            }
         }
     }
 
