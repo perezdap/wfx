@@ -207,8 +207,10 @@ public sealed partial class ResultJsonTests
         }
     }
 
-    [Fact]
-    public async Task ConfigJsonExitsTwoOnConfigurationError()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConfigJsonPreservesConfigurationErrorsWithOrWithoutQuiet(bool quiet)
     {
         var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");
         using var httpClient = CliRunner.CreateUnexpectedHttpClient(
@@ -217,10 +219,11 @@ public sealed partial class ResultJsonTests
         var userProfile = Path.Combine(directory.FullName, "profile-home");
         Directory.CreateDirectory(Path.Combine(userProfile, ".wfx"));
         File.WriteAllText(Path.Combine(userProfile, ".wfx", "config.json"), """{ "model": "m" }""");
+        string[] quietArguments = quiet ? ["--quiet"] : [];
         try
         {
             var exitCode = await CliRunner.RunAsync(
-                ["config", "--json", "--profile", "does-not-exist"],
+                ["config", "--json", .. quietArguments, "--profile", "does-not-exist"],
                 httpClient,
                 new TestSessionStore(),
                 TestContext.Current.CancellationToken,
