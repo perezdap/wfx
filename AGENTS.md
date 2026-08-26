@@ -9,7 +9,10 @@ Before describing a change as complete:
 1. Run `dotnet test Wfx.sln -c Release`.
 2. Publish `Wfx.Cli` with Native AOT for the affected Windows RID.
 3. Run the freshly published `wfx.exe --help` and one relevant happy path.
-4. Report any verification that the current environment could not perform.
+4. For noninteractive-contract changes, use `wfx.exe run --json --quiet --approval never "Reply with ok."` against the configured endpoint as the happy path.
+   - Parse every stdout line with `ConvertFrom-Json`.
+   - Confirm stderr is empty, `turn_started` is first, and `turn_completed` is last.
+5. Report any verification that the current environment could not perform.
 
 Never claim a live model call passed unless it was actually exercised against the configured endpoint.
 

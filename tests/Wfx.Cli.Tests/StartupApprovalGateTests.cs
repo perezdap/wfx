@@ -30,6 +30,29 @@ public sealed class StartupApprovalGateTests
     }
 
     [Fact]
+    public async Task JsonQuietPreservesApprovalGateRefusal()
+    {
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient(UnexpectedModelRequest);
+        using var console = new ConsoleCapture();
+
+        var exitCode = await CliRunner.RunAsync(
+            [
+                "run", "--json", "--quiet", "--approval", "always", "--provider", "local",
+                "--base-url", "https://example.test/v1", "--model", "fake-model", "do it"
+            ],
+            httpClient,
+            new TestSessionStore(create: _ => throw new InvalidOperationException("No turn may start.")),
+            TestContext.Current.CancellationToken,
+            consoleEnvironment: FakeConsoleEnvironment.Redirected);
+
+        Assert.Equal(3, exitCode);
+        Assert.Contains("approval is always", console.ErrorText);
+        Assert.Contains("--approval never", console.ErrorText);
+        Assert.Contains("--yolo", console.ErrorText);
+        Assert.Empty(console.Output.ToString());
+    }
+
+    [Fact]
     public async Task RunRefusesRedirectedStdinWithImplicitAlwaysApproval()
     {
         using var httpClient = CliRunner.CreateUnexpectedHttpClient(UnexpectedModelRequest);

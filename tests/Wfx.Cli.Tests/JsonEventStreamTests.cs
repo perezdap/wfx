@@ -30,6 +30,21 @@ public sealed class JsonEventStreamTests
     }
 
     [Fact]
+    public void QuietIsAcceptedInInteractiveModeAndEverySubcommand()
+    {
+        Assert.True(CliArguments.Parse(["--quiet"]).Quiet);
+        Assert.True(CliArguments.Parse(["run", "--quiet", "prompt"]).Quiet);
+        Assert.True(CliArguments.Parse(["resume", "--quiet"]).Quiet);
+        Assert.True(CliArguments.Parse(["sessions", "--quiet"]).Quiet);
+        Assert.True(CliArguments.Parse(["config", "--quiet"]).Quiet);
+        Assert.True(CliArguments.Parse(["models", "--quiet"]).Quiet);
+
+        var composed = CliArguments.Parse(["run", "--json", "--quiet", "prompt"]);
+        Assert.True(composed.Json);
+        Assert.True(composed.Quiet);
+    }
+
+    [Fact]
     public async Task JsonRunHelpStillShowsHelp()
     {
         using var httpClient = CliRunner.CreateUnexpectedHttpClient("Help must not call a model endpoint.");
@@ -43,6 +58,120 @@ public sealed class JsonEventStreamTests
 
         Assert.Equal(0, exitCode);
         Assert.Contains("Usage:", console.Output.ToString());
+    }
+
+    [Fact]
+    public async Task HumanQuietSuppressesPresentationButPreservesWarnings()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient("The injected provider must be used.");
+        using var console = new ConsoleCapture();
+        var provider = new QueuedModelProvider([
+            new ModelCompleted(new ModelMessage(
+                ModelRole.Assistant,
+                null,
+                [new ModelToolCall("call-1", "list_directory", "{\"path\":\".\"}")])),
+            new ModelCompleted(new ModelMessage(ModelRole.Assistant, "done"))
+        ]);
+
+        var exitCode = await CliRunner.RunAsync(
+            [
+                "run", "--quiet", "--verbose", "--yolo", "--provider", "local",
+                "--base-url", "https://example.test/v1", "--model", "fake-model", "inspect"
+            ],
+            httpClient,
+            new SessionStore(sessions.Path),
+            TestContext.Current.CancellationToken,
+            modelProviderFactory: (_, _) => provider);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("wfx: warning: approval is yolo", console.ErrorText);
+        Assert.DoesNotContain("wfx: local/fake-model", console.ErrorText);
+        Assert.DoesNotContain("wfx: session ", console.ErrorText);
+        Assert.DoesNotContain("list_directory", console.ErrorText);
+        Assert.DoesNotContain("completed in", console.ErrorText);
+        Assert.DoesNotContain("[wfx] completed", console.ErrorText);
+        Assert.DoesNotContain('\u001b', console.ErrorText);
+    }
+
+    [Fact]
+    public async Task HumanQuietLeavesStdoutByteIdentical()
+    {
+        var baseline = await RunAsync(quiet: false);
+        var quiet = await RunAsync(quiet: true);
+
+        Assert.Equal(0, baseline.ExitCode);
+        Assert.Equal(0, quiet.ExitCode);
+        Assert.Equal(baseline.Output, quiet.Output);
+        Assert.Contains("finished", quiet.Output);
+
+        async Task<(int ExitCode, string Output)> RunAsync(bool quiet)
+        {
+            using var httpClient = CliRunner.CreateCompletedHttpClient();
+            using var console = new ConsoleCapture();
+            var arguments = new List<string>
+            {
+                "run", "--no-session", "--approval", "never", "--provider", "local",
+                "--base-url", "https://example.test/v1", "--model", "fake-model", "inspect"
+            };
+            if (quiet)
+            {
+                arguments.Add("--quiet");
+            }
+
+            var exitCode = await CliRunner.RunAsync(
+                [.. arguments],
+                httpClient,
+                new TestSessionStore(),
+                TestContext.Current.CancellationToken);
+            return (exitCode, console.Output.ToString());
+        }
+    }
+
+    [Fact]
+    public async Task InteractiveQuietRunsAHumanRepl()
+    {
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient("Exiting the REPL must not call a model endpoint.");
+        using var console = new ConsoleCapture("/exit\n");
+
+        var exitCode = await CliRunner.RunAsync(
+            [
+                "--quiet", "--no-session", "--approval", "never", "--provider", "local",
+                "--base-url", "https://example.test/v1", "--model", "fake-model"
+            ],
+            httpClient,
+            new TestSessionStore(),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("WFX", console.Output.ToString());
+        Assert.DoesNotContain("\"event\"", console.Output.ToString());
+        Assert.Empty(console.ErrorText);
+    }
+
+    [Fact]
+    public async Task HumanQuietPreservesTerminalFailureMessages()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient("The injected provider must be used.");
+        using var console = new ConsoleCapture();
+        var provider = new QueuedModelProvider([
+            new ModelCompleted(new ModelMessage(
+                ModelRole.Assistant,
+                "still working",
+                [new ModelToolCall("call-1", "list_directory", "{\"path\":\".\"}")]))
+        ]);
+
+        var exitCode = await CliRunner.RunAsync(
+            [.. RunJsonArguments("inspect").Where(static argument => argument != "--json"), "--quiet", "--max-iterations", "1"],
+            httpClient,
+            new SessionStore(sessions.Path),
+            TestContext.Current.CancellationToken,
+            modelProviderFactory: (_, _) => provider);
+
+        Assert.Equal(4, exitCode);
+        Assert.Contains("Iteration limit of 1 model iteration(s) reached", console.ErrorText);
+        Assert.DoesNotContain("list_directory", console.ErrorText);
     }
 
     [Fact]
@@ -74,6 +203,153 @@ public sealed class JsonEventStreamTests
         Assert.Equal("turn_completed", events[^1].GetProperty("event").GetString());
         Assert.Equal("finished", events[^1].GetProperty("final_message").GetString());
         Assert.Equal(14, events[^1].GetProperty("total_usage").GetProperty("total_tokens").GetInt64());
+    }
+
+    [Fact]
+    public async Task JsonQuietSuppressesPreStreamWarningsWithoutSuppressingEvents()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient("The injected provider must be used.");
+        using var console = new ConsoleCapture();
+        var originalDirectory = Environment.CurrentDirectory;
+        var userProfile = Path.Combine(workspace.Path, "profile");
+        Directory.CreateDirectory(Path.Combine(workspace.Path, ".wfx"));
+        Directory.CreateDirectory(Path.Combine(userProfile, ".wfx"));
+        File.WriteAllText(
+            Path.Combine(workspace.Path, ".wfx", "config.json"),
+            """{ "provider": "local", "base_url": "https://example.test/v1", "model": "fake-model", "approval": "never" }""");
+        File.WriteAllText(
+            Path.Combine(userProfile, ".wfx", "config.json"),
+            """{ "api_key": "user-secret" }""");
+        Environment.CurrentDirectory = workspace.Path;
+        try
+        {
+            var exitCode = await CliRunner.RunAsync(
+                ["run", "--json", "--quiet", "inspect"],
+                httpClient,
+                new SessionStore(Path.Combine(workspace.Path, "sessions")),
+                TestContext.Current.CancellationToken,
+                userProfile,
+                modelProviderFactory: (_, _) => new SequenceModelProvider([
+                    new ModelCompleted(new ModelMessage(ModelRole.Assistant, "done"))
+                ]));
+
+            Assert.Equal(0, exitCode);
+            Assert.Empty(console.ErrorText);
+            var events = ParseLines(console.Output.ToString());
+            Assert.Equal("turn_started", events[0].GetProperty("event").GetString());
+            Assert.Equal("turn_completed", events[^1].GetProperty("event").GetString());
+        }
+        finally
+        {
+            Environment.CurrentDirectory = originalDirectory;
+        }
+    }
+
+    [Fact]
+    public async Task JsonAlonePreservesPreStreamWarningsWithoutTurnProgress()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient("The injected provider must be used.");
+        using var console = new ConsoleCapture();
+        var originalDirectory = Environment.CurrentDirectory;
+        var userProfile = Path.Combine(workspace.Path, "profile");
+        Directory.CreateDirectory(Path.Combine(workspace.Path, ".wfx"));
+        Directory.CreateDirectory(Path.Combine(userProfile, ".wfx"));
+        File.WriteAllText(
+            Path.Combine(workspace.Path, ".wfx", "config.json"),
+            """{ "provider": "local", "base_url": "https://example.test/v1", "model": "fake-model", "approval": "never" }""");
+        File.WriteAllText(
+            Path.Combine(userProfile, ".wfx", "config.json"),
+            """{ "api_key": "user-secret" }""");
+        Environment.CurrentDirectory = workspace.Path;
+        try
+        {
+            var provider = new QueuedModelProvider([
+                new ModelCompleted(new ModelMessage(
+                    ModelRole.Assistant,
+                    null,
+                    [new ModelToolCall("call-1", "list_directory", "{\"path\":\".\"}")])),
+                new ModelCompleted(new ModelMessage(ModelRole.Assistant, "done"))
+            ]);
+            var exitCode = await CliRunner.RunAsync(
+                ["run", "--json", "inspect"],
+                httpClient,
+                new SessionStore(Path.Combine(workspace.Path, "sessions")),
+                TestContext.Current.CancellationToken,
+                userProfile,
+                modelProviderFactory: (_, _) => provider);
+
+            Assert.Equal(0, exitCode);
+            Assert.Contains("wfx: warning: Project base_url suppressed", console.ErrorText);
+            Assert.DoesNotContain("list_directory", console.ErrorText);
+            Assert.DoesNotContain("completed in", console.ErrorText);
+            Assert.Contains(
+                ParseLines(console.Output.ToString()),
+                static item => item.GetProperty("event").GetString() == "tool_completed");
+        }
+        finally
+        {
+            Environment.CurrentDirectory = originalDirectory;
+        }
+    }
+
+    [Fact]
+    public async Task JsonQuietLeavesTheEventStreamByteIdentical()
+    {
+        using var sessions = new TemporaryDirectory();
+        var baselinePath = Path.Combine(sessions.Path, "baseline");
+        var quietPath = Path.Combine(sessions.Path, "quiet");
+        var workspace = WorkspaceInfo.Discover().Root;
+        var baselineStore = new SessionStore(baselinePath);
+        string sessionId;
+        using (var session = baselineStore.Create(workspace))
+        {
+            sessionId = session.Id;
+        }
+
+        Directory.CreateDirectory(quietPath);
+        File.Copy(
+            Path.Combine(baselinePath, sessionId + ".jsonl"),
+            Path.Combine(quietPath, sessionId + ".jsonl"));
+        var time = new FixedTimeProvider(new DateTimeOffset(2026, 8, 26, 12, 0, 0, TimeSpan.Zero));
+
+        var baseline = await RunResumeAsync(baselineStore, quiet: false);
+        var quiet = await RunResumeAsync(new SessionStore(quietPath), quiet: true);
+
+        Assert.Equal(0, baseline.ExitCode);
+        Assert.Equal(0, quiet.ExitCode);
+        Assert.Equal(baseline.Output, quiet.Output);
+        Assert.Empty(baseline.Error);
+        Assert.Empty(quiet.Error);
+
+        async Task<(int ExitCode, string Output, string Error)> RunResumeAsync(
+            ISessionStore store,
+            bool quiet)
+        {
+            using var httpClient = CliRunner.CreateUnexpectedHttpClient("The injected provider must be used.");
+            using var console = new ConsoleCapture("continue\n");
+            var arguments = new List<string>
+            {
+                "resume", "--id", sessionId, "--json", "--approval", "never", "--provider", "local",
+                "--base-url", "https://example.test/v1", "--model", "fake-model"
+            };
+            if (quiet)
+            {
+                arguments.Add("--quiet");
+            }
+
+            var exitCode = await CliRunner.RunAsync(
+                [.. arguments],
+                httpClient,
+                store,
+                TestContext.Current.CancellationToken,
+                modelProviderFactory: (_, _) => new SequenceModelProvider([
+                    new ModelCompleted(new ModelMessage(ModelRole.Assistant, "done"), new ModelUsage(3, 2))
+                ]),
+                timeProvider: time);
+            return (exitCode, console.Output.ToString(), console.ErrorText);
+        }
     }
 
     [Fact]
@@ -159,6 +435,31 @@ public sealed class JsonEventStreamTests
     }
 
     [Fact]
+    public async Task RedirectedOutputSuppressesTerminalDecorationWithoutInferringJsonOrQuiet()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var httpClient = CliRunner.CreateCompletedHttpClient();
+        using var console = new ConsoleCapture();
+
+        var exitCode = await CliRunner.RunAsync(
+            [
+                "run", "--verbose", "--approval", "never", "--provider", "local",
+                "--base-url", "https://example.test/v1", "--model", "fake-model", "inspect"
+            ],
+            httpClient,
+            new SessionStore(sessions.Path),
+            TestContext.Current.CancellationToken,
+            consoleEnvironment: FakeConsoleEnvironment.Redirected);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("finished", console.Output.ToString());
+        Assert.DoesNotContain("\"event\":\"turn_started\"", console.Output.ToString());
+        Assert.DoesNotContain('\u001b', console.Output.ToString());
+        Assert.DoesNotContain('\u001b', console.ErrorText);
+        Assert.Contains("[wfx] completed", console.ErrorText);
+    }
+
+    [Fact]
     public async Task MaxIterationsJsonReturnsFourAndEmitsInterruption()
     {
         using var sessions = new TemporaryDirectory();
@@ -227,6 +528,26 @@ public sealed class JsonEventStreamTests
         Assert.Equal("turn_error", error.GetProperty("event").GetString());
         Assert.Equal("provider_error", error.GetProperty("error").GetProperty("kind").GetString());
         Assert.Equal("provider failed", error.GetProperty("error").GetProperty("message").GetString());
+        Assert.Contains("wfx: provider failed", console.ErrorText);
+    }
+
+    [Fact]
+    public async Task ProviderErrorJsonQuietPreservesTheTerminalFailureMessage()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient("The injected provider must be used.");
+        using var console = new ConsoleCapture();
+
+        var exitCode = await CliRunner.RunAsync(
+            [.. RunJsonArguments("fail"), "--quiet"],
+            httpClient,
+            new SessionStore(sessions.Path),
+            TestContext.Current.CancellationToken,
+            modelProviderFactory: (_, _) => new ThrowingModelProvider());
+
+        Assert.Equal(5, exitCode);
+        Assert.Equal("turn_error", ParseLines(console.Output.ToString())[^1].GetProperty("event").GetString());
+        Assert.Equal("wfx: provider failed" + Environment.NewLine, console.ErrorText);
     }
 
     [Fact]
@@ -290,6 +611,27 @@ public sealed class JsonEventStreamTests
         Assert.Contains("credential-adjacent", help);
         Assert.Contains("4    run stopped at maximum iterations, or JSON turn interrupted", help);
         Assert.Contains("5    JSON turn error", help);
+    }
+
+    [Fact]
+    public async Task HelpDocumentsQuietAsAComposablePresentationFlag()
+    {
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient("Help must not call a model endpoint.");
+        using var console = new ConsoleCapture();
+
+        var exitCode = await CliRunner.RunAsync(
+            ["--help"],
+            httpClient,
+            new TestSessionStore(),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, exitCode);
+        var help = console.Output.ToString();
+        Assert.Contains("--quiet", help);
+        Assert.Contains("presentation flag", help, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("run, resume, sessions, config, and models", help);
+        Assert.Contains("--json --quiet", help);
+        Assert.Contains("does not change stdout", help);
     }
 
     [Fact]
@@ -459,6 +801,11 @@ public sealed class JsonEventStreamTests
             yield break;
 #pragma warning restore CS0162
         }
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 
     private sealed class FlushTrackingWriter : StringWriter

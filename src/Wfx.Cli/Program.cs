@@ -38,7 +38,8 @@ internal static class Program
         CancellationToken cancellationToken,
         string? userProfile = null,
         IConsoleEnvironment? consoleEnvironment = null,
-        Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory = null)
+        Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory = null,
+        TimeProvider? timeProvider = null)
     {
         var console = consoleEnvironment ?? SystemConsoleEnvironment.Instance;
         try
@@ -56,6 +57,8 @@ internal static class Program
                 return 0;
             }
 
+            var reportWarnings = !arguments.Json || !arguments.Quiet;
+
             // Session listing needs no model or workspace config, so it runs before settings
             // resolution, which can throw on an unconfigured endpoint.
             if (arguments.Command == CliCommand.Sessions)
@@ -72,7 +75,7 @@ internal static class Program
             {
                 var resolution = SessionResume.ResolveSettings(resumeTranscript, arguments.Settings);
                 settingsLayer = resolution.Layer;
-                if (resolution.OverridingProfile is not null)
+                if (resolution.OverridingProfile is not null && reportWarnings)
                 {
                     Console.Error.WriteLine(
                         $"wfx: profile '{resolution.OverridingProfile}' overrides the recorded endpoint for this resumed session.");
@@ -87,7 +90,8 @@ internal static class Program
                     settingsLayer,
                     arguments.Settings,
                     resumeTranscript?.LastEndpoint,
-                    userProfile);
+                    userProfile,
+                    reportWarnings);
             }
             catch (InvalidOperationException exception)
                 when (arguments.Command is CliCommand.Models or CliCommand.Config)
@@ -98,9 +102,12 @@ internal static class Program
                 return 2;
             }
 
-            foreach (var warning in settings.Warnings)
+            if (reportWarnings)
             {
-                Console.Error.WriteLine($"wfx: warning: {warning}");
+                foreach (var warning in settings.Warnings)
+                {
+                    Console.Error.WriteLine($"wfx: warning: {warning}");
+                }
             }
 
             var refusal = StartupApprovalGate.Evaluate(arguments.Command, settings.Approval, console);
@@ -116,7 +123,7 @@ internal static class Program
 
             return arguments.Command switch
             {
-                CliCommand.Models => arguments.Json ? PrintModelsJson(settings) : PrintModels(settings, workspace),
+                CliCommand.Models => arguments.Json ? PrintModelsJson(settings, reportWarnings) : PrintModels(settings, workspace),
                 CliCommand.Config => arguments.Json
                     ? PrintConfigJson(settings)
                     : PrintConfig(settings, workspace, userProfile),
@@ -129,7 +136,8 @@ internal static class Program
                     sessionStore,
                     console,
                     modelProviderFactory,
-                    cancellationToken).ConfigureAwait(false),
+                    cancellationToken,
+                    timeProvider).ConfigureAwait(false),
                 CliCommand.Resume when arguments.Json => await RunJsonResumeAsync(
                     settings,
                     workspace,
@@ -138,7 +146,8 @@ internal static class Program
                     resumedSession!,
                     console,
                     modelProviderFactory,
-                    cancellationToken).ConfigureAwait(false),
+                    cancellationToken,
+                    timeProvider).ConfigureAwait(false),
                 CliCommand.Resume => await RunInteractiveAsync(
                     settings,
                     workspace,
@@ -148,7 +157,8 @@ internal static class Program
                     resumedSession,
                     console,
                     modelProviderFactory,
-                    cancellationToken).ConfigureAwait(false),
+                    cancellationToken,
+                    timeProvider).ConfigureAwait(false),
                 _ => await RunInteractiveAsync(
                     settings,
                     workspace,
@@ -158,7 +168,8 @@ internal static class Program
                     null,
                     console,
                     modelProviderFactory,
-                    cancellationToken).ConfigureAwait(false)
+                    cancellationToken,
+                    timeProvider).ConfigureAwait(false)
             };
         }
         catch (OperationCanceledException)
@@ -182,25 +193,30 @@ internal static class Program
         ISessionStore sessionStore,
         IConsoleEnvironment console,
         Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeProvider? timeProvider)
     {
         EnsureRunnable(settings);
         if (!arguments.Json)
         {
-            Console.Error.WriteLine(settings.Profile is null
-                ? $"wfx: {settings.Provider}/{settings.Model}"
-                : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
+            if (!arguments.Quiet)
+            {
+                Console.Error.WriteLine(settings.Profile is null
+                    ? $"wfx: {settings.Provider}/{settings.Model}"
+                    : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
+            }
+
             WarnIfYolo(settings);
         }
 
         using var session = OpenSession(
             arguments,
             workspace,
-            arguments.Json ? TextWriter.Null : Console.Error,
+            arguments.Json || arguments.Quiet ? TextWriter.Null : Console.Error,
             "wfx: session ",
             sessionStore);
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
-        var agent = CreateAgent(settings, workspace, arguments, provider, settings.MaxIterations, [], session, console);
+        var agent = CreateAgent(settings, workspace, arguments, provider, settings.MaxIterations, [], session, console, timeProvider);
         return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
     }
 
@@ -212,7 +228,8 @@ internal static class Program
         SessionResume resumedSession,
         IConsoleEnvironment console,
         Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeProvider? timeProvider)
     {
         EnsureRunnable(settings);
         var prompt = await ReadConsoleLineAsync(cancellationToken).ConfigureAwait(false);
@@ -230,7 +247,8 @@ internal static class Program
             settings.MaxIterations,
             resumedSession.Transcript.Messages,
             resumedSession.Log,
-            console);
+            console,
+            timeProvider);
         return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
     }
 
@@ -258,7 +276,7 @@ internal static class Program
                 return 4;
             }
 
-            if (!arguments.Json && arguments.Verbose)
+            if (!arguments.Json && !arguments.Quiet && arguments.Verbose)
             {
                 Console.Error.WriteLine($"[wfx] completed in {result.Iterations} model iteration(s)");
             }
@@ -281,7 +299,8 @@ internal static class Program
         SessionResume? resumedSession,
         IConsoleEnvironment console,
         Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeProvider? timeProvider)
     {
         if (string.IsNullOrWhiteSpace(settings.Model) && settings.ConfiguredModels.Count == 0)
         {
@@ -364,7 +383,7 @@ internal static class Program
             try
             {
                 EnsureRunnable(settings);
-                var agent = CreateAgent(settings, workspace, arguments, provider, null, conversation, session, console);
+                var agent = CreateAgent(settings, workspace, arguments, provider, null, conversation, session, console, timeProvider);
                 var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
                 conversation = result.Messages;
                 PrintTrailingNewline(result);
@@ -385,7 +404,8 @@ internal static class Program
         WfxSettingsLayer layer,
         WfxSettingsLayer cliOnly,
         EndpointIdentity? recordedEndpoint,
-        string? userProfile)
+        string? userProfile,
+        bool reportWarnings)
     {
         try
         {
@@ -399,8 +419,12 @@ internal static class Program
                       recordedEndpoint.Profile,
                       StringComparison.OrdinalIgnoreCase))
         {
-            Console.Error.WriteLine(
-                $"wfx: recorded profile '{recordedEndpoint.Profile}' is no longer configured; using current settings instead.");
+            if (reportWarnings)
+            {
+                Console.Error.WriteLine(
+                    $"wfx: recorded profile '{recordedEndpoint.Profile}' is no longer configured; using current settings instead.");
+            }
+
             return WfxConfiguration.Load(workspaceRoot, cliOnly, userProfile: userProfile);
         }
     }
@@ -557,7 +581,8 @@ internal static class Program
         int? maxIterations,
         IReadOnlyList<ModelMessage> conversation,
         SessionLog? session,
-        IConsoleEnvironment console)
+        IConsoleEnvironment console,
+        TimeProvider? timeProvider)
     {
         var tools = BuiltInTools.Create(workspace.Root);
         var context = new CompositeContextProvider([
@@ -583,7 +608,12 @@ internal static class Program
         }
         else
         {
-            observers.Add(new ConsoleAgentObserver(arguments.Verbose, arguments.Debug, _unicodeConsole, secrets));
+            observers.Add(new ConsoleAgentObserver(
+                arguments.Verbose,
+                arguments.Debug,
+                arguments.Quiet,
+                _unicodeConsole && !arguments.Quiet && !console.IsOutputRedirected,
+                secrets));
         }
 
         return new Agent(
@@ -597,7 +627,8 @@ internal static class Program
                 maxIterations),
             workspace.Root,
             conversation,
-            new AgentTurnMetadata(session?.Id ?? string.Empty, settings.Approval));
+            new AgentTurnMetadata(session?.Id ?? string.Empty, settings.Approval),
+            timeProvider);
     }
 
     private static IModelProvider CreateModelProvider(
@@ -747,16 +778,19 @@ internal static class Program
     private static int PrintConfigJson(WfxSettings settings) =>
         PrintJsonResult(writer => JsonResultWriters.WriteConfigResult(writer, settings));
 
-    private static int PrintModelsJson(WfxSettings settings)
+    private static int PrintModelsJson(WfxSettings settings, bool reportWarnings)
     {
         // Unresolvable profiles still appear in the result object with null endpoint fields;
         // the reason is out-of-band on stderr so the stdout contract stays the spec shape.
-        foreach (var profile in settings.ModelListing)
+        if (reportWarnings)
         {
-            if (profile.Error is not null)
+            foreach (var profile in settings.ModelListing)
             {
-                Console.Error.WriteLine(
-                    $"wfx: warning: profile '{profile.Name}' could not be resolved: {profile.Error}");
+                if (profile.Error is not null)
+                {
+                    Console.Error.WriteLine(
+                        $"wfx: warning: profile '{profile.Name}' could not be resolved: {profile.Error}");
+                }
             }
         }
 
@@ -848,6 +882,8 @@ internal static class Program
               --debug                       Show tool result diagnostics
               --json                        Machine-readable output: NDJSON events for run/resume,
                                             one result object for sessions/config/models
+              --quiet                       Presentation flag; suppress human decoration on stderr
+                                            in interactive mode and the commands listed below
               --no-session                  Do not persist a session log for this invocation
               --id <session-id>             Resume a specific session (only with wfx resume)
               --force                       Rebind the session selected with --id
@@ -868,6 +904,11 @@ internal static class Program
             Machine-readable output: wfx sessions --json, wfx config --json, and wfx models --json
             write one JSON result object to stdout, not an event stream. Shapes carry schema_version
             1 and are published under docs/schemas/ with every field marked public or internal.
+
+            --quiet is available on run, resume, sessions, config, and models.
+            It is also available in interactive mode and does not change stdout.
+            In human mode, errors and warnings still use stderr.
+            --json --quiet preserves the JSON output and limits stderr to terminal failures.
 
             Configuration precedence: CLI > environment > project > user > defaults.
             Prefer WFX_API_KEY for credentials. WFX never prints API keys.
