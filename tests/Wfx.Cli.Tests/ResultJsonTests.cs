@@ -334,6 +334,44 @@ public sealed partial class ResultJsonTests
     }
 
     [Fact]
+    public async Task ModelsJsonQuietSuppressesUnresolvableProfileWarning()
+    {
+        var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient(
+            "The models command must not call a model endpoint.");
+        using var console = new ConsoleCapture();
+        var userProfile = Path.Combine(directory.FullName, "profile-home");
+        Directory.CreateDirectory(Path.Combine(userProfile, ".wfx"));
+        File.WriteAllText(Path.Combine(userProfile, ".wfx", "config.json"), """
+            {
+              "profiles": {
+                "broken": { "model": "broken-model", "protocol": "anthropic_messages" },
+                "ok": { "model": "ok-model" }
+              }
+            }
+            """);
+        try
+        {
+            var exitCode = await CliRunner.RunAsync(
+                ["models", "--json", "--quiet"],
+                httpClient,
+                new TestSessionStore(),
+                TestContext.Current.CancellationToken,
+                userProfile);
+
+            Assert.Equal(0, exitCode);
+            Assert.Empty(console.ErrorText);
+            var profile = Assert.Single(
+                ParseResultObject(console.Output.ToString()).GetProperty("profiles").EnumerateArray());
+            Assert.Equal("ok", profile.GetProperty("name").GetString());
+        }
+        finally
+        {
+            Directory.Delete(directory.FullName, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ModelsJsonExitsTwoOnConfigurationError()
     {
         var directory = Directory.CreateTempSubdirectory("wfx-cli-tests-");

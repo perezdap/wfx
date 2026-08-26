@@ -5,6 +5,7 @@ namespace Wfx.Cli;
 internal sealed class ConsoleAgentObserver(
     bool verbose,
     bool debug,
+    bool quiet,
     bool unicode = true,
     IReadOnlyList<string>? secrets = null) : IAgentObserver
 {
@@ -22,8 +23,12 @@ internal sealed class ConsoleAgentObserver(
         ApprovalLevel level,
         CancellationToken cancellationToken)
     {
-        var call = ToolCallSummary.Describe(name, argumentsJson, secrets: secrets);
-        WriteLine($"{_marker} {call}{(verbose ? $" [{level}]" : string.Empty)}");
+        if (!quiet)
+        {
+            var call = ToolCallSummary.Describe(name, argumentsJson, secrets: secrets);
+            WriteLine($"{_marker} {call}{(verbose ? $" [{level}]" : string.Empty)}");
+        }
+
         return ValueTask.CompletedTask;
     }
 
@@ -33,8 +38,12 @@ internal sealed class ConsoleAgentObserver(
         string reason,
         CancellationToken cancellationToken)
     {
-        WriteLine($"{_marker} {ToolCallSummary.Describe(name, argumentsJson, secrets: secrets)}");
-        WriteLine($"  skipped: {ToolCallSummary.DescribeText(reason, secrets: secrets)}");
+        if (!quiet)
+        {
+            WriteLine($"{_marker} {ToolCallSummary.Describe(name, argumentsJson, secrets: secrets)}");
+            WriteLine($"  skipped: {ToolCallSummary.DescribeText(reason, secrets: secrets)}");
+        }
+
         return ValueTask.CompletedTask;
     }
 
@@ -44,6 +53,11 @@ internal sealed class ConsoleAgentObserver(
         TimeSpan duration,
         CancellationToken cancellationToken)
     {
+        if (quiet)
+        {
+            return ValueTask.CompletedTask;
+        }
+
         if (verbose)
         {
             WriteLine($"  {(result.Success ? "completed" : "failed")} in {duration.TotalMilliseconds:F0} ms");
