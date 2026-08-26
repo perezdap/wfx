@@ -11,8 +11,8 @@
 | Native AOT packages/toolchain vary by runner | AOT analyzers enabled and CI publishes on native x64/ARM64 Windows runners | Track size/startup/memory trends and pin known-good toolchains |
 | Console prompt is not a security boundary | Host-owned approval service and noninteractive denial; `yolo` is an explicit invocation opt-in that skips prompts but not workspace path checks | Add signed/opaque approval requests for remote/ACP hosts |
 | Shared endpoints can rate-limit long runs | Transient 429/5xx are retried with bounded jittered backoff, honoring `Retry-After`; the overall timeout bounds the total wait | Retry transport-level failures and mid-stream drops; report retry counts to the observer |
-| Session files remain sensitive despite redaction | Prefix-anchored masking at tool-result ingestion plus a current-user ACL on `%USERPROFILE%\.wfx\sessions\` | Resume/list/prune; optional substitution of known configured secret values |
+| Session files remain sensitive despite redaction | Prefix-anchored masking at tool-result ingestion plus a current-user ACL on `%USERPROFILE%\.wfx\sessions\` | Prune; optional substitution of known configured secret values |
 
 ## Deliberately deferred
 
-MCP, ACP, skills, subagents, native Anthropic/Gemini/Azure transports, session resume/list/prune, auto-update, WinGet packaging, a complex TUI, commits, pushes, and arbitrary Git commands are outside Milestone 1. Their absence keeps the security and provider foundations reviewable.
+MCP, ACP, skills, subagents, native Anthropic/Gemini/Azure transports, session pruning, auto-update, WinGet packaging, a complex TUI, commits, pushes, and arbitrary Git commands are outside Milestone 1. Their absence keeps the security and provider foundations reviewable.

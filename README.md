@@ -2,7 +2,7 @@
 
 WFX is a small, embeddable, Windows-first AI coding-agent runtime. It is designed for native Windows and PowerShell workflows and ships as a self-contained executable: no WSL, Docker, Node.js, or Python runtime is required.
 
-> Status: Milestone 1 foundation. Review approval prompts before allowing changes in important workspaces.
+> Status: Milestone 1 complete. Review approval prompts before allowing changes in important workspaces.
 
 ## What works
 
@@ -170,7 +170,7 @@ Interactive mode and `wfx run` write an append-only JSONL event log under `%USER
 
 The sessions directory is created with a Windows ACL granting only the current user. Known secret shapes in tool output are masked at ingestion, but redaction is not a guarantee: session files remain sensitive and should be treated as plaintext credentials-adjacent data.
 
-Resume, listing, and pruning are not in this slice.
+Session pruning is not in this slice; resume and listing are covered under [Use](#use).
 
 ## Use
 
