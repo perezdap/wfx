@@ -185,6 +185,30 @@ public sealed class JsonEventStreamTests
     }
 
     [Fact]
+    public async Task MaxIterationsTextReturnsFour()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient("The injected provider must be used.");
+        using var console = new ConsoleCapture();
+        var provider = new QueuedModelProvider([
+            new ModelCompleted(new ModelMessage(
+                ModelRole.Assistant,
+                "still working",
+                [new ModelToolCall("call-1", "list_directory", "{\"path\":\".\"}")]))
+        ]);
+
+        var exitCode = await CliRunner.RunAsync(
+            [.. RunJsonArguments("inspect").Where(static argument => argument != "--json"), "--max-iterations", "1"],
+            httpClient,
+            new SessionStore(sessions.Path),
+            TestContext.Current.CancellationToken,
+            modelProviderFactory: (_, _) => provider);
+
+        Assert.Equal(4, exitCode);
+        Assert.Contains("Iteration limit of 1 model iteration(s) reached", console.ErrorText);
+    }
+
+    [Fact]
     public async Task ProviderErrorJsonReturnsFiveAndEmitsClassifiedError()
     {
         using var sessions = new TemporaryDirectory();
@@ -261,8 +285,10 @@ public sealed class JsonEventStreamTests
         Assert.Equal(0, exitCode);
         var help = console.Output.ToString();
         Assert.Contains("--json", help);
+        Assert.Contains("--max-iterations <count>      Noninteractive loop limit", help);
+        Assert.Contains("Interactive mode is unlimited", help);
         Assert.Contains("credential-adjacent", help);
-        Assert.Contains("4    JSON turn interrupted", help);
+        Assert.Contains("4    run stopped at maximum iterations, or JSON turn interrupted", help);
         Assert.Contains("5    JSON turn error", help);
     }
 
