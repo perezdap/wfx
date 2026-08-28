@@ -70,7 +70,7 @@ A session is an append-only JSONL event log owned by `Wfx.Core.SessionStore`, st
 
 ## Future seams
 
-- MCP tools can implement `ITool` through an adapter.
+- MCP tools implement `ITool` through the `Wfx.Mcp` adapter: user-configured stdio servers, every call classified `SystemChange` and approved like any built-in tool.
 - Skills can contribute context providers and tool bundles.
 - Subagents can own isolated message lists while sharing a constrained tool registry and workspace policy.
 - ACP can host `IAgent` and translate observer events.

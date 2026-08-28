@@ -5,7 +5,7 @@ namespace Wfx.Tools;
 
 public static class BuiltInTools
 {
-    public static ToolRegistry Create(string workspaceRoot)
+    public static IReadOnlyList<ITool> CreateTools(string workspaceRoot)
     {
         var paths = new WorkspacePathPolicy(workspaceRoot);
         var processExecutor = new ProcessExecutor();
@@ -21,6 +21,8 @@ public static class BuiltInTools
             new PowerShellTool(paths, powerShellRunner),
             new GitTool(paths, processExecutor)
         ];
-        return new ToolRegistry(tools);
+        return tools;
     }
+
+    public static ToolRegistry Create(string workspaceRoot) => new(CreateTools(workspaceRoot));
 }
