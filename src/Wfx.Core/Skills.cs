@@ -50,7 +50,7 @@ public sealed class SkillLocator : ISkillLocator
         {
             if (!merged.TryAdd(skill.Name, skill))
             {
-                warnings.Add($"User skill directory '{Path.GetFileName(Path.GetDirectoryName(skill.Path))}' has the same name '{skill.Name}' as another user skill; skipping duplicate.");
+                warnings.Add($"User skill directory '{skill.Name}' has the same name as another user skill; skipping duplicate.");
             }
         }
 
