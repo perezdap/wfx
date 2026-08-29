@@ -184,4 +184,56 @@ public sealed class SkillLocatorTests
         Assert.Empty(locator.Skills);
         Assert.Single(locator.Warnings);
     }
+
+    [Fact]
+    public void StripsMatchingQuotesFromFrontmatterValues()
+    {
+        using var userProfile = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+
+        var skillDir = Path.Combine(userProfile.Path, ".wfx", "skills", "quoted");
+        Directory.CreateDirectory(skillDir);
+        File.WriteAllText(
+            Path.Combine(skillDir, "SKILL.md"),
+            """
+            ---
+            name: "quoted"
+            description: 'A quoted description.'
+            ---
+
+            Body.
+            """);
+
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+
+        Assert.Single(locator.Skills);
+        Assert.Equal("quoted", locator.Skills["quoted"].Name);
+        Assert.Equal("A quoted description.", locator.Skills["quoted"].Description);
+    }
+
+    [Fact]
+    public void ResolvesWorkspaceSkillInsideWorkspaceRoot()
+    {
+        using var userProfile = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+
+        var skillDir = Path.Combine(workspace.Path, ".wfx", "skills", "workspace-skill");
+        Directory.CreateDirectory(skillDir);
+        File.WriteAllText(
+            Path.Combine(skillDir, "SKILL.md"),
+            """
+            ---
+            name: workspace-skill
+            description: A workspace skill.
+            ---
+
+            Body.
+            """);
+
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+
+        Assert.Single(locator.Skills);
+        Assert.Equal(SkillSource.Workspace, locator.Skills["workspace-skill"].Source);
+        Assert.StartsWith(workspace.Path, locator.Skills["workspace-skill"].Path);
+    }
 }

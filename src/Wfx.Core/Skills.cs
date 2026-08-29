@@ -75,16 +75,19 @@ public sealed class SkillLocator : ISkillLocator
             return [];
         }
 
+        var pathPolicy = source == SkillSource.Workspace ? new WorkspacePathPolicy(root) : null;
         var skills = new List<SkillInfo>();
         foreach (var skillDir in Directory.EnumerateDirectories(skillsDir).OrderBy(static d => d, StringComparer.Ordinal))
         {
-            var skillPath = Path.Combine(skillDir, "SKILL.md");
-            if (!File.Exists(skillPath))
+            var directoryName = Path.GetFileName(skillDir);
+            var skillPath = pathPolicy is null
+                ? Path.Combine(skillDir, "SKILL.md")
+                : ResolveSkillPath(pathPolicy, directoryName, warnings);
+            if (skillPath is null)
             {
                 continue;
             }
 
-            var directoryName = Path.GetFileName(skillDir);
             var skill = TryLoadSkill(skillPath, directoryName, source, warnings);
             if (skill is not null)
             {
@@ -93,6 +96,19 @@ public sealed class SkillLocator : ISkillLocator
         }
 
         return skills;
+    }
+
+    private static string? ResolveSkillPath(WorkspacePathPolicy policy, string directoryName, List<string> warnings)
+    {
+        try
+        {
+            return policy.Resolve(Path.Combine(".wfx", "skills", directoryName, "SKILL.md"), mustExist: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            warnings.Add($"Could not resolve workspace skill path '{directoryName}': {exception.Message}");
+            return null;
+        }
     }
 
     private static SkillInfo? TryLoadSkill(string path, string directoryName, SkillSource source, List<string> warnings)
@@ -176,12 +192,24 @@ public sealed class SkillLocator : ISkillLocator
             var trimmed = line.TrimStart();
             if (trimmed.StartsWith($"{key}:", StringComparison.Ordinal))
             {
-                value = trimmed[(key.Length + 1)..].Trim();
+                value = StripMatchingQuotes(trimmed[(key.Length + 1)..].Trim());
                 return true;
             }
         }
 
         return false;
+    }
+
+    private static string StripMatchingQuotes(string value)
+    {
+        if (value.Length >= 2 &&
+            ((value[0] == '"' && value[^1] == '"') ||
+             (value[0] == '\'' && value[^1] == '\'')))
+        {
+            return value[1..^1].Trim();
+        }
+
+        return value;
     }
 }
 
@@ -193,6 +221,7 @@ public sealed class SkillContextProvider : IContextProvider
 
     public ValueTask<string?> GetContextAsync(CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (_skills.Skills.Count == 0)
         {
             return ValueTask.FromResult<string?>(null);
@@ -202,6 +231,7 @@ public sealed class SkillContextProvider : IContextProvider
         builder.AppendLine("Available skills:");
         foreach (var skill in _skills.Skills.Values.OrderBy(static s => s.Name, StringComparer.Ordinal))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             builder.AppendLine($"- {skill.Name}: {skill.Description}");
         }
 

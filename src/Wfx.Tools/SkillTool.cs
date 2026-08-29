@@ -33,9 +33,7 @@ public sealed class SkillTool : ITool
             return ValueTask.FromResult(ToolResult.Fail($"No skill named '{name}' is available."));
         }
 
-        return ValueTask.FromResult(ToolResult.Ok(skill.Body, new Dictionary<string, string>
-        {
-            ["name"] = skill.Name
-        }));
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(ToolResult.Ok(skill.Body));
     }
 }

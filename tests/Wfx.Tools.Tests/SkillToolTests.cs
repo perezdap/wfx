@@ -35,7 +35,6 @@ public sealed class SkillToolTests
 
         Assert.True(result.Success);
         Assert.Equal(skillBody, result.Output);
-        Assert.Equal("git-guardrails", result.Metadata!["name"]);
     }
 
     [Fact]
