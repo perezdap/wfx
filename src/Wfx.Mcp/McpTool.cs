@@ -11,7 +11,15 @@ namespace Wfx.Mcp;
 /// MCP tool is never auto-approved as read-only. Per-call approval flows through the
 /// ordinary approval service before <see cref="ExecuteAsync"/> sends anything.
 /// </summary>
-public sealed class McpTool : ITool
+/// <remarks>
+/// Workspace confinement deliberately does not apply here. The built-in tools operate on
+/// workspace paths and are checked against the workspace policy; an MCP tool delegates to a
+/// user-configured external process whose purpose is precisely to reach beyond the file
+/// tools. Its safety model is the trust boundary around configuration (user config only,
+/// project config refused — see ADR 0007) plus the unconditional SystemChange classification
+/// and per-call approval, not path checks the server would bypass anyway.
+/// </remarks>
+internal sealed class McpTool : ITool
 {
     private readonly string _serverName;
     private readonly McpToolInfo _info;
@@ -62,8 +70,13 @@ public sealed class McpTool : ITool
             ? $"MCP tool '{info.Name}' from server '{serverName}'."
             : info.Description!;
 
+    /// <summary>
+    /// The registry contract takes a <see cref="JsonObject"/> schema, so the server's schema
+    /// is materialized to a node tree exactly once here; every other byte of the protocol
+    /// stays in Utf8JsonWriter/JsonDocument form.
+    /// </summary>
     private static JsonObject BuildParameters(McpToolInfo info) =>
-        info.InputSchema is JsonObject schema
-            ? (JsonObject)schema.DeepClone()
+        info.InputSchema is { } schema && JsonNode.Parse(schema.GetRawText()) is JsonObject parsed
+            ? parsed
             : new JsonObject { ["type"] = "object" };
 }

@@ -178,4 +178,42 @@ public sealed class McpConfigurationTests
 
         Assert.Contains("args", exception.Message);
     }
+
+    [Fact]
+    public void Load_RejectsMalformedProjectMcpServersWithTheTrustBoundaryMessage()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(workspace.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(workspace.Path, ".wfx", "config.json"), """
+            { "mcp_servers": "not-even-an-object" }
+            """);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: profile.Path));
+
+        Assert.Contains("'mcp_servers'", exception.Message);
+        Assert.Contains("user configuration", exception.Message);
+    }
+
+    [Fact]
+    public void Load_RejectsMalformedProjectProfileMcpServersWithTheTrustBoundaryMessage()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(workspace.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(workspace.Path, ".wfx", "config.json"), """
+            { "profiles": { "dev": { "mcp_servers": [1, 2] } } }
+            """);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: profile.Path));
+
+        Assert.Contains("'mcp_servers'", exception.Message);
+        Assert.Contains("user configuration", exception.Message);
+    }
 }

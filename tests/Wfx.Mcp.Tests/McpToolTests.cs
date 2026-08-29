@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using Wfx.Core;
 using Wfx.Mcp;
 
@@ -22,12 +21,12 @@ public sealed class McpToolTests
     [Fact]
     public void Definition_PassesThroughServerSchema()
     {
-        var schema = JsonNode.Parse("""
+        using var schemaDocument = JsonDocument.Parse("""
             {"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}
             """);
         var tool = new McpTool(
             "fake",
-            new McpToolInfo("echo", "Echoes input.", schema),
+            new McpToolInfo("echo", "Echoes input.", schemaDocument.RootElement.Clone()),
             CreateClient(),
             "mcp_fake_echo");
 

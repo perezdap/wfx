@@ -1,13 +1,13 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 
 namespace Wfx.Mcp;
 
 /// <summary>
 /// Newline-delimited JSON-RPC 2.0 framing over a text stream pair. Requests carry integer
-/// ids matched against responses; lines that are not responses (notifications, malformed
-/// frames) are ignored so one stray server line cannot kill the connection. A dead stream
-/// faults every in-flight request and rejects future ones.
+/// ids matched against responses. Frames that cannot be attributed (notifications,
+/// unsupported server-to-client requests) are ignored, but a frame that violates the
+/// framing contract faults the whole session: a server speaking garbage must fail its
+/// tools with a structured error, never hang them.
 /// </summary>
 internal sealed class McpJsonRpcSession
 {
@@ -40,7 +40,10 @@ internal sealed class McpJsonRpcSession
 
     public void StartReadLoop() => _ = Task.Run(ReadLoopAsync);
 
-    public async Task<JsonElement> RequestAsync(string method, JsonObject? parameters, CancellationToken cancellationToken)
+    public async Task<JsonElement> RequestAsync(
+        string method,
+        Action<Utf8JsonWriter>? writeParameters,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         lock (_stateLock)
@@ -58,20 +61,10 @@ internal sealed class McpJsonRpcSession
             _pending.Add(id, completion);
         }
 
-        var request = new JsonObject
-        {
-            ["jsonrpc"] = "2.0",
-            ["id"] = id,
-            ["method"] = method
-        };
-        if (parameters is not null)
-        {
-            request["params"] = parameters;
-        }
-
         try
         {
-            await WriteLineAsync(request.ToJsonString(), cancellationToken).ConfigureAwait(false);
+            await WriteLineAsync(McpJsonRpc.BuildRequestLine(id, method, writeParameters), cancellationToken)
+                .ConfigureAwait(false);
         }
         catch
         {
@@ -92,7 +85,10 @@ internal sealed class McpJsonRpcSession
         return await completion.Task.ConfigureAwait(false);
     }
 
-    public async Task NotifyAsync(string method, JsonObject? parameters, CancellationToken cancellationToken)
+    public async Task NotifyAsync(
+        string method,
+        Action<Utf8JsonWriter>? writeParameters,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         lock (_stateLock)
@@ -103,17 +99,8 @@ internal sealed class McpJsonRpcSession
             }
         }
 
-        var notification = new JsonObject
-        {
-            ["jsonrpc"] = "2.0",
-            ["method"] = method
-        };
-        if (parameters is not null)
-        {
-            notification["params"] = parameters;
-        }
-
-        await WriteLineAsync(notification.ToJsonString(), cancellationToken).ConfigureAwait(false);
+        await WriteLineAsync(McpJsonRpc.BuildNotificationLine(method, writeParameters), cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -190,7 +177,10 @@ internal sealed class McpJsonRpcSession
                     return;
                 }
 
-                Dispatch(line);
+                if (!Dispatch(line))
+                {
+                    return;
+                }
             }
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException or InvalidOperationException)
@@ -199,7 +189,8 @@ internal sealed class McpJsonRpcSession
         }
     }
 
-    private void Dispatch(string line)
+    /// <summary>Returns false when the session faulted and the read loop must stop.</summary>
+    private bool Dispatch(string line)
     {
         JsonDocument document;
         try
@@ -208,17 +199,33 @@ internal sealed class McpJsonRpcSession
         }
         catch (JsonException)
         {
-            // Not a JSON-RPC frame. Ignore it; the next well-formed response still matches.
-            return;
+            // The stdio transport is newline-delimited JSON-RPC; anything unparseable is a
+            // protocol violation and must surface as a structured failure, not a silent skip.
+            Fault("The MCP server sent a malformed response.");
+            return false;
         }
 
         using (document)
         {
             var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("id", out var idElement))
+            if (root.ValueKind != JsonValueKind.Object)
             {
-                // Server notifications and server-to-client requests are out of scope.
-                return;
+                Fault("The MCP server sent a malformed response.");
+                return false;
+            }
+
+            if (!root.TryGetProperty("id", out var idElement))
+            {
+                // Notifications are legitimate; any other id-less object is not a JSON-RPC
+                // message the client can act on, but only notifications are expected here.
+                return root.TryGetProperty("method", out _);
+            }
+
+            if (root.TryGetProperty("method", out _))
+            {
+                // A server-to-client request (sampling, roots). Out of scope for the
+                // milestone; it is well-formed JSON-RPC, so ignore rather than fault.
+                return true;
             }
 
             long id;
@@ -232,7 +239,8 @@ internal sealed class McpJsonRpcSession
             }
             else
             {
-                return;
+                Fault("The MCP server sent a response with an invalid id.");
+                return false;
             }
 
             TaskCompletionSource<JsonElement>? completion;
@@ -243,7 +251,7 @@ internal sealed class McpJsonRpcSession
 
             if (completion is null)
             {
-                return;
+                return true;
             }
 
             if (root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object)
@@ -256,16 +264,17 @@ internal sealed class McpJsonRpcSession
                     ? messageElement.GetString()
                     : "unknown error";
                 completion.TrySetException(new McpConnectionException($"MCP server returned error {code}: {message}"));
-                return;
+                return true;
             }
 
             if (root.TryGetProperty("result", out var result))
             {
                 completion.TrySetResult(result.Clone());
-                return;
+                return true;
             }
 
             completion.TrySetException(new McpConnectionException("The MCP server returned a response without a result or error."));
+            return true;
         }
     }
 }

@@ -1,7 +1,5 @@
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using Wfx.Core;
 using Wfx.PowerShell;
 
@@ -9,19 +7,33 @@ namespace Wfx.Mcp;
 
 /// <summary>
 /// One long-lived MCP stdio server connection: a child process speaking newline-delimited
-/// JSON-RPC 2.0 over stdin/stdout. Start failures, crashes, and invalid responses surface
-/// as <see cref="McpConnectionException"/>; they never abort the CLI or the turn. Cancelling
-/// an in-flight call disposes the client, which kills the server's process tree.
+/// JSON-RPC 2.0 over stdin/stdout. Process launching, environment scrubbing, and kill
+/// discipline come from <see cref="ProcessExecutor"/>/<see cref="ChildProcessSession"/>.
+/// Start failures, crashes, and invalid responses surface as <see cref="McpConnectionException"/>;
+/// they never abort the CLI or the turn. Cancelling an in-flight call disposes the client,
+/// which kills the server's process tree.
 /// </summary>
-public sealed class McpStdioClient : IAsyncDisposable
+internal sealed class McpStdioClient : IAsyncDisposable
 {
     /// <summary>
-    /// The protocol revision WFX offers in the handshake. The server's negotiated revision in
-    /// its response is accepted as-is; the milestone supports the shared stdio tool surface.
+    /// The protocol revision WFX offers in the handshake. Servers may negotiate down to any
+    /// revision WFX supports; anything else refuses the connection.
     /// </summary>
     public const string OfferedProtocolVersion = "2025-06-18";
 
-    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+    /// <summary>
+    /// Protocol revisions whose stdio tool surface (initialize, tools/list with cursors,
+    /// tools/call with content/isError) is compatible with this client.
+    /// </summary>
+    internal static readonly string[] SupportedProtocolVersions =
+    [
+        "2025-06-18",
+        "2025-03-26",
+        "2024-11-05"
+    ];
+
+    /// <summary>Caps tools/list pagination so a runaway cursor cannot loop forever.</summary>
+    internal const int MaxToolPages = 16;
 
     private readonly McpJsonRpcSession _session;
     private readonly IAsyncDisposable _process;
@@ -36,130 +48,133 @@ public sealed class McpStdioClient : IAsyncDisposable
     }
 
     /// <summary>Exposed for tests that verify cancellation kills the real server process.</summary>
-    internal ProcessOwner? Owner { get; private set; }
+    internal ChildProcessSession? Owner { get; private set; }
 
-    public static async Task<McpStdioClient> StartAsync(
+    public static McpStdioClient Start(
         McpServerSettings server,
-        string workingDirectory,
+        string workspaceRoot,
         CancellationToken cancellationToken = default)
     {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = server.Command,
-            WorkingDirectory = workingDirectory,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardInputEncoding = Utf8NoBom,
-            StandardOutputEncoding = Utf8NoBom,
-            StandardErrorEncoding = Utf8NoBom
-        };
-        foreach (var argument in server.Arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        // Secret-scrubbed environment defaults apply to MCP servers like every other child
-        // process; configured env values overlay them and may reintroduce variables by name.
-        var overlay = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var pair in server.Environment)
-        {
-            overlay[pair.Key] = pair.Value;
-        }
-
-        ChildProcessEnvironment.Apply(startInfo.Environment, overlay);
-
-        var process = new Process { StartInfo = startInfo };
+        cancellationToken.ThrowIfCancellationRequested();
+        ChildProcessSession session;
         try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!process.Start())
-            {
-                throw new InvalidOperationException($"The operating system refused to start '{server.Command}'.");
-            }
+            session = new ProcessExecutor().StartSession(new ProcessCommand(
+                server.Command,
+                server.Arguments,
+                workspaceRoot,
+                Environment: ToOverlay(server.Environment)));
         }
-        catch (OperationCanceledException)
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+            or InvalidOperationException or DirectoryNotFoundException)
         {
-            process.Dispose();
-            throw;
-        }
-        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
-        {
-            process.Dispose();
             throw new McpConnectionException(
                 $"Could not start MCP server command '{server.Command}': {exception.Message}",
                 exception);
         }
 
-        var owner = new ProcessOwner(process);
-        var session = new McpJsonRpcSession(process.StandardInput, process.StandardOutput);
-        var drain = Task.Run(() => DrainAsync(process.StandardError));
-        session.StartReadLoop();
-        return new McpStdioClient(session, owner, drain) { Owner = owner };
+        var rpc = new McpJsonRpcSession(session.StandardInput, session.StandardOutput);
+        var drain = Task.Run(() => DrainAsync(session.StandardError));
+        rpc.StartReadLoop();
+        return new McpStdioClient(rpc, session, drain) { Owner = session };
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        var parameters = new JsonObject
+        var result = await _session.RequestAsync("initialize", writer =>
         {
-            ["protocolVersion"] = OfferedProtocolVersion,
-            ["capabilities"] = new JsonObject(),
-            ["clientInfo"] = new JsonObject
-            {
-                ["name"] = "wfx",
-                ["version"] = "0.1.0"
-            }
-        };
-        var result = await _session.RequestAsync("initialize", parameters, cancellationToken).ConfigureAwait(false);
-        if (result.ValueKind != JsonValueKind.Object)
+            writer.WriteStartObject();
+            writer.WriteString("protocolVersion", OfferedProtocolVersion);
+            writer.WritePropertyName("capabilities");
+            writer.WriteStartObject();
+            writer.WriteEndObject();
+            writer.WritePropertyName("clientInfo");
+            writer.WriteStartObject();
+            writer.WriteString("name", "wfx");
+            writer.WriteString("version", "0.1.0");
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+        }, cancellationToken).ConfigureAwait(false);
+
+        if (result.ValueKind != JsonValueKind.Object ||
+            !result.TryGetProperty("protocolVersion", out var versionElement) ||
+            versionElement.ValueKind != JsonValueKind.String)
         {
-            throw new McpConnectionException("The MCP server returned an invalid initialize result.");
+            throw new McpConnectionException("The MCP server returned an initialize result without a protocol version.");
         }
 
-        // The negotiated protocolVersion rides on the result; the milestone uses the shared
-        // tool surface, so the server's revision is accepted without gating.
+        var version = versionElement.GetString()!;
+        if (!SupportedProtocolVersions.Contains(version))
+        {
+            throw new McpConnectionException(
+                $"The MCP server negotiated protocol version '{version}', which WFX does not support.");
+        }
+
         await _session.NotifyAsync("notifications/initialized", null, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<McpToolInfo>> ListToolsAsync(CancellationToken cancellationToken = default)
     {
-        var result = await _session.RequestAsync("tools/list", new JsonObject(), cancellationToken).ConfigureAwait(false);
-        if (result.ValueKind != JsonValueKind.Object ||
-            !result.TryGetProperty("tools", out var toolsElement) ||
-            toolsElement.ValueKind != JsonValueKind.Array)
-        {
-            throw new McpConnectionException("The MCP server returned an invalid tools/list result.");
-        }
-
         var tools = new List<McpToolInfo>();
-        foreach (var item in toolsElement.EnumerateArray())
+        string? cursor = null;
+        for (var page = 0; page < MaxToolPages; page++)
         {
-            if (item.ValueKind != JsonValueKind.Object ||
-                !item.TryGetProperty("name", out var nameElement) ||
-                nameElement.ValueKind != JsonValueKind.String)
+            var pageCursor = cursor;
+            var result = await _session.RequestAsync("tools/list", writer =>
             {
-                continue;
+                writer.WriteStartObject();
+                if (pageCursor is not null)
+                {
+                    writer.WriteString("cursor", pageCursor);
+                }
+
+                writer.WriteEndObject();
+            }, cancellationToken).ConfigureAwait(false);
+
+            if (result.ValueKind != JsonValueKind.Object ||
+                !result.TryGetProperty("tools", out var toolsElement) ||
+                toolsElement.ValueKind != JsonValueKind.Array)
+            {
+                throw new McpConnectionException("The MCP server returned an invalid tools/list result.");
             }
 
-            var name = nameElement.GetString();
-            if (string.IsNullOrWhiteSpace(name))
+            foreach (var item in toolsElement.EnumerateArray())
             {
-                continue;
+                if (item.ValueKind != JsonValueKind.Object ||
+                    !item.TryGetProperty("name", out var nameElement) ||
+                    nameElement.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var name = nameElement.GetString();
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                string? description = item.TryGetProperty("description", out var descriptionElement) &&
+                    descriptionElement.ValueKind == JsonValueKind.String
+                    ? descriptionElement.GetString()
+                    : null;
+                JsonElement? schema = item.TryGetProperty("inputSchema", out var schemaElement) &&
+                    schemaElement.ValueKind == JsonValueKind.Object
+                    ? schemaElement.Clone()
+                    : null;
+                tools.Add(new McpToolInfo(name, description, schema));
             }
 
-            string? description = item.TryGetProperty("description", out var descriptionElement) &&
-                descriptionElement.ValueKind == JsonValueKind.String
-                ? descriptionElement.GetString()
-                : null;
-            JsonNode? schema = item.TryGetProperty("inputSchema", out var schemaElement) &&
-                schemaElement.ValueKind == JsonValueKind.Object
-                ? JsonNode.Parse(schemaElement.GetRawText())
-                : null;
-            tools.Add(new McpToolInfo(name, description, schema));
+            if (!result.TryGetProperty("nextCursor", out var nextCursorElement) ||
+                nextCursorElement.ValueKind != JsonValueKind.String ||
+                string.IsNullOrEmpty(nextCursorElement.GetString()))
+            {
+                return tools;
+            }
+
+            cursor = nextCursorElement.GetString();
         }
 
+        // The server kept paginating past the cap; surface what was listed rather than loop.
         return tools;
     }
 
@@ -168,16 +183,19 @@ public sealed class McpStdioClient : IAsyncDisposable
         JsonElement arguments,
         CancellationToken cancellationToken = default)
     {
-        var parameters = new JsonObject
+        var result = await _session.RequestAsync("tools/call", writer =>
         {
-            ["name"] = toolName
-        };
-        if (arguments.ValueKind == JsonValueKind.Object)
-        {
-            parameters["arguments"] = JsonNode.Parse(arguments.GetRawText());
-        }
+            writer.WriteStartObject();
+            writer.WriteString("name", toolName);
+            if (arguments.ValueKind == JsonValueKind.Object)
+            {
+                writer.WritePropertyName("arguments");
+                arguments.WriteTo(writer);
+            }
 
-        var result = await _session.RequestAsync("tools/call", parameters, cancellationToken).ConfigureAwait(false);
+            writer.WriteEndObject();
+        }, cancellationToken).ConfigureAwait(false);
+
         if (result.ValueKind != JsonValueKind.Object)
         {
             throw new McpConnectionException("The MCP server returned an invalid tools/call result.");
@@ -237,6 +255,22 @@ public sealed class McpStdioClient : IAsyncDisposable
         }
     }
 
+    private static IReadOnlyDictionary<string, string?>? ToOverlay(IReadOnlyDictionary<string, string> environment)
+    {
+        if (environment.Count == 0)
+        {
+            return null;
+        }
+
+        var overlay = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in environment)
+        {
+            overlay[pair.Key] = pair.Value;
+        }
+
+        return overlay;
+    }
+
     private static async Task DrainAsync(StreamReader stderr)
     {
         var buffer = new char[4 * 1024];
@@ -251,47 +285,6 @@ public sealed class McpStdioClient : IAsyncDisposable
         catch (Exception exception) when (exception is IOException or ObjectDisposedException or InvalidOperationException)
         {
             // Pipe closed with the process; nothing to report.
-        }
-    }
-
-    /// <summary>
-    /// Owns the server process lifetime: disposal kills the entire process tree and waits
-    /// for exit, mirroring <see cref="ProcessExecutor"/>'s cancellation discipline.
-    /// </summary>
-    internal sealed class ProcessOwner(Process process) : IAsyncDisposable
-    {
-        private readonly TaskCompletionSource _exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        internal Process Process => process;
-
-        /// <summary>Completes once the process has exited and disposal has observed it.</summary>
-        internal Task Exited => _exited.Task;
-
-        public async ValueTask DisposeAsync()
-        {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-            }
-            catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
-            {
-                // The process exited between the check and Kill.
-            }
-
-            try
-            {
-                await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (InvalidOperationException)
-            {
-                // The process is already gone.
-            }
-
-            process.Dispose();
-            _exited.TrySetResult();
         }
     }
 }

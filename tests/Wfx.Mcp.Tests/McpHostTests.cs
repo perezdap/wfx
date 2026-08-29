@@ -27,19 +27,18 @@ public sealed class McpHostTests
     public async Task Assemble_KeepsFirstTool_WhenSanitizedNamesCollide()
     {
         var warnings = new List<string>();
-        var clientA = CreateIdleClient();
-        var clientB = CreateIdleClient();
-        var clientC = CreateIdleClient();
-        var clientD = CreateIdleClient();
 
         await using var host = McpHost.Assemble(
         [
-            ("alpha", clientA, [new McpToolInfo("echo", null, null)]),
-            ("gam-ma", clientB, [new McpToolInfo("ping", null, null)]),
+            new McpHost.ConnectedServer("alpha", CreateIdleClient(), [new McpToolInfo("echo", null, null)]),
+            new McpHost.ConnectedServer("gam-ma", CreateIdleClient(), [new McpToolInfo("ping", null, null)]),
             // Sanitizes to the same name as 'gam-ma' and must lose.
-            ("gam_ma", clientC, [new McpToolInfo("ping", null, null)]),
+            new McpHost.ConnectedServer("gam_ma", CreateIdleClient(), [new McpToolInfo("ping", null, null)]),
             // The same server listing the same tool twice.
-            ("delta", clientD, [new McpToolInfo("ping", null, null), new McpToolInfo("ping", null, null)])
+            new McpHost.ConnectedServer(
+                "delta",
+                CreateIdleClient(),
+                [new McpToolInfo("ping", null, null), new McpToolInfo("ping", null, null)])
         ],
             warnings.Add);
 
@@ -56,13 +55,11 @@ public sealed class McpHostTests
     public async Task Assemble_CollisionFromSanitizationIsStillDetected()
     {
         var warnings = new List<string>();
-        var clientA = CreateIdleClient();
-        var clientB = CreateIdleClient();
 
         await using var host = McpHost.Assemble(
         [
-            ("a-b", clientA, [new McpToolInfo("c", null, null)]),
-            ("a_b", clientB, [new McpToolInfo("c", null, null)])
+            new McpHost.ConnectedServer("a-b", CreateIdleClient(), [new McpToolInfo("c", null, null)]),
+            new McpHost.ConnectedServer("a_b", CreateIdleClient(), [new McpToolInfo("c", null, null)])
         ],
             warnings.Add);
 

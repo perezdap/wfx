@@ -132,15 +132,15 @@ public static class WfxConfiguration
         WfxSettingsLayer? projectLayer = null;
         if (File.Exists(projectConfig))
         {
-            projectLayer = ReadFile(projectConfig);
-        }
+            // Rejection runs on the raw file before parsing: a malformed mcp_servers value
+            // must still report the trust-boundary rule, not a shape error.
+            if (!sameConfigFile && ProjectConfigDeclaresMcpServers(projectConfig))
+            {
+                throw new InvalidOperationException(
+                    $"Configuration 'mcp_servers' is only allowed in the user configuration; remove 'mcp_servers' from the project configuration: {projectConfig}");
+            }
 
-        // A cloned repository must not be able to launch executable MCP servers, so the key
-        // is refused in project config outright. When both files are the same file the layer
-        // is the user's own configuration and the key stays allowed.
-        if (!sameConfigFile)
-        {
-            RejectProjectMcpServers(projectLayer, projectConfig);
+            projectLayer = ReadFile(projectConfig);
         }
 
         var environmentLayer = FromEnvironment(environment);
@@ -661,22 +661,50 @@ public static class WfxConfiguration
         return servers;
     }
 
-    private static void RejectProjectMcpServers(WfxSettingsLayer? projectLayer, string path)
+    private static bool ProjectConfigDeclaresMcpServers(string path)
     {
-        if (projectLayer is null)
+        JsonDocument document;
+        try
         {
-            return;
+            document = JsonDocument.Parse(File.ReadAllText(path), new JsonDocumentOptions
+            {
+                AllowTrailingCommas = true,
+                CommentHandling = JsonCommentHandling.Skip
+            });
+        }
+        catch (JsonException)
+        {
+            // An unreadable file surfaces as the ordinary configuration parse error.
+            return false;
         }
 
-        var profileSuppliesServers = projectLayer.Profiles is not null &&
-            projectLayer.Profiles.Values.Any(static profile => profile.McpServers is not null);
-        if (projectLayer.McpServers is null && !profileSuppliesServers)
+        using (document)
         {
-            return;
-        }
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
 
-        throw new InvalidOperationException(
-            $"Configuration 'mcp_servers' is only allowed in the user configuration; remove 'mcp_servers' from the project configuration: {path}");
+            if (root.TryGetProperty("mcp_servers", out _))
+            {
+                return true;
+            }
+
+            if (root.TryGetProperty("profiles", out var profiles) && profiles.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var profile in profiles.EnumerateObject())
+                {
+                    if (profile.Value.ValueKind == JsonValueKind.Object &&
+                        profile.Value.TryGetProperty("mcp_servers", out _))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
     }
 
     private static WfxSettingsLayer Defaults => new()

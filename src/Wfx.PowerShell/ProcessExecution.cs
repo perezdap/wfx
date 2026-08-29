@@ -26,39 +26,111 @@ public interface IProcessExecutor
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// One long-lived child process with redirected UTF-8 stdio, for interactive transports such
+/// as the MCP stdio client. Disposal applies the same discipline as <see cref="ProcessExecutor"/>
+/// cancellation: kill the entire process tree, wait for exit, then release the handles.
+/// </summary>
+public sealed class ChildProcessSession : IAsyncDisposable
+{
+    private readonly Process _process;
+    private readonly Task _exitTask;
+    private bool _disposed;
+
+    internal ChildProcessSession(Process process)
+    {
+        _process = process;
+        StandardInput = process.StandardInput;
+        StandardOutput = process.StandardOutput;
+        StandardError = process.StandardError;
+        _exitTask = WaitForExitQuietAsync(process);
+    }
+
+    public StreamWriter StandardInput { get; }
+
+    public StreamReader StandardOutput { get; }
+
+    public StreamReader StandardError { get; }
+
+    /// <summary>
+    /// Completes when the process exits, whether it ends on its own (stdin closed, work done)
+    /// or is killed by disposal.
+    /// </summary>
+    public Task Exited => _exitTask;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        try
+        {
+            if (!_process.HasExited)
+            {
+                _process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // The process exited between the check and Kill.
+        }
+
+        await _exitTask.ConfigureAwait(false);
+        _process.Dispose();
+    }
+
+    private static async Task WaitForExitQuietAsync(Process process)
+    {
+        try
+        {
+            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException)
+        {
+            // The process is already gone.
+        }
+    }
+}
+
 public sealed class ProcessExecutor : IProcessExecutor
 {
     internal const int MaxCapturedCharacters = 1_048_576;
+
+    /// <summary>
+    /// Starts a long-lived child process with redirected stdin/stdout/stderr and the same
+    /// validation and secret-scrubbed environment as <see cref="ExecuteAsync"/>. Stdin uses
+    /// BOM-less UTF-8 because interactive transports such as MCP expect it. The caller owns
+    /// the returned session and disposes it to kill the process tree.
+    /// </summary>
+    public ChildProcessSession StartSession(ProcessCommand command)
+    {
+        var startInfo = BuildStartInfo(command, redirectStandardInput: true);
+        startInfo.StandardInputEncoding = Utf8NoBom;
+        var process = new Process { StartInfo = startInfo };
+        try
+        {
+            if (!process.Start())
+            {
+                throw new InvalidOperationException($"Failed to start process '{command.FileName}'.");
+            }
+        }
+        catch
+        {
+            process.Dispose();
+            throw;
+        }
+
+        return new ChildProcessSession(process);
+    }
 
     public async Task<ProcessExecutionResult> ExecuteAsync(
         ProcessCommand command,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(command.FileName);
-        if (!Directory.Exists(command.WorkingDirectory))
-        {
-            throw new DirectoryNotFoundException(command.WorkingDirectory);
-        }
-
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = command.FileName,
-            WorkingDirectory = command.WorkingDirectory,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = command.StandardInput is not null,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8
-        };
-
-        foreach (var argument in command.Arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        ChildProcessEnvironment.Apply(startInfo.Environment, command.Environment);
+        var startInfo = BuildStartInfo(command, redirectStandardInput: command.StandardInput is not null);
 
         using var process = new Process { StartInfo = startInfo };
         var started = Stopwatch.GetTimestamp();
@@ -119,6 +191,38 @@ public sealed class ProcessExecutor : IProcessExecutor
             timedOut,
             Stopwatch.GetElapsedTime(started),
             stdout.Truncated || stderr.Truncated);
+    }
+
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
+    private static ProcessStartInfo BuildStartInfo(ProcessCommand command, bool redirectStandardInput)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(command.FileName);
+        if (!Directory.Exists(command.WorkingDirectory))
+        {
+            throw new DirectoryNotFoundException(command.WorkingDirectory);
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = command.FileName,
+            WorkingDirectory = command.WorkingDirectory,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = redirectStandardInput,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+
+        foreach (var argument in command.Arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        ChildProcessEnvironment.Apply(startInfo.Environment, command.Environment);
+        return startInfo;
     }
 
     private static async Task<(string Text, bool Truncated)> ReadBoundedAsync(

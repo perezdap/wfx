@@ -8,7 +8,7 @@ namespace Wfx.Mcp;
 /// deterministic mapping means two different server tools can collide after sanitizing;
 /// the host resolves collisions by keeping the first and warning about the rest.
 /// </summary>
-public static class McpToolNames
+internal static class McpToolNames
 {
     private const int MaxLength = 64;
 

@@ -20,9 +20,7 @@ public sealed class McpStdioClientTests
             {
                 case "initialize":
                     initializeParams = request.GetProperty("params").GetRawText();
-                    return FakeMcpServer.Response(request, """
-                        {"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"fake","version":"1.0"}}
-                        """);
+                    return FakeMcpServer.Response(request, """{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"fake","version":"1.0"}}""");
                 case "tools/list":
                     return FakeMcpServer.Response(request, """{"tools":[{"name":"echo","description":"Echoes input.","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}},{"name":"no-schema"}]}""");
                 default:
@@ -57,6 +55,101 @@ public sealed class McpStdioClientTests
     }
 
     [Fact]
+    public async Task Initialize_AcceptsANegotiatedOlderRevision()
+    {
+        using var pipes = new TestPipes();
+        var server = Task.Run(() => FakeMcpServer.RunAsync(pipes.ServerReader, pipes.ServerWriter, (method, request) =>
+            method == "initialize"
+                ? FakeMcpServer.Response(request, """{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"fake","version":"1.0"}}""")
+                : null), TestContext.Current.CancellationToken);
+
+        await using var owner = new RecordingDisposable();
+        var client = CreateClient(pipes, owner);
+
+        await client.InitializeAsync(TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+        await client.DisposeAsync();
+        pipes.Dispose();
+        await server.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Initialize_RefusesAnUnsupportedRevision()
+    {
+        using var pipes = new TestPipes();
+        var server = Task.Run(() => FakeMcpServer.RunAsync(pipes.ServerReader, pipes.ServerWriter, (method, request) =>
+            method == "initialize"
+                ? FakeMcpServer.Response(request, """{"protocolVersion":"1999-01-01","capabilities":{}}""")
+                : null), TestContext.Current.CancellationToken);
+
+        await using var owner = new RecordingDisposable();
+        var client = CreateClient(pipes, owner);
+
+        var exception = await Assert.ThrowsAsync<McpConnectionException>(() =>
+            client.InitializeAsync(TestContext.Current.CancellationToken));
+        Assert.Contains("1999-01-01", exception.Message);
+
+        pipes.Dispose();
+        await server.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Initialize_RefusesAResultWithoutProtocolVersion()
+    {
+        using var pipes = new TestPipes();
+        var server = Task.Run(() => FakeMcpServer.RunAsync(pipes.ServerReader, pipes.ServerWriter, (method, request) =>
+            method == "initialize"
+                ? FakeMcpServer.Response(request, """{"capabilities":{}}""")
+                : null), TestContext.Current.CancellationToken);
+
+        await using var owner = new RecordingDisposable();
+        var client = CreateClient(pipes, owner);
+
+        await Assert.ThrowsAsync<McpConnectionException>(() =>
+            client.InitializeAsync(TestContext.Current.CancellationToken));
+
+        pipes.Dispose();
+        await server.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task ListTools_FollowsPaginationCursors()
+    {
+        using var pipes = new TestPipes();
+        var seenCursors = new ConcurrentQueue<string>();
+        var server = Task.Run(() => FakeMcpServer.RunAsync(pipes.ServerReader, pipes.ServerWriter, (method, request) =>
+        {
+            if (method != "tools/list")
+            {
+                return null;
+            }
+
+            var cursor = request.TryGetProperty("params", out var parameters) &&
+                parameters.TryGetProperty("cursor", out var cursorElement)
+                ? cursorElement.GetString()
+                : null;
+            seenCursors.Enqueue(cursor ?? "(none)");
+            return cursor is null
+                ? FakeMcpServer.Response(request, """{"tools":[{"name":"first"}],"nextCursor":"page-2"}""")
+                : FakeMcpServer.Response(request, """{"tools":[{"name":"second"}]}""");
+        }), TestContext.Current.CancellationToken);
+
+        await using var owner = new RecordingDisposable();
+        var client = CreateClient(pipes, owner);
+
+        var tools = await client.ListToolsAsync(TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+        Assert.Equal(new[] { "first", "second" }, tools.Select(static tool => tool.Name).ToArray());
+        Assert.Equal(new[] { "(none)", "page-2" }, seenCursors.ToArray());
+
+        await client.DisposeAsync();
+        pipes.Dispose();
+        await server.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task CallTool_RoundTripsTextContent()
     {
         using var pipes = new TestPipes();
@@ -69,9 +162,7 @@ public sealed class McpStdioClientTests
             }
 
             callParams = request.GetProperty("params").GetRawText();
-            return FakeMcpServer.Response(request, """
-                {"content":[{"type":"text","text":"echo:hello"},{"type":"image","data":"ignored"},{"type":"text","text":"second"}]}
-                """);
+            return FakeMcpServer.Response(request, """{"content":[{"type":"text","text":"echo:hello"},{"type":"image","data":"ignored"},{"type":"text","text":"second"}]}""");
         }), TestContext.Current.CancellationToken);
 
         await using var owner = new RecordingDisposable();
@@ -93,33 +184,34 @@ public sealed class McpStdioClientTests
     }
 
     [Fact]
-    public async Task MalformedLine_BeforeValidResponse_DoesNotBreakSession()
+    public async Task MalformedFrame_FailsTheSessionStructurally()
     {
         using var pipes = new TestPipes();
         var server = Task.Run(() => FakeMcpServer.RunAsync(pipes.ServerReader, pipes.ServerWriter, (method, request) =>
-        {
-            if (method != "tools/call")
-            {
-                return null;
-            }
-
-            // One garbage frame, then the real response; the client must skip the garbage.
-            return "this is not json-rpc\n" + FakeMcpServer.Response(request, """
-                {"content":[{"type":"text","text":"ok"}]}
-                """);
-        }), TestContext.Current.CancellationToken);
+            method == "tools/call"
+                ? "this is not json-rpc"
+                : null), TestContext.Current.CancellationToken);
 
         await using var owner = new RecordingDisposable();
         var client = CreateClient(pipes, owner);
+        var tool = new McpTool("fake", new McpToolInfo("echo", null, null), client, "mcp_fake_echo");
         using var arguments = JsonDocument.Parse("{}");
 
-        var result = await client.CallToolAsync("echo", arguments.RootElement, TestContext.Current.CancellationToken)
-            .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        // The malformed frame must surface as a structured failure, not a hang.
+        var result = await tool.ExecuteAsync(
+            arguments.RootElement,
+            new ToolContext(Directory.GetCurrentDirectory()),
+            TestContext.Current.CancellationToken).AsTask().WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        Assert.False(result.Success);
+        Assert.Contains("malformed", result.Error);
 
-        Assert.False(result.IsError);
-        Assert.Equal("ok", result.Output);
+        // The session stays dead: later calls fail structurally too.
+        var next = await tool.ExecuteAsync(
+            arguments.RootElement,
+            new ToolContext(Directory.GetCurrentDirectory()),
+            TestContext.Current.CancellationToken);
+        Assert.False(next.Success);
 
-        await client.DisposeAsync();
         pipes.Dispose();
         await server.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
     }
@@ -160,9 +252,9 @@ public sealed class McpStdioClientTests
         using var workspace = new TemporaryDirectory();
         var settings = new McpServerSettings(
             "cmd.exe",
-            ["/c", "ping", "-n", "120", "127.0.0.1"],
+            ["/d", "/c", "ping 127.0.0.1 -n 120 > nul"],
             new Dictionary<string, string>());
-        var client = await McpStdioClient.StartAsync(settings, workspace.Path, TestContext.Current.CancellationToken);
+        var client = McpStdioClient.Start(settings, workspace.Path, TestContext.Current.CancellationToken);
         var owner = client.Owner;
         Assert.NotNull(owner);
 
