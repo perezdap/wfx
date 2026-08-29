@@ -22,6 +22,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Wfx.Tools.Tests", "tests\Wf
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Wfx.Cli.Tests", "tests\Wfx.Cli.Tests\Wfx.Cli.Tests.csproj", "{A60703B7-FBF0-47D3-989E-B9F0F8A665E7}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Wfx.Mcp", "src\Wfx.Mcp\Wfx.Mcp.csproj", "{728B2C76-1B5A-4563-B6FF-01B3930FCF2B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Wfx.Mcp.Tests", "tests\Wfx.Mcp.Tests\Wfx.Mcp.Tests.csproj", "{73D2D97E-CEA4-411B-A48B-5140F349556F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -68,5 +72,13 @@ Global
 		{A60703B7-FBF0-47D3-989E-B9F0F8A665E7}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A60703B7-FBF0-47D3-989E-B9F0F8A665E7}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A60703B7-FBF0-47D3-989E-B9F0F8A665E7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{728B2C76-1B5A-4563-B6FF-01B3930FCF2B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{728B2C76-1B5A-4563-B6FF-01B3930FCF2B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{728B2C76-1B5A-4563-B6FF-01B3930FCF2B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{728B2C76-1B5A-4563-B6FF-01B3930FCF2B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{73D2D97E-CEA4-411B-A48B-5140F349556F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{73D2D97E-CEA4-411B-A48B-5140F349556F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{73D2D97E-CEA4-411B-A48B-5140F349556F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{73D2D97E-CEA4-411B-A48B-5140F349556F}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

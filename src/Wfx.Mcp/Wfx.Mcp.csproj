@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Wfx.Mcp.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Wfx.Core/Wfx.Core.csproj" />
+    <ProjectReference Include="../Wfx.PowerShell/Wfx.PowerShell.csproj" />
+  </ItemGroup>
+</Project>

@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Wfx.Core;
+using Wfx.Mcp;
 using Wfx.Providers;
 using Wfx.Tools;
 
@@ -216,7 +217,8 @@ internal static class Program
             "wfx: session ",
             sessionStore);
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
-        var agent = CreateAgent(settings, workspace, arguments, provider, settings.MaxIterations, [], session, console, timeProvider);
+        await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, cancellationToken).ConfigureAwait(false);
+        var agent = CreateAgent(settings, workspace, arguments, provider, settings.MaxIterations, [], session, console, timeProvider, mcp.Tools);
         return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
     }
 
@@ -239,6 +241,7 @@ internal static class Program
         }
 
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
+        await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, cancellationToken).ConfigureAwait(false);
         var agent = CreateAgent(
             settings,
             workspace,
@@ -248,7 +251,8 @@ internal static class Program
             resumedSession.Transcript.Messages,
             resumedSession.Log,
             console,
-            timeProvider);
+            timeProvider,
+            mcp.Tools);
         return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
     }
 
@@ -325,6 +329,7 @@ internal static class Program
         Console.WriteLine();
 
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
+        await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, cancellationToken).ConfigureAwait(false);
         IReadOnlyList<ModelMessage> conversation = transcript?.Messages ?? [];
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -383,7 +388,7 @@ internal static class Program
             try
             {
                 EnsureRunnable(settings);
-                var agent = CreateAgent(settings, workspace, arguments, provider, null, conversation, session, console, timeProvider);
+                var agent = CreateAgent(settings, workspace, arguments, provider, null, conversation, session, console, timeProvider, mcp.Tools);
                 var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
                 conversation = result.Messages;
                 PrintTrailingNewline(result);
@@ -582,9 +587,12 @@ internal static class Program
         IReadOnlyList<ModelMessage> conversation,
         SessionLog? session,
         IConsoleEnvironment console,
-        TimeProvider? timeProvider)
+        TimeProvider? timeProvider,
+        IReadOnlyList<ITool> mcpTools)
     {
-        var tools = BuiltInTools.Create(workspace.Root);
+        var tools = mcpTools.Count == 0
+            ? BuiltInTools.Create(workspace.Root)
+            : new ToolRegistry([.. BuiltInTools.CreateTools(workspace.Root), .. mcpTools]);
         var context = new CompositeContextProvider([
             new StaticContextProvider($"Workspace root: {workspace.Root}\nWorking directory: {workspace.WorkingDirectory}\nGit repository: {workspace.IsGitRepository}"),
             new AgentInstructionsContextProvider(workspace.Root, workspace.WorkingDirectory)
@@ -629,6 +637,30 @@ internal static class Program
             conversation,
             new AgentTurnMetadata(session?.Id ?? string.Empty, settings.Approval),
             timeProvider);
+    }
+
+    /// <summary>
+    /// Connects every user-configured MCP stdio server eagerly. Unavailable servers warn
+    /// and contribute no tools; a failed server never aborts the invocation.
+    /// </summary>
+    private static async ValueTask<McpHost> ConnectMcpAsync(
+        WfxSettings settings,
+        WorkspaceInfo workspace,
+        CliArguments arguments,
+        CancellationToken cancellationToken)
+    {
+        var reportWarnings = !arguments.Json || !arguments.Quiet;
+        return await McpHost.ConnectAsync(
+            settings.McpServers,
+            workspace.Root,
+            message =>
+            {
+                if (reportWarnings)
+                {
+                    Console.Error.WriteLine($"wfx: warning: {message}");
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static IModelProvider CreateModelProvider(

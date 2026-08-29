@@ -20,7 +20,8 @@ Never claim a live model call passed unless it was actually exercised against th
 
 - `Wfx.Core` owns the agent loop, contracts, explicit state, configuration, approvals, instructions, and workspace policy. It must not depend on the CLI or a concrete provider/tool.
 - `Wfx.Providers` owns model transport and protocol adaptation. It must not own agent state or tool execution.
-- `Wfx.Tools` owns built-in tool implementations. Every tool must publish a JSON schema, classify approval before execution, remain inside the workspace, and support cancellation.
+- `Wfx.Tools` owns built-in tool implementations. Every built-in tool must publish a JSON schema, classify approval before execution, remain inside the workspace, and support cancellation.
+- User-configured external-process adapters such as MCP tools follow a different trust boundary: user configuration only, unconditional `SystemChange` classification, per-call approval through `PolicyApprovalService`, and cancellation. See `docs/adr/0007-mcp-servers-are-user-configured-never-workspace-supplied.md`.
 - `Wfx.PowerShell` owns child-process and PowerShell execution. Do not replace it with a generic Bash-oriented shell abstraction.
 - `Wfx.Cli` is the composition root and console presentation layer. Product logic does not belong there.
 

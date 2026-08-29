@@ -25,6 +25,12 @@ public sealed record WfxSettingsLayer
     public string? Profile { get; init; }
 
     public IReadOnlyDictionary<string, WfxSettingsLayer>? Profiles { get; init; }
+
+    /// <summary>
+    /// MCP servers this layer declared. Only the user layer may supply them; a project layer
+    /// containing this key is rejected when the configuration loads.
+    /// </summary>
+    public IReadOnlyDictionary<string, McpServerSettings>? McpServers { get; init; }
 }
 
 public sealed class UndefinedProfileException : InvalidOperationException
@@ -90,6 +96,10 @@ public sealed record WfxSettings(
     /// <summary>Every configured profile carrying a model key, with endpoint detail for listing.</summary>
     public IReadOnlyList<ModelListingEntry> ModelListing { get; init; } = [];
 
+    /// <summary>User-configured MCP stdio servers; empty when none are configured.</summary>
+    public IReadOnlyDictionary<string, McpServerSettings> McpServers { get; init; } =
+        new Dictionary<string, McpServerSettings>(StringComparer.OrdinalIgnoreCase);
+
     internal IReadOnlyList<ConfiguredModelResolution> ConfiguredModelResolutions { get; init; } = [];
 }
 
@@ -122,12 +132,20 @@ public static class WfxConfiguration
         WfxSettingsLayer? projectLayer = null;
         if (File.Exists(projectConfig))
         {
+            // Rejection runs on the raw file before parsing: a malformed mcp_servers value
+            // must still report the trust-boundary rule, not a shape error.
+            if (!sameConfigFile && ProjectConfigDeclaresMcpServers(projectConfig))
+            {
+                throw new InvalidOperationException(
+                    $"Configuration 'mcp_servers' is only allowed in the user configuration; remove 'mcp_servers' from the project configuration: {projectConfig}");
+            }
+
             projectLayer = ReadFile(projectConfig);
         }
 
         var environmentLayer = FromEnvironment(environment);
         var profile = cli?.Profile ?? environmentLayer.Profile ?? projectLayer?.Profile ?? userLayer?.Profile;
-        var settings = ResolveSettings(userLayer, projectLayer, environmentLayer, cli, profile, environment);
+        var settings = ResolveSettings(userLayer, projectLayer, environmentLayer, cli, profile, environment, sameConfigFile);
         var configuredModels = BuildConfiguredModels(userLayer, projectLayer, environmentLayer, cli, environment);
         var sources = ComputeSources(
             userLayer,
@@ -175,7 +193,7 @@ public static class WfxConfiguration
     private static readonly string[] SourceKeyOrder =
     [
         "provider", "protocol", "base_url", "api_key", "model", "headers",
-        "timeout_seconds", "max_iterations", "approval", "profile"
+        "timeout_seconds", "max_iterations", "approval", "profile", "mcp_servers"
     ];
 
     // The keys whose winning layer is decided by Merge's plain non-null override. This table
@@ -188,7 +206,8 @@ public static class WfxConfiguration
         ("model", static layer => layer.Model is not null),
         ("timeout_seconds", static layer => layer.TimeoutSeconds is not null),
         ("max_iterations", static layer => layer.MaxIterations is not null),
-        ("approval", static layer => layer.Approval is not null)
+        ("approval", static layer => layer.Approval is not null),
+        ("mcp_servers", static layer => layer.McpServers is not null)
     ];
 
     private static IReadOnlyList<ConfigurationSource> ComputeSources(
@@ -326,7 +345,8 @@ public static class WfxConfiguration
         WfxSettingsLayer environmentLayer,
         WfxSettingsLayer? cli,
         string? profile,
-        IReadOnlyDictionary<string, string?>? environment)
+        IReadOnlyDictionary<string, string?>? environment,
+        bool projectLayerIsUserConfig = false)
     {
         if (profile is not null)
         {
@@ -402,7 +422,11 @@ public static class WfxConfiguration
             merged.Approval ?? ApprovalMode.Always)
         {
             Warnings = warnings,
-            Profile = profile
+            Profile = profile,
+            // MCP servers come from the user layer only; the single-file case loads the
+            // user's configuration as the project layer.
+            McpServers = (projectLayerIsUserConfig ? projectLayer : userLayer)?.McpServers ??
+                new Dictionary<string, McpServerSettings>(StringComparer.OrdinalIgnoreCase)
         };
     }
 
@@ -548,6 +572,12 @@ public static class WfxConfiguration
             }
         }
 
+        IReadOnlyDictionary<string, McpServerSettings>? mcpServers = null;
+        if (root.TryGetProperty("mcp_servers", out var mcpElement))
+        {
+            mcpServers = ParseMcpServers(mcpElement, path);
+        }
+
         return new WfxSettingsLayer
         {
             Provider = GetString(root, "provider"),
@@ -558,8 +588,123 @@ public static class WfxConfiguration
             Headers = headers,
             TimeoutSeconds = GetInteger(root, "timeout_seconds"),
             MaxIterations = GetInteger(root, "max_iterations"),
-            Approval = GetApproval(root, "approval")
+            Approval = GetApproval(root, "approval"),
+            McpServers = mcpServers
         };
+    }
+
+    private static IReadOnlyDictionary<string, McpServerSettings> ParseMcpServers(JsonElement element, string path)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidOperationException($"Configuration mcp_servers must be an object: {path}");
+        }
+
+        var servers = new Dictionary<string, McpServerSettings>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.Value.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidOperationException($"MCP server '{property.Name}' must be an object: {path}");
+            }
+
+            var command = GetString(property.Value, "command");
+            if (string.IsNullOrWhiteSpace(command))
+            {
+                throw new InvalidOperationException($"MCP server '{property.Name}' must define a non-empty 'command': {path}");
+            }
+
+            var arguments = new List<string>();
+            if (property.Value.TryGetProperty("args", out var argsElement))
+            {
+                if (argsElement.ValueKind != JsonValueKind.Array)
+                {
+                    throw new InvalidOperationException($"MCP server '{property.Name}' 'args' must be an array of strings: {path}");
+                }
+
+                foreach (var item in argsElement.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.String)
+                    {
+                        throw new InvalidOperationException($"MCP server '{property.Name}' 'args' must be an array of strings: {path}");
+                    }
+
+                    arguments.Add(item.GetString()!);
+                }
+            }
+
+            var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (property.Value.TryGetProperty("env", out var envElement))
+            {
+                if (envElement.ValueKind != JsonValueKind.Object)
+                {
+                    throw new InvalidOperationException($"MCP server '{property.Name}' 'env' must be an object with string values: {path}");
+                }
+
+                foreach (var variable in envElement.EnumerateObject())
+                {
+                    if (variable.Value.ValueKind != JsonValueKind.String)
+                    {
+                        throw new InvalidOperationException($"MCP server '{property.Name}' environment variable '{variable.Name}' must be a string: {path}");
+                    }
+
+                    environment[variable.Name] = variable.Value.GetString()!;
+                }
+            }
+
+            if (!servers.TryAdd(property.Name, new McpServerSettings(command, arguments, environment)))
+            {
+                throw new InvalidOperationException($"Configuration defines a duplicate MCP server '{property.Name}': {path}");
+            }
+        }
+
+        return servers;
+    }
+
+    private static bool ProjectConfigDeclaresMcpServers(string path)
+    {
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(File.ReadAllText(path), new JsonDocumentOptions
+            {
+                AllowTrailingCommas = true,
+                CommentHandling = JsonCommentHandling.Skip
+            });
+        }
+        catch (JsonException)
+        {
+            // An unreadable file surfaces as the ordinary configuration parse error.
+            return false;
+        }
+
+        using (document)
+        {
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            if (root.TryGetProperty("mcp_servers", out _))
+            {
+                return true;
+            }
+
+            if (root.TryGetProperty("profiles", out var profiles) && profiles.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var profile in profiles.EnumerateObject())
+                {
+                    if (profile.Value.ValueKind == JsonValueKind.Object &&
+                        profile.Value.TryGetProperty("mcp_servers", out _))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
     }
 
     private static WfxSettingsLayer Defaults => new()
@@ -742,7 +887,8 @@ public static class WfxConfiguration
                 Headers = layer.Headers ?? result.Headers,
                 TimeoutSeconds = layer.TimeoutSeconds ?? result.TimeoutSeconds,
                 MaxIterations = layer.MaxIterations ?? result.MaxIterations,
-                Approval = layer.Approval ?? result.Approval
+                Approval = layer.Approval ?? result.Approval,
+                McpServers = layer.McpServers ?? result.McpServers
             };
         }
 

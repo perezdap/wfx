@@ -19,5 +19,6 @@
     <ProjectReference Include="../Wfx.PowerShell/Wfx.PowerShell.csproj" />
     <ProjectReference Include="../Wfx.Providers/Wfx.Providers.csproj" />
     <ProjectReference Include="../Wfx.Tools/Wfx.Tools.csproj" />
+    <ProjectReference Include="..\Wfx.Mcp\Wfx.Mcp.csproj" />
   </ItemGroup>
 </Project>

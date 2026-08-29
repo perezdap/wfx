@@ -66,6 +66,20 @@ _Avoid_: reasoning, raw response, native message
 A turn cancelled before it completed. It is recorded as such, and any trailing model request it left unanswered — tool calls with no results — is not replayed on resume.
 _Avoid_: aborted, cancelled turn (in the record), partial turn
 
+### Extensions
+
+**MCP server**:
+A user-configured external tool process WFX launches and speaks the Model Context Protocol to, contributing its tools to the registry. Configured only in the user settings layer; a workspace may not supply one. See [ADR 0007](docs/adr/0007-mcp-servers-are-user-configured-never-workspace-supplied.md).
+_Avoid_: plugin, integration, MCP connection, external server
+
+**MCP tool**:
+A tool backed by an MCP server, named `mcp_<server>_<tool>` and classified `SystemChange` unconditionally. Approved per call through the ordinary approval service like any other tool; there is no per-server trust grant.
+_Avoid_: remote tool, server tool, dynamic tool
+
+**Skill**:
+A self-contained instruction package — a `SKILL.md` with `name` and `description` frontmatter — discovered from user or workspace skill directories. Its description is always available to the model; its full body loads on demand through the `skill` tool.
+_Avoid_: plugin, slash command, prompt template
+
 ### Noninteractive contract
 
 **Noninteractive contract**:
