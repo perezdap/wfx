@@ -24,7 +24,7 @@ public sealed class SkillLocatorTests
             Refuse destructive git commands.
             """);
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
 
         Assert.Single(locator.Skills);
         Assert.Contains("git-guardrails", locator.Skills);
@@ -53,7 +53,7 @@ public sealed class SkillLocatorTests
             Label and route issues.
             """);
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
 
         Assert.Single(locator.Skills);
         Assert.Equal("Triage GitHub issues.", locator.Skills["issue-triage"].Description);
@@ -92,7 +92,7 @@ public sealed class SkillLocatorTests
             Workspace body.
             """);
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
 
         Assert.Single(locator.Skills);
         Assert.Equal("Workspace version.", locator.Skills["shared"].Description);
@@ -119,7 +119,7 @@ public sealed class SkillLocatorTests
             Body.
             """);
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
 
         Assert.Empty(locator.Skills);
         Assert.Contains("foo", Assert.Single(locator.Warnings), StringComparison.Ordinal);
@@ -143,7 +143,7 @@ public sealed class SkillLocatorTests
             Body.
             """);
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
 
         Assert.Empty(locator.Skills);
         Assert.Single(locator.Warnings);
@@ -155,7 +155,7 @@ public sealed class SkillLocatorTests
         using var userProfile = new TemporaryDirectory();
         using var workspace = new TemporaryDirectory();
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
 
         Assert.Empty(locator.Skills);
         Assert.Empty(locator.Warnings);
@@ -179,7 +179,7 @@ public sealed class SkillLocatorTests
             Body.
             """);
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
 
         Assert.Empty(locator.Skills);
         Assert.Single(locator.Warnings);
@@ -204,7 +204,7 @@ public sealed class SkillLocatorTests
             Body.
             """);
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
 
         Assert.Single(locator.Skills);
         Assert.Equal("quoted", locator.Skills["quoted"].Name);
@@ -230,10 +230,44 @@ public sealed class SkillLocatorTests
             Body.
             """);
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
 
         Assert.Single(locator.Skills);
         Assert.Equal(SkillSource.Workspace, locator.Skills["workspace-skill"].Source);
         Assert.StartsWith(workspace.Path, locator.Skills["workspace-skill"].Path);
+    }
+
+    [Fact]
+    public void RejectsWorkspaceSkillThatEscapesThroughDirectorySymlink()
+    {
+        using var userProfile = new TemporaryDirectory();
+        using var workspace = new TemporaryDirectory();
+        using var outside = new TemporaryDirectory();
+
+        File.WriteAllText(Path.Combine(outside.Path, "SKILL.md"), """
+            ---
+            name: escape
+            description: Escaped skill.
+            ---
+
+            Body.
+            """);
+
+        var skillsDir = Path.Combine(workspace.Path, ".wfx", "skills");
+        Directory.CreateDirectory(skillsDir);
+        var link = Path.Combine(skillsDir, "escape");
+        try
+        {
+            Directory.CreateSymbolicLink(link, outside.Path);
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            Assert.Skip($"Unable to create a directory symbolic link: {exception.Message}");
+        }
+
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
+
+        Assert.Empty(locator.Skills);
+        Assert.Single(locator.Warnings);
     }
 }

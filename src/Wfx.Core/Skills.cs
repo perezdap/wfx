@@ -37,11 +37,12 @@ public sealed class SkillLocator : ISkillLocator
     public static ISkillLocator Empty { get; } =
         new SkillLocator(new Dictionary<string, SkillInfo>(StringComparer.Ordinal), []);
 
-    public static SkillLocator Discover(string? userProfile, string? workspaceRoot)
+    public static SkillLocator Discover(string? userProfile, string? workspaceRoot, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var warnings = new List<string>();
-        var userSkills = DiscoverDirectory(userProfile, SkillSource.User, warnings);
-        var workspaceSkills = DiscoverDirectory(workspaceRoot, SkillSource.Workspace, warnings);
+        var userSkills = DiscoverDirectory(userProfile, SkillSource.User, warnings, cancellationToken);
+        var workspaceSkills = DiscoverDirectory(workspaceRoot, SkillSource.Workspace, warnings, cancellationToken);
 
         var merged = new Dictionary<string, SkillInfo>(StringComparer.Ordinal);
 
@@ -62,7 +63,7 @@ public sealed class SkillLocator : ISkillLocator
         return new SkillLocator(merged, warnings);
     }
 
-    private static IReadOnlyList<SkillInfo> DiscoverDirectory(string? root, SkillSource source, List<string> warnings)
+    private static IReadOnlyList<SkillInfo> DiscoverDirectory(string? root, SkillSource source, List<string> warnings, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(root))
         {
@@ -75,10 +76,12 @@ public sealed class SkillLocator : ISkillLocator
             return [];
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         var pathPolicy = source == SkillSource.Workspace ? new WorkspacePathPolicy(root) : null;
         var skills = new List<SkillInfo>();
         foreach (var skillDir in Directory.EnumerateDirectories(skillsDir).OrderBy(static d => d, StringComparer.Ordinal))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var directoryName = Path.GetFileName(skillDir);
             var skillPath = pathPolicy is null
                 ? Path.Combine(skillDir, "SKILL.md")
@@ -88,7 +91,7 @@ public sealed class SkillLocator : ISkillLocator
                 continue;
             }
 
-            var skill = TryLoadSkill(skillPath, directoryName, source, warnings);
+            var skill = TryLoadSkill(skillPath, directoryName, source, warnings, cancellationToken);
             if (skill is not null)
             {
                 skills.Add(skill);
@@ -111,8 +114,9 @@ public sealed class SkillLocator : ISkillLocator
         }
     }
 
-    private static SkillInfo? TryLoadSkill(string path, string directoryName, SkillSource source, List<string> warnings)
+    private static SkillInfo? TryLoadSkill(string path, string directoryName, SkillSource source, List<string> warnings, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         string body;
         try
         {
@@ -124,7 +128,7 @@ public sealed class SkillLocator : ISkillLocator
             return null;
         }
 
-        var (frontmatter, _) = ExtractFrontmatter(body);
+        var (frontmatter, skillBody) = ExtractFrontmatter(body);
         if (frontmatter is null)
         {
             warnings.Add($"Skill '{directoryName}' at '{path}' is missing YAML frontmatter.");
@@ -149,7 +153,7 @@ public sealed class SkillLocator : ISkillLocator
             return null;
         }
 
-        return new SkillInfo(name, description, body, source, path);
+        return new SkillInfo(name, description, skillBody, source, path);
     }
 
     private static (string? Frontmatter, string Body) ExtractFrontmatter(string text)

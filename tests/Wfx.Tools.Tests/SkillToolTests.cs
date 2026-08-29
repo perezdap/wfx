@@ -13,7 +13,7 @@ public sealed class SkillToolTests
 
         var skillDir = Path.Combine(userProfile.Path, ".wfx", "skills", "git-guardrails");
         Directory.CreateDirectory(skillDir);
-        var skillBody = """
+        var skillFile = """
             ---
             name: git-guardrails
             description: Prevent dangerous git operations.
@@ -23,9 +23,14 @@ public sealed class SkillToolTests
 
             Refuse destructive git commands.
             """;
-        File.WriteAllText(Path.Combine(skillDir, "SKILL.md"), skillBody);
+        var expectedBody = """
+            # Git Guardrails
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+            Refuse destructive git commands.
+            """;
+        File.WriteAllText(Path.Combine(skillDir, "SKILL.md"), skillFile);
+
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
         var tool = new SkillTool(locator);
 
         var result = await tool.ExecuteAsync(
@@ -34,7 +39,7 @@ public sealed class SkillToolTests
             TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
-        Assert.Equal(skillBody, result.Output);
+        Assert.Equal(expectedBody, result.Output);
     }
 
     [Fact]
@@ -58,17 +63,18 @@ public sealed class SkillToolTests
 
         var workspaceSkillDir = Path.Combine(workspace.Path, ".wfx", "skills", "shared");
         Directory.CreateDirectory(workspaceSkillDir);
-        var workspaceBody = """
+        File.WriteAllText(
+            Path.Combine(workspaceSkillDir, "SKILL.md"),
+            """
             ---
             name: shared
             description: Workspace version.
             ---
 
             Workspace body.
-            """;
-        File.WriteAllText(Path.Combine(workspaceSkillDir, "SKILL.md"), workspaceBody);
+            """);
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
         var tool = new SkillTool(locator);
 
         var result = await tool.ExecuteAsync(
@@ -77,7 +83,7 @@ public sealed class SkillToolTests
             TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
-        Assert.Equal(workspaceBody, result.Output);
+        Assert.Equal("Workspace body.", result.Output.Trim());
     }
 
     [Fact]
@@ -86,7 +92,7 @@ public sealed class SkillToolTests
         using var userProfile = new TemporaryDirectory();
         using var workspace = new TemporaryDirectory();
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
         var tool = new SkillTool(locator);
 
         var result = await tool.ExecuteAsync(
@@ -104,7 +110,7 @@ public sealed class SkillToolTests
         using var userProfile = new TemporaryDirectory();
         using var workspace = new TemporaryDirectory();
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
         var tool = new SkillTool(locator);
 
         Assert.Equal(ApprovalLevel.ReadOnly, tool.Classify(JsonDocument.Parse("{\"name\": \"x\"}").RootElement));
@@ -116,7 +122,7 @@ public sealed class SkillToolTests
         using var userProfile = new TemporaryDirectory();
         using var workspace = new TemporaryDirectory();
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
         var tool = new SkillTool(locator);
 
         Assert.Equal("skill", tool.Definition.Name);

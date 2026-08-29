@@ -223,7 +223,7 @@ internal static class Program
             sessionStore);
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
         await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, cancellationToken).ConfigureAwait(false);
-        var skills = DiscoverSkills(userProfile, workspace, arguments);
+        var skills = DiscoverSkills(userProfile, workspace, arguments, cancellationToken);
         var agent = CreateAgent(settings, workspace, arguments, provider, settings.MaxIterations, [], session, console, timeProvider, mcp.Tools, skills);
         return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
     }
@@ -249,7 +249,7 @@ internal static class Program
 
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
         await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, cancellationToken).ConfigureAwait(false);
-        var skills = DiscoverSkills(userProfile, workspace, arguments);
+        var skills = DiscoverSkills(userProfile, workspace, arguments, cancellationToken);
         var agent = CreateAgent(
             settings,
             workspace,
@@ -340,7 +340,7 @@ internal static class Program
 
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
         await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, cancellationToken).ConfigureAwait(false);
-        var skills = DiscoverSkills(userProfile, workspace, arguments);
+        var skills = DiscoverSkills(userProfile, workspace, arguments, cancellationToken);
         IReadOnlyList<ModelMessage> conversation = transcript?.Messages ?? [];
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -589,10 +589,14 @@ internal static class Program
         }
     }
 
-    private static ISkillLocator DiscoverSkills(string? userProfile, WorkspaceInfo workspace, CliArguments arguments)
+    private static ISkillLocator DiscoverSkills(
+        string? userProfile,
+        WorkspaceInfo workspace,
+        CliArguments arguments,
+        CancellationToken cancellationToken = default)
     {
         userProfile ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var skills = SkillLocator.Discover(userProfile, workspace.Root);
+        var skills = SkillLocator.Discover(userProfile, workspace.Root, cancellationToken);
         var reportSkillWarnings = !arguments.Json || !arguments.Quiet;
         if (reportSkillWarnings)
         {

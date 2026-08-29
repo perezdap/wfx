@@ -744,7 +744,9 @@ public sealed class JsonEventStreamTests
 
         var skillDir = Path.Combine(workspace.Path, ".wfx", "skills", "my-skill");
         Directory.CreateDirectory(skillDir);
-        var skillBody = """
+        File.WriteAllText(
+            Path.Combine(skillDir, "SKILL.md"),
+            """
             ---
             name: my-skill
             description: Test skill for integration.
@@ -753,8 +755,7 @@ public sealed class JsonEventStreamTests
             # My Skill
 
             These are the full instructions.
-            """;
-        File.WriteAllText(Path.Combine(skillDir, "SKILL.md"), skillBody);
+            """);
 
         Environment.CurrentDirectory = workspace.Path;
         try
@@ -794,7 +795,10 @@ public sealed class JsonEventStreamTests
                 e.GetProperty("event").GetString() == "tool_completed" &&
                 e.GetProperty("name").GetString() == "skill");
             var resultContent = skillTool.GetProperty("result").GetProperty("content").GetString();
-            Assert.Contains(skillBody, resultContent);
+            Assert.Contains("# My Skill", resultContent);
+            Assert.Contains("These are the full instructions.", resultContent);
+            Assert.DoesNotContain("name: my-skill", resultContent);
+            Assert.DoesNotContain("description: Test skill for integration.", resultContent);
         }
         finally
         {

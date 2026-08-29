@@ -8,7 +8,7 @@ public sealed class SkillContextProviderTests
     [Fact]
     public async Task ReturnsNullWhenNoSkillsAvailable()
     {
-        var locator = SkillLocator.Discover(null, null);
+        var locator = SkillLocator.Discover(null, null, TestContext.Current.CancellationToken);
         var provider = new SkillContextProvider(locator);
 
         var context = await provider.GetContextAsync(TestContext.Current.CancellationToken);
@@ -37,7 +37,7 @@ public sealed class SkillContextProviderTests
             Refuse destructive git commands.
             """);
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
         var provider = new SkillContextProvider(locator);
 
         var context = await provider.GetContextAsync(TestContext.Current.CancellationToken);
@@ -81,7 +81,7 @@ public sealed class SkillContextProviderTests
             Body.
             """);
 
-        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var locator = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
         var provider = new SkillContextProvider(locator);
 
         var context = await provider.GetContextAsync(TestContext.Current.CancellationToken);

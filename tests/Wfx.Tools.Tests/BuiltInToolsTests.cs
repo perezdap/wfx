@@ -37,7 +37,7 @@ public sealed class BuiltInToolsTests
             # Git Guardrails
             """);
 
-        var skills = SkillLocator.Discover(userProfile.Path, workspace.Path);
+        var skills = SkillLocator.Discover(userProfile.Path, workspace.Path, TestContext.Current.CancellationToken);
         var registry = BuiltInTools.Create(workspace.Path, skills);
 
         Assert.Contains("skill", registry.Definitions.Select(static definition => definition.Name));
