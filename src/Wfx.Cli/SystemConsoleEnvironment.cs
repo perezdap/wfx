@@ -10,4 +10,6 @@ internal sealed class SystemConsoleEnvironment : IConsoleEnvironment
     public bool IsInputRedirected => Console.IsInputRedirected;
 
     public bool IsOutputRedirected => Console.IsOutputRedirected;
+
+    public bool IsErrorRedirected => Console.IsErrorRedirected;
 }

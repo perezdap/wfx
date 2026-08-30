@@ -27,7 +27,7 @@ public sealed class SessionStartupTests
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(0, exitCode);
-            Assert.Contains("finished", console.Output.ToString());
+            Assert.Contains("finished", console.ErrorText);
             Assert.Contains("wfx: warning: Could not create session:", console.ErrorText);
             Assert.Contains("The invocation will continue without a session.", console.ErrorText);
             Assert.True(File.Exists(sessionsPath));
@@ -51,7 +51,7 @@ public sealed class SessionStartupTests
             TestContext.Current.CancellationToken);
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("finished", console.Output.ToString());
+        Assert.Contains("finished", console.ErrorText);
         Assert.Contains(
             "wfx: warning: Could not create session: session ACL denied. The invocation will continue without a session.",
             console.ErrorText);
@@ -321,7 +321,7 @@ public sealed class SessionStartupTests
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(0, forced);
-            Assert.Contains($"Resumed session: {sessionId}", console.Output.ToString());
+            Assert.Contains($"Resumed session: {sessionId}", console.ErrorText);
             Assert.Contains("\"type\":\"workspace_rebound\"", File.ReadAllText(sessionPath));
             Assert.Equal(WorkspaceInfo.Discover().Root, store.Read(sessionId).Workspace);
         }
@@ -414,7 +414,7 @@ public sealed class SessionStartupTests
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(0, exitCode);
-            Assert.Contains($"Resumed session: {created.Id}", console.Output.ToString());
+            Assert.Contains($"Resumed session: {created.Id}", console.ErrorText);
             var events = File.ReadAllLines(created.FilePath);
             Assert.Equal(1, events.Count(static line => line.Contains("\"type\":\"header\"", StringComparison.Ordinal)));
             Assert.Equal(2, events.Count(static line => line.Contains("\"event\":\"turn_started\"", StringComparison.Ordinal)));
@@ -704,7 +704,7 @@ public sealed class SessionStartupTests
             TestContext.Current.CancellationToken);
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("wfx resume", console.Output.ToString());
+        Assert.Contains("wfx resume", console.ErrorText);
     }
 
     [Fact]

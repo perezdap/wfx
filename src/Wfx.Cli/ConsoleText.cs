@@ -9,6 +9,10 @@ internal static class ConsoleText
 
     public const string AsciiMarker = "*";
 
+    public const string Bullet = "•";
+
+    public const string AsciiBullet = "-";
+
     public const string Ellipsis = "…";
 
     public const string AsciiEllipsis = "...";

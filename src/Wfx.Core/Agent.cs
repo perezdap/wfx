@@ -65,7 +65,7 @@ public interface IAgentObserver
             rejected.Reason,
             cancellationToken),
         UsageEvent usage => OnUsageAsync(usage.Usage, cancellationToken),
-        TurnCompletedEvent => ValueTask.CompletedTask,
+        TurnCompletedEvent => OnTurnCompletedAsync(cancellationToken),
         TurnInterruptedEvent => OnTurnInterruptedAsync(cancellationToken),
         TurnErrorEvent error => OnTurnErrorAsync(
             error.Exception ?? new InvalidOperationException(error.Error.Message),
@@ -92,6 +92,12 @@ public interface IAgentObserver
         string argumentsJson,
         string reason,
         CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+    /// <summary>
+    /// Raised once when a turn ends without tool calls, so an observer can close whatever it
+    /// has part-written.
+    /// </summary>
+    ValueTask OnTurnCompletedAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
     /// <summary>
     /// Raised once at the start of every turn with the endpoint identity the turn runs under.
