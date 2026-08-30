@@ -114,6 +114,22 @@ _Avoid_: protocol version, stream version, event version
 The check `wfx` performs before starting a turn when stdin is not a TTY: if the active approval mode can prompt (`always` or `workspace`), the process exits with a usage error naming the two accepted fixes (`--approval never` or `--yolo`). Distinct from per-tool approval decisions, which continue to flow through `OnToolRejectedAsync` as structured rejections the model can see.
 _Avoid_: approval check, TTY gate, noninteractive check
 
+**Human output**:
+What a turn command writes when `--json` is absent. Every human-facing byte — narration, final response, tool lines, prompts, decoration — goes to stderr as one ordered stream. Stdout receives the final response once, at turn end, and only when stdout is redirected; on a terminal stdout carries nothing.
+_Avoid_: pretty output, text mode, TTY output, interactive output
+
+**Final response**:
+The assistant text from the iteration that ends a turn without tool calls. It is what `turn_completed.final_response` carries, and in human output the only thing a redirected stdout receives.
+_Avoid_: answer, result, completion, output
+
+**Narration**:
+Assistant text from an iteration that ended in tool calls — the model saying what it is about to do, as distinct from the final response. Narration is human-facing only and never reaches stdout. Not reasoning: provider items are a separate concept.
+_Avoid_: intermediate text, thinking, preamble, commentary
+
+**Decoration**:
+Anything WFX adds around the model's text for a human reader: blank-line separation, indentation, markers, colour, spinners. Decoration lives on stderr only and never reaches stdout. It is suppressed by a presentation flag, when stderr is redirected, and by `NO_COLOR`. Suppressed means absent, not replaced: with decoration off the model's text passes through as it was sent, markdown markers included.
+_Avoid_: formatting, styling, chrome
+
 **Presentation flag**:
 A flag that affects only human-facing decoration on stderr — spinners, ANSI, progress dots, tool-call summary lines. `--quiet` is the presentation flag; under `--json` it silences stderr chatter, under human output it silences spinners and ANSI. Presentation flags never change what appears on stdout.
 _Avoid_: output flag, verbosity flag (verbosity is separate)

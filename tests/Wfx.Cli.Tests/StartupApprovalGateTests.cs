@@ -137,7 +137,7 @@ public sealed class StartupApprovalGateTests
             consoleEnvironment: FakeConsoleEnvironment.Redirected);
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("finished", console.Output.ToString());
+        Assert.Contains("finished", console.ErrorText);
     }
 
     [Fact]
@@ -154,7 +154,7 @@ public sealed class StartupApprovalGateTests
             consoleEnvironment: FakeConsoleEnvironment.Terminal);
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("finished", console.Output.ToString());
+        Assert.Contains("finished", console.ErrorText);
     }
 
     [Theory]
@@ -185,7 +185,7 @@ public sealed class StartupApprovalGateTests
             terminal ? FakeConsoleEnvironment.Terminal : FakeConsoleEnvironment.Redirected);
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("finished", console.Output.ToString());
+        Assert.Contains("finished", console.ErrorText);
         Assert.DoesNotContain("--approval never", console.ErrorText);
     }
 

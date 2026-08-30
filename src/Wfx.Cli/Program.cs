@@ -18,6 +18,8 @@ internal static class Program
 
     private static bool _unicodeConsole;
 
+    private static AnsiPalette _palette;
+
     public static async Task<int> Main(string[] args)
     {
         _unicodeConsole = TryEnableUnicodeConsole();
@@ -46,6 +48,9 @@ internal static class Program
         try
         {
             var arguments = CliArguments.Parse(args);
+
+            // Decoration lives on stderr (ADR 0008), so it is gated on stderr, not stdout.
+            _palette = new AnsiPalette(!arguments.Quiet && !console.IsErrorRedirected && !NoColorRequested());
             if (arguments.ShowHelp)
             {
                 PrintHelp();
@@ -99,7 +104,7 @@ internal static class Program
             {
                 // Non-turn commands follow the outer exit-code table only: a configuration
                 // error before the result object can be built is exit 2, not a usage error.
-                Console.Error.WriteLine($"wfx: {exception.Message}");
+                Console.Error.WriteLine(_palette.Red($"wfx: {exception.Message}"));
                 return 2;
             }
 
@@ -107,14 +112,14 @@ internal static class Program
             {
                 foreach (var warning in settings.Warnings)
                 {
-                    Console.Error.WriteLine($"wfx: warning: {warning}");
+                    Console.Error.WriteLine(_palette.Yellow($"wfx: warning: {warning}"));
                 }
             }
 
             var refusal = StartupApprovalGate.Evaluate(arguments.Command, settings.Approval, console);
             if (refusal is not null)
             {
-                Console.Error.WriteLine(refusal.Message);
+                Console.Error.WriteLine(_palette.Red(refusal.Message));
                 return refusal.ExitCode;
             }
 
@@ -184,7 +189,7 @@ internal static class Program
         }
         catch (Exception exception)
         {
-            Console.Error.WriteLine($"wfx: {exception.Message}");
+            Console.Error.WriteLine(_palette.Red($"wfx: {exception.Message}"));
             return 1;
         }
     }
@@ -207,9 +212,9 @@ internal static class Program
         {
             if (!arguments.Quiet)
             {
-                Console.Error.WriteLine(settings.Profile is null
+                Console.Error.WriteLine(_palette.Dim(settings.Profile is null
                     ? $"wfx: {settings.Provider}/{settings.Model}"
-                    : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})");
+                    : $"wfx: profile '{settings.Profile}' ({settings.Provider}/{settings.Model})"));
             }
 
             WarnIfYolo(settings);
@@ -225,7 +230,7 @@ internal static class Program
         await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, cancellationToken).ConfigureAwait(false);
         var skills = DiscoverSkills(userProfile, workspace, cancellationToken);
         var agent = CreateAgent(settings, workspace, arguments, provider, settings.MaxIterations, [], session, console, timeProvider, mcp.Tools, skills);
-        return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
+        return await RunTurnCommandAsync(agent, prompt, arguments, console, cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<int> RunJsonResumeAsync(
@@ -262,13 +267,14 @@ internal static class Program
             timeProvider,
             mcp.Tools,
             skills);
-        return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
+        return await RunTurnCommandAsync(agent, prompt, arguments, console, cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<int> RunTurnCommandAsync(
         Agent agent,
         string prompt,
         CliArguments arguments,
+        IConsoleEnvironment console,
         CancellationToken cancellationToken)
     {
         try
@@ -276,7 +282,7 @@ internal static class Program
             var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
             if (!arguments.Json)
             {
-                PrintTrailingNewline(result);
+                WriteFinalResponseToStdout(result, console);
             }
 
             if (result.Status is AgentRunStatus.IterationLimitReached)
@@ -298,7 +304,7 @@ internal static class Program
         }
         catch (Exception exception) when (arguments.Json)
         {
-            Console.Error.WriteLine($"wfx: {exception.Message}");
+            Console.Error.WriteLine(_palette.Red($"wfx: {exception.Message}"));
             return exception is OperationCanceledException or TimeoutException ? 4 : 5;
         }
     }
@@ -321,22 +327,22 @@ internal static class Program
             EnsureRunnable(settings);
         }
 
-        Console.WriteLine("WFX");
-        Console.WriteLine();
+        Console.Error.WriteLine(_palette.Dim("WFX"));
+        Console.Error.WriteLine();
         PrintActiveModel(settings);
-        Console.WriteLine($"Workspace: {workspace.Root}");
+        Console.Error.WriteLine(_palette.Dim($"Workspace: {workspace.Root}"));
         WarnIfYolo(settings);
         using var createdSession = resumedSession is null
-            ? OpenSession(arguments, workspace, Console.Out, "Session: ", sessionStore)
+            ? OpenSession(arguments, workspace, Console.Error, "Session: ", sessionStore)
             : null;
         var session = resumedSession?.Log ?? createdSession;
         var transcript = resumedSession?.Transcript;
         if (resumedSession is not null)
         {
-            Console.WriteLine($"Resumed session: {resumedSession.Transcript.SessionId}");
+            Console.Error.WriteLine(_palette.Dim($"Resumed session: {resumedSession.Transcript.SessionId}"));
         }
 
-        Console.WriteLine();
+        Console.Error.WriteLine();
 
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
         await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, cancellationToken).ConfigureAwait(false);
@@ -344,7 +350,7 @@ internal static class Program
         IReadOnlyList<ModelMessage> conversation = transcript?.Messages ?? [];
         while (!cancellationToken.IsCancellationRequested)
         {
-            Console.Write("> ");
+            Console.Error.Write(_palette.Bold("> "));
             var prompt = await ReadConsoleLineAsync(cancellationToken).ConfigureAwait(false);
             if (prompt is null || prompt.Equals("/exit", StringComparison.OrdinalIgnoreCase) ||
                 prompt.Equals("/quit", StringComparison.OrdinalIgnoreCase))
@@ -360,7 +366,7 @@ internal static class Program
             if (prompt.Equals("/help", StringComparison.OrdinalIgnoreCase))
             {
                 PrintInteractiveHelp();
-                Console.WriteLine();
+                Console.Error.WriteLine();
                 continue;
             }
 
@@ -385,14 +391,14 @@ internal static class Program
 
                         foreach (var warning in settings.Warnings)
                         {
-                            Console.Error.WriteLine($"wfx: warning: {warning}");
+                            Console.Error.WriteLine(_palette.Yellow($"wfx: warning: {warning}"));
                         }
 
                         PrintActiveModel(settings);
                     }
                 }
 
-                Console.WriteLine();
+                Console.Error.WriteLine();
                 continue;
             }
 
@@ -402,14 +408,14 @@ internal static class Program
                 var agent = CreateAgent(settings, workspace, arguments, provider, null, conversation, session, console, timeProvider, mcp.Tools, skills);
                 var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
                 conversation = result.Messages;
-                PrintTrailingNewline(result);
+                WriteFinalResponseToStdout(result, console);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                Console.Error.WriteLine($"wfx: {exception.Message}");
+                Console.Error.WriteLine(_palette.Red($"wfx: {exception.Message}"));
             }
 
-            Console.WriteLine();
+            Console.Error.WriteLine();
         }
 
         return 0;
@@ -468,14 +474,14 @@ internal static class Program
             return null;
         }
 
-        Console.WriteLine("Configured models:");
+        Console.Error.WriteLine("Configured models:");
         for (var index = 0; index < settings.ConfiguredModels.Count; index++)
         {
             var model = settings.ConfiguredModels[index];
-            Console.WriteLine($"  {index + 1}. {model.Profile}/{model.Provider}: {model.Model}");
+            Console.Error.WriteLine($"  {index + 1}. {model.Profile}/{model.Provider}: {model.Model}");
         }
 
-        Console.Write("Select model: ");
+        Console.Error.Write("Select model: ");
         var selection = await ReadConsoleLineAsync(cancellationToken).ConfigureAwait(false);
         return selection is null ? null : ModelSwitchRequest.Picker(selection.Trim());
     }
@@ -504,8 +510,8 @@ internal static class Program
     {
         if (settings.Approval == ApprovalMode.AllowAll)
         {
-            Console.Error.WriteLine(
-                "wfx: warning: approval is yolo; tool prompts are bypassed. Workspace path checks still apply.");
+            Console.Error.WriteLine(_palette.Yellow(
+                "wfx: warning: approval is yolo; tool prompts are bypassed. Workspace path checks still apply."));
         }
     }
 
@@ -513,32 +519,51 @@ internal static class Program
     {
         if (settings.Profile is not null)
         {
-            Console.WriteLine($"Profile: {settings.Profile}");
+            Console.Error.WriteLine(_palette.Dim($"Profile: {settings.Profile}"));
         }
 
         var model = string.IsNullOrWhiteSpace(settings.Model) ? "(not configured)" : settings.Model;
-        Console.WriteLine($"Model: {settings.Provider}/{model}");
+        Console.Error.WriteLine(_palette.Dim($"Model: {settings.Provider}/{model}"));
     }
 
     private static void PrintInteractiveHelp()
     {
-        Console.WriteLine("Commands:");
-        Console.WriteLine("  /model             List configured models and choose one");
-        Console.WriteLine("  /model <id>        Use a model ID on the current connection");
-        Console.WriteLine("  /help              Show interactive commands");
-        Console.WriteLine("  /exit, /quit       End the session");
-        Console.WriteLine();
-        Console.WriteLine("Resume this session later with 'wfx resume' (or 'wfx resume --id <session-id>').");
+        Console.Error.WriteLine("Commands:");
+        Console.Error.WriteLine("  /model             List configured models and choose one");
+        Console.Error.WriteLine("  /model <id>        Use a model ID on the current connection");
+        Console.Error.WriteLine("  /help              Show interactive commands");
+        Console.Error.WriteLine("  /exit, /quit       End the session");
+        Console.Error.WriteLine();
+        Console.Error.WriteLine("Resume this session later with 'wfx resume' (or 'wfx resume --id <session-id>').");
     }
 
-    private static void PrintTrailingNewline(AgentRunResult result)
+    /// <summary>
+    /// The NO_COLOR convention: colour is disabled when the variable is present and non-empty.
+    /// </summary>
+    private static bool NoColorRequested() =>
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"));
+
+    /// <summary>
+    /// Writes the final response to stdout, and only when stdout is redirected (ADR 0008). A turn
+    /// that did not complete has no final response, so a redirected stdout stays empty.
+    /// </summary>
+    private static void WriteFinalResponseToStdout(AgentRunResult result, IConsoleEnvironment console)
     {
-        var text = result.Status is AgentRunStatus.Completed
-            ? result.FinalResponse
-            : result.AccumulatedText;
-        if (!string.IsNullOrEmpty(text) && !text.EndsWith('\n'))
+        if (!console.IsOutputRedirected || result.Status is not AgentRunStatus.Completed)
         {
-            Console.WriteLine();
+            return;
+        }
+
+        var text = result.FinalResponse;
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        Console.Out.Write(text);
+        if (!text.EndsWith('\n'))
+        {
+            Console.Out.WriteLine();
         }
     }
 
@@ -643,9 +668,9 @@ internal static class Program
 
         if (arguments.Json)
         {
-            // stdout is the NDJSON event stream; the console observer would interleave text
-            // deltas on stdout and per-turn progress on stderr, neither of which belongs there
-            // under --json. Approval prompts are separate and still reach stderr.
+            // stdout is the NDJSON event stream, so the console observer's human rendering —
+            // which is all on stderr (ADR 0008) — would duplicate the stream's content as
+            // decoration. Approval prompts are separate and still reach stderr.
             observers.Add(new NdjsonAgentObserver(Console.Out));
         }
         else
@@ -654,8 +679,9 @@ internal static class Program
                 arguments.Verbose,
                 arguments.Debug,
                 arguments.Quiet,
-                _unicodeConsole && !arguments.Quiet && !console.IsOutputRedirected,
-                secrets));
+                _unicodeConsole && !arguments.Quiet && !console.IsErrorRedirected,
+                secrets,
+                _palette));
         }
 
         return new Agent(
@@ -691,7 +717,7 @@ internal static class Program
             {
                 if (reportWarnings)
                 {
-                    Console.Error.WriteLine($"wfx: warning: {message}");
+                    Console.Error.WriteLine(_palette.Yellow($"wfx: warning: {message}"));
                 }
             },
             cancellationToken).ConfigureAwait(false);
@@ -771,8 +797,8 @@ internal static class Program
             return false;
         }
 
-        Console.Error.WriteLine($"Approve {call}");
-        Console.Error.Write($"  [{request.Level}] y/N? ");
+        Console.Error.WriteLine(_palette.Yellow($"Approve {call}"));
+        Console.Error.Write(_palette.Yellow($"  [{request.Level}] y/N? "));
         try
         {
             var answer = await ReadConsoleLineAsync(cancellationToken).ConfigureAwait(false);

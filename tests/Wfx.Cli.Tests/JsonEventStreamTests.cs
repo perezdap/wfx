@@ -123,7 +123,8 @@ public sealed class JsonEventStreamTests
                 [.. arguments],
                 httpClient,
                 new TestSessionStore(),
-                TestContext.Current.CancellationToken);
+                TestContext.Current.CancellationToken,
+                consoleEnvironment: FakeConsoleEnvironment.OutputRedirected);
             return (exitCode, console.Output.ToString());
         }
     }
@@ -144,9 +145,9 @@ public sealed class JsonEventStreamTests
             TestContext.Current.CancellationToken);
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("WFX", console.Output.ToString());
-        Assert.DoesNotContain("\"event\"", console.Output.ToString());
-        Assert.Empty(console.ErrorText);
+        Assert.Empty(console.Output.ToString());
+        Assert.Contains("WFX", console.ErrorText);
+        Assert.DoesNotContain("\"event\"", console.ErrorText);
     }
 
     [Fact]
@@ -486,7 +487,7 @@ public sealed class JsonEventStreamTests
     }
 
     [Fact]
-    public async Task RedirectedOutputSuppressesTerminalDecorationWithoutInferringJsonOrQuiet()
+    public async Task RedirectionSuppressesTerminalDecorationWithoutInferringJsonOrQuiet()
     {
         using var sessions = new TemporaryDirectory();
         using var httpClient = CliRunner.CreateCompletedHttpClient();
