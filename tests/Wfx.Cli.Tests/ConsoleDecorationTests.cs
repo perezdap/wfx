@@ -6,7 +6,7 @@ namespace Wfx.Cli.Tests;
 
 /// <summary>
 /// Decoration on the stderr stream: blank lines between blocks, tool calls indented, and the
-/// basic-eight palette gated on stderr rather than stdout (ADRs 0008 and 0009).
+/// basic-eight palette gated on stderr rather than stdout (ADRs 0011 and 0009).
 /// </summary>
 [Collection("Console")]
 public sealed partial class ConsoleDecorationTests
@@ -51,7 +51,7 @@ public sealed partial class ConsoleDecorationTests
 
     /// <summary>
     /// `wfx run "..." &gt; notes.md` at a terminal: the file is bare, but the human watching the
-    /// terminal still gets a decorated stderr. Decoration follows stderr, not stdout (ADR 0008).
+    /// terminal still gets a decorated stderr. Decoration follows stderr, not stdout (ADR 0011).
     /// </summary>
     [Fact]
     public async Task RedirectingOnlyStdoutKeepsDecorationOnTheTerminal()

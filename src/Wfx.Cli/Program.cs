@@ -48,7 +48,7 @@ internal static class Program
         {
             var arguments = CliArguments.Parse(args);
 
-            // Decoration lives on stderr (ADR 0008), so it is gated on stderr, not stdout.
+            // Decoration lives on stderr (ADR 0011), so it is gated on stderr, not stdout.
             _palette = new AnsiPalette(!arguments.Quiet && !console.IsErrorRedirected && !NoColorRequested());
             if (arguments.ShowHelp)
             {
@@ -551,7 +551,7 @@ internal static class Program
         !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"));
 
     /// <summary>
-    /// Writes the final response to stdout, and only when stdout is redirected (ADR 0008). A turn
+    /// Writes the final response to stdout, and only when stdout is redirected (ADR 0011). A turn
     /// that did not complete has no final response, so a redirected stdout stays empty.
     /// </summary>
     private static void WriteFinalResponseToStdout(AgentRunResult result, IConsoleEnvironment console)
@@ -679,7 +679,7 @@ internal static class Program
         if (arguments.Json)
         {
             // stdout is the NDJSON event stream, so the console observer's human rendering —
-            // which is all on stderr (ADR 0008) — would duplicate the stream's content as
+            // which is all on stderr (ADR 0011) — would duplicate the stream's content as
             // decoration. Approval prompts are separate and still reach stderr.
             observers.Add(new NdjsonAgentObserver(Console.Out));
         }

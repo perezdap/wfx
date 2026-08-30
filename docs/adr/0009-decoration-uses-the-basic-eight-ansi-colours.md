@@ -2,7 +2,7 @@
 
 ## Context
 
-Decoration (ADR 0008) needs colour to separate machinery from prose. Two colour spaces were available: the basic ANSI set (`30`–`37`, `90`–`97`, plus `1m` bold and `2m` dim), whose hues are resolved by the user's terminal theme, or 256-colour (`38;5;NNN`), which renders identically everywhere.
+Decoration (ADR 0011) needs colour to separate machinery from prose. Two colour spaces were available: the basic ANSI set (`30`–`37`, `90`–`97`, plus `1m` bold and `2m` dim), whose hues are resolved by the user's terminal theme, or 256-colour (`38;5;NNN`), which renders identically everywhere.
 
 ## Decision
 

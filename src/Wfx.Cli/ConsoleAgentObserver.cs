@@ -3,7 +3,7 @@ using Wfx.Core;
 namespace Wfx.Cli;
 
 /// <summary>
-/// Renders a turn for a human on stderr (ADR 0008): prose at column zero, tool calls indented
+/// Renders a turn for a human on stderr (ADR 0011): prose at column zero, tool calls indented
 /// and dimmed, and a blank line between blocks so nothing runs together.
 /// </summary>
 internal sealed class ConsoleAgentObserver(

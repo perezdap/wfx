@@ -4,7 +4,7 @@ using Wfx.Core;
 namespace Wfx.Cli.Tests;
 
 /// <summary>
-/// Human output is a stderr stream; stdout carries only a redirected final response (ADR 0008).
+/// Human output is a stderr stream; stdout carries only a redirected final response (ADR 0011).
 /// </summary>
 [Collection("Console")]
 public sealed class HumanOutputTests

@@ -26,8 +26,8 @@ A line buffer was rejected for the streaming cost above. Rendering nothing was v
 ## Consequences
 
 - Token-by-token streaming survives; a stall is possible only inside an actual `**…**` or `` `…` ``.
-- Bold and dim share the SGR 22 closing sequence, so a span closing inside a heading reopens the heading's weight afterwards. Nesting any further weight would need a depth counter, which the closed feature list avoids.
-- Styling never touches stdout (ADR 0008), so a redirected `> notes.md` receives the model's raw markdown source — the right content for a `.md` file.
+- Bold and dim share the SGR 22 closing sequence, so a span closing inside a heading reopens the heading's weight afterwards. Inline markers inside a bold span are emitted literally as part of that span rather than scanned recursively; nesting any further weight would need a depth counter, which the closed feature list avoids.
+- Styling never touches stdout (ADR 0011), so a redirected `> notes.md` receives the model's raw markdown source — the right content for a `.md` file.
 - The exclusions are deliberate, not gaps:
   - **Italics**: `*foo*` collides with literal asterisks, `_foo_` with `snake_case` identifiers a coding agent emits constantly. Poor precision for low value.
   - **Tables**: require every row before the first can be drawn, plus display-width measurement for CJK and emoji.

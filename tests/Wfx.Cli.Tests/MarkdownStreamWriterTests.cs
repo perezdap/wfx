@@ -31,6 +31,18 @@ public sealed class MarkdownStreamWriterTests
         Assert.Equal($"call {Esc}[2mWrite(){Esc}[22m now", Render("call `Write()` now"));
     }
 
+    /// <summary>
+    /// The closed feature list does not recursively scan inline markers inside bold. This avoids
+    /// introducing nested weight state merely because the bold span contains backticks.
+    /// </summary>
+    [Fact]
+    public void InlineCodeMarkersInsideBoldRemainLiteral()
+    {
+        Assert.Equal(
+            $"{Esc}[1mtext with `code` tail{Esc}[22m",
+            Render("**text with `code` tail**"));
+    }
+
     [Fact]
     public void AtxHeadingsBecomeBoldWithoutTheHashes()
     {

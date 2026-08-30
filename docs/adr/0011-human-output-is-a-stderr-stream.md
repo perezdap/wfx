@@ -1,4 +1,4 @@
-# 0008 — Human output is a stderr stream; stdout carries only a redirected final response
+# 0011 — Human output is a stderr stream; stdout carries only a redirected final response
 
 ## Context
 
