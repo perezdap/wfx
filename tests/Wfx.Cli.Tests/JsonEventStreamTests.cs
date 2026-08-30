@@ -247,6 +247,57 @@ public sealed class JsonEventStreamTests
     }
 
     [Fact]
+    public async Task JsonQuietStillEmitsSkillWarnings()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient("The injected provider must be used.");
+        using var console = new ConsoleCapture();
+        var originalDirectory = Environment.CurrentDirectory;
+        var userProfile = Path.Combine(workspace.Path, "profile");
+        Directory.CreateDirectory(Path.Combine(workspace.Path, ".wfx"));
+        Directory.CreateDirectory(Path.Combine(userProfile, ".wfx"));
+        File.WriteAllText(
+            Path.Combine(workspace.Path, ".wfx", "config.json"),
+            """{ "provider": "local", "base_url": "https://example.test/v1", "model": "fake-model", "approval": "never" }""");
+
+        var skillDir = Path.Combine(userProfile, ".wfx", "skills", "bad");
+        Directory.CreateDirectory(skillDir);
+        File.WriteAllText(
+            Path.Combine(skillDir, "SKILL.md"),
+            """
+            ---
+            not a valid frontmatter line without colon value
+            ---
+
+            Body.
+            """);
+
+        Environment.CurrentDirectory = workspace.Path;
+        try
+        {
+            var exitCode = await CliRunner.RunAsync(
+                ["run", "--json", "--quiet", "inspect"],
+                httpClient,
+                new SessionStore(Path.Combine(workspace.Path, "sessions")),
+                TestContext.Current.CancellationToken,
+                userProfile,
+                modelProviderFactory: (_, _) => new SequenceModelProvider([
+                    new ModelCompleted(new ModelMessage(ModelRole.Assistant, "done"))
+                ]));
+
+            Assert.Equal(0, exitCode);
+            Assert.Contains("wfx: warning:", console.ErrorText);
+            var events = ParseLines(console.Output.ToString());
+            Assert.Equal("turn_started", events[0].GetProperty("event").GetString());
+            Assert.Equal("turn_completed", events[^1].GetProperty("event").GetString());
+        }
+        finally
+        {
+            Environment.CurrentDirectory = originalDirectory;
+        }
+    }
+
+    [Fact]
     public async Task JsonAlonePreservesPreStreamWarningsWithoutTurnProgress()
     {
         using var workspace = new TemporaryDirectory();
