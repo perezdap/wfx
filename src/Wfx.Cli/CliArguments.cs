@@ -9,7 +9,8 @@ internal enum CliCommand
     Models,
     Config,
     Sessions,
-    Resume
+    Resume,
+    McpAuth
 }
 
 internal sealed record CliArguments(
@@ -24,7 +25,9 @@ internal sealed record CliArguments(
     bool Quiet,
     bool Force,
     bool ShowHelp,
-    bool ShowVersion)
+    bool ShowVersion,
+    string? McpServerName = null,
+    bool McpRevoke = false)
 {
     public static CliArguments Parse(string[] args)
     {
@@ -49,6 +52,9 @@ internal sealed record CliArguments(
         var showVersion = false;
         var commandSelected = false;
         var yoloSpecified = false;
+        var mcpAuthSelected = false;
+        string? mcpServerName = null;
+        var mcpRevoke = false;
 
         for (var index = 0; index < args.Length; index++)
         {
@@ -140,10 +146,31 @@ internal sealed record CliArguments(
                     command = CliCommand.Resume;
                     commandSelected = true;
                     break;
+                case "mcp" when !commandSelected:
+                    command = CliCommand.McpAuth;
+                    commandSelected = true;
+                    break;
+                case "auth" when command == CliCommand.McpAuth && !mcpAuthSelected:
+                    mcpAuthSelected = true;
+                    break;
+                case "--revoke" when command == CliCommand.McpAuth:
+                    mcpRevoke = true;
+                    break;
                 default:
                     if (argument.StartsWith("-", StringComparison.Ordinal))
                     {
                         throw new ArgumentException($"Unknown option '{argument}'.");
+                    }
+
+                    if (command == CliCommand.McpAuth)
+                    {
+                        if (!mcpAuthSelected || mcpServerName is not null)
+                        {
+                            throw new ArgumentException($"Unexpected argument '{argument}'. Use 'wfx mcp auth [--revoke] <server>'.");
+                        }
+
+                        mcpServerName = argument;
+                        break;
                     }
 
                     if (command != CliCommand.Run)
@@ -194,6 +221,16 @@ internal sealed record CliArguments(
             throw new ArgumentException("--json cannot be combined with --no-session because the event stream requires a resumable session ID.");
         }
 
+        if (command == CliCommand.McpAuth && (!mcpAuthSelected || string.IsNullOrWhiteSpace(mcpServerName)) && !showHelp && !showVersion)
+        {
+            throw new ArgumentException("Usage: wfx mcp auth [--revoke] <server>.");
+        }
+
+        if (json && command == CliCommand.McpAuth)
+        {
+            throw new ArgumentException("--json is not supported for 'wfx mcp auth'.");
+        }
+
         return new CliArguments(
             command,
             prompt,
@@ -216,7 +253,9 @@ internal sealed record CliArguments(
             quiet,
             force,
             showHelp,
-            showVersion);
+            showVersion,
+            mcpServerName,
+            mcpRevoke);
     }
 
     private static ApprovalMode ParseApproval(string value)

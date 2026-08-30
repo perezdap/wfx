@@ -38,6 +38,36 @@ public sealed class McpConfigurationTests
     }
 
     [Fact]
+    public void Load_ParsesHttpMcpServer()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(profile.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(profile.Path, ".wfx", "config.json"), """
+            {
+              "mcp_servers": {
+                "remote": {
+                  "url": "https://mcp.example.com/mcp",
+                  "headers": { "X-Api-Key": "secret-value" }
+                }
+              }
+            }
+            """);
+
+        var result = WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: profile.Path);
+
+        var server = Assert.Single(result.McpServers);
+        Assert.Equal("remote", server.Key, StringComparer.OrdinalIgnoreCase);
+        Assert.Null(server.Value.Command);
+        Assert.Equal("https://mcp.example.com/mcp", server.Value.Url);
+        Assert.True(server.Value.IsHttp);
+        Assert.Equal("secret-value", server.Value.Headers["X-Api-Key"]);
+    }
+
+    [Fact]
     public void Load_WithoutMcpServers_ExposesEmptyMap()
     {
         using var workspace = new TemporaryDirectory();
@@ -125,7 +155,29 @@ public sealed class McpConfigurationTests
     }
 
     [Fact]
-    public void Load_RejectsMcpServerWithoutCommand()
+    public void Load_RejectsMcpServerWithBothCommandAndUrl()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(profile.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(profile.Path, ".wfx", "config.json"), """
+            { "mcp_servers": { "echo": { "command": "node", "url": "https://mcp.example.com/mcp" } } }
+            """);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: profile.Path));
+
+        Assert.Contains("'echo'", exception.Message);
+        Assert.Contains("'command'", exception.Message);
+        Assert.Contains("'url'", exception.Message);
+        Assert.Contains("exactly one transport", exception.Message);
+        Assert.Contains("both", exception.Message);
+    }
+
+    [Fact]
+    public void Load_RejectsMcpServerWithNeitherCommandNorUrl()
     {
         using var workspace = new TemporaryDirectory();
         using var profile = new TemporaryDirectory();
@@ -140,7 +192,127 @@ public sealed class McpConfigurationTests
             userProfile: profile.Path));
 
         Assert.Contains("'echo'", exception.Message);
-        Assert.Contains("command", exception.Message);
+        Assert.Contains("'command'", exception.Message);
+        Assert.Contains("'url'", exception.Message);
+        Assert.Contains("neither", exception.Message);
+    }
+
+    [Fact]
+    public void Load_RejectsNonAbsoluteMcpUrl()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(profile.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(profile.Path, ".wfx", "config.json"), """
+            { "mcp_servers": { "echo": { "url": "mcp.example.com/mcp" } } }
+            """);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: profile.Path));
+
+        Assert.Contains("'echo'", exception.Message);
+        Assert.Contains("'url'", exception.Message);
+        Assert.Contains("absolute", exception.Message);
+    }
+
+    [Fact]
+    public void Load_RejectsNonHttpMcpUrlScheme()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(profile.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(profile.Path, ".wfx", "config.json"), """
+            { "mcp_servers": { "echo": { "url": "ftp://mcp.example.com/mcp" } } }
+            """);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: profile.Path));
+
+        Assert.Contains("http", exception.Message);
+    }
+
+    [Fact]
+    public void Load_RejectsNonStringMcpHeaderValues()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(profile.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(profile.Path, ".wfx", "config.json"), """
+            { "mcp_servers": { "echo": { "url": "https://mcp.example.com/mcp", "headers": { "X-Api-Key": 42 } } } }
+            """);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: profile.Path));
+
+        Assert.Contains("'X-Api-Key'", exception.Message);
+    }
+
+    [Fact]
+    public void Load_RejectsStdioKeysOnHttpServer()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(profile.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(profile.Path, ".wfx", "config.json"), """
+            { "mcp_servers": { "echo": { "url": "https://mcp.example.com/mcp", "args": ["server.js"] } } }
+            """);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: profile.Path));
+
+        Assert.Contains("'echo'", exception.Message);
+        Assert.Contains("'args'", exception.Message);
+    }
+
+    [Fact]
+    public void Load_RejectsHeadersOnStdioServer()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(profile.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(profile.Path, ".wfx", "config.json"), """
+            { "mcp_servers": { "echo": { "command": "node", "headers": { "X-Api-Key": "x" } } } }
+            """);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => WfxConfiguration.Load(
+            workspace.Path,
+            environment: new Dictionary<string, string?>(),
+            userProfile: profile.Path));
+
+        Assert.Contains("'echo'", exception.Message);
+        Assert.Contains("'headers'", exception.Message);
+    }
+
+    [Fact]
+    public void LoadUserMcpServers_ReadsUserLayerOnly()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(profile.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(profile.Path, ".wfx", "config.json"), """
+            { "mcp_servers": { "remote": { "url": "https://mcp.example.com/mcp" } } }
+            """);
+
+        var servers = WfxConfiguration.LoadUserMcpServers(profile.Path);
+
+        Assert.Single(servers);
+        Assert.Equal("https://mcp.example.com/mcp", servers["remote"].Url);
+    }
+
+    [Fact]
+    public void LoadUserMcpServers_MissingConfig_ReturnsEmpty()
+    {
+        using var profile = new TemporaryDirectory();
+
+        Assert.Empty(WfxConfiguration.LoadUserMcpServers(profile.Path));
     }
 
     [Fact]

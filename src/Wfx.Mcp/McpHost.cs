@@ -14,9 +14,9 @@ public sealed class McpHost : IAsyncDisposable
 {
     private static readonly TimeSpan DefaultHandshakeTimeout = TimeSpan.FromSeconds(30);
 
-    private readonly IReadOnlyList<McpStdioClient> _clients;
+    private readonly IReadOnlyList<IMcpServerConnection> _clients;
 
-    private McpHost(IReadOnlyList<ITool> tools, IReadOnlyList<McpStdioClient> clients)
+    private McpHost(IReadOnlyList<ITool> tools, IReadOnlyList<IMcpServerConnection> clients)
     {
         Tools = tools;
         _clients = clients;
@@ -29,7 +29,9 @@ public sealed class McpHost : IAsyncDisposable
         string workspaceRoot,
         Action<string> warn,
         CancellationToken cancellationToken = default,
-        TimeSpan? handshakeTimeout = null)
+        TimeSpan? handshakeTimeout = null,
+        HttpClient? httpClient = null,
+        McpTokenStore? tokenStore = null)
     {
         var timeout = handshakeTimeout ?? DefaultHandshakeTimeout;
         var connected = new List<ConnectedServer>();
@@ -39,7 +41,7 @@ public sealed class McpHost : IAsyncDisposable
             ConnectedServer? result = null;
             try
             {
-                result = await ConnectServerAsync(serverName, server, workspaceRoot, timeout, cancellationToken)
+                result = await ConnectServerAsync(serverName, server, workspaceRoot, timeout, httpClient, tokenStore, cancellationToken)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -77,7 +79,7 @@ public sealed class McpHost : IAsyncDisposable
     internal static McpHost Assemble(IReadOnlyList<ConnectedServer> servers, Action<string> warn)
     {
         var tools = new List<ITool>();
-        var clients = new List<McpStdioClient>();
+        var clients = new List<IMcpServerConnection>();
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var server in servers)
         {
@@ -103,11 +105,15 @@ public sealed class McpHost : IAsyncDisposable
         McpServerSettings server,
         string workspaceRoot,
         TimeSpan timeout,
+        HttpClient? httpClient,
+        McpTokenStore? tokenStore,
         CancellationToken cancellationToken)
     {
         using var handshake = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         handshake.CancelAfter(timeout);
-        var client = McpStdioClient.Start(server, workspaceRoot, cancellationToken);
+        var client = server.IsHttp
+            ? (IMcpServerConnection)McpHttpClient.Start(server, serverName, httpClient, tokenStore, cancellationToken)
+            : McpStdioClient.Start(server, workspaceRoot, cancellationToken);
         try
         {
             await client.InitializeAsync(handshake.Token).ConfigureAwait(false);
@@ -124,5 +130,5 @@ public sealed class McpHost : IAsyncDisposable
     private static ValueTask DisposeQuietly(ConnectedServer? server) =>
         server is null ? ValueTask.CompletedTask : server.Client.DisposeAsync();
 
-    internal sealed record ConnectedServer(string Name, McpStdioClient Client, IReadOnlyList<McpToolInfo> Tools);
+    internal sealed record ConnectedServer(string Name, IMcpServerConnection Client, IReadOnlyList<McpToolInfo> Tools);
 }

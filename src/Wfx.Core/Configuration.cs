@@ -174,6 +174,24 @@ public static class WfxConfiguration
     }
 
     /// <summary>
+    /// Reads the user-layer MCP server map without resolving endpoint settings. Used by
+    /// <c>wfx mcp auth</c>, which needs no model endpoint. Project configuration is not
+    /// consulted: MCP servers are a user-layer-only trust boundary (ADR 0007).
+    /// </summary>
+    public static IReadOnlyDictionary<string, McpServerSettings> LoadUserMcpServers(string? userProfile = null)
+    {
+        userProfile ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var userConfig = Path.GetFullPath(Path.Combine(userProfile, ".wfx", "config.json"));
+        if (!File.Exists(userConfig))
+        {
+            return new Dictionary<string, McpServerSettings>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return ReadFile(userConfig).McpServers ??
+            new Dictionary<string, McpServerSettings>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// A project-scoped base_url pins the endpoint, so credentials from broader layers are
     /// suppressed unless the project or CLI scope supplies its own. Both effective resolution
     /// and provenance attribution depend on the same boundary, computed once here.
@@ -609,9 +627,22 @@ public static class WfxConfiguration
             }
 
             var command = GetString(property.Value, "command");
-            if (string.IsNullOrWhiteSpace(command))
+            var url = GetString(property.Value, "url");
+            var hasCommand = !string.IsNullOrWhiteSpace(command);
+            var hasUrl = !string.IsNullOrWhiteSpace(url);
+            if (hasCommand == hasUrl)
             {
-                throw new InvalidOperationException($"MCP server '{property.Name}' must define a non-empty 'command': {path}");
+                throw new InvalidOperationException(
+                    $"MCP server '{property.Name}' must define exactly one transport: " +
+                    $"'command' for stdio or 'url' for HTTP (it defines {(hasCommand ? "both" : "neither")}): {path}");
+            }
+
+            if (hasUrl &&
+                (!Uri.TryCreate(url, UriKind.Absolute, out var endpoint) ||
+                 (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps)))
+            {
+                throw new InvalidOperationException(
+                    $"MCP server '{property.Name}' 'url' must be an absolute http or https URL: {path}");
             }
 
             var arguments = new List<string>();
@@ -652,7 +683,50 @@ public static class WfxConfiguration
                 }
             }
 
-            if (!servers.TryAdd(property.Name, new McpServerSettings(command, arguments, environment)))
+            Dictionary<string, string>? headers = null;
+            if (property.Value.TryGetProperty("headers", out var headersElement))
+            {
+                if (headersElement.ValueKind != JsonValueKind.Object)
+                {
+                    throw new InvalidOperationException($"MCP server '{property.Name}' 'headers' must be an object with string values: {path}");
+                }
+
+                headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var header in headersElement.EnumerateObject())
+                {
+                    if (header.Value.ValueKind != JsonValueKind.String)
+                    {
+                        throw new InvalidOperationException($"MCP server '{property.Name}' header '{header.Name}' must be a string: {path}");
+                    }
+
+                    headers[header.Name] = header.Value.GetString()!;
+                }
+            }
+
+            McpServerSettings server;
+            if (hasUrl)
+            {
+                if (arguments.Count > 0 || property.Value.TryGetProperty("args", out _) ||
+                    environment.Count > 0 || property.Value.TryGetProperty("env", out _))
+                {
+                    throw new InvalidOperationException(
+                        $"MCP server '{property.Name}' is an HTTP server ('url') and cannot define 'args' or 'env': {path}");
+                }
+
+                server = McpServerSettings.ForHttp(url!, headers);
+            }
+            else
+            {
+                if (headers is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"MCP server '{property.Name}' is a stdio server ('command') and cannot define 'headers': {path}");
+                }
+
+                server = McpServerSettings.ForStdio(command!, arguments, environment);
+            }
+
+            if (!servers.TryAdd(property.Name, server))
             {
                 throw new InvalidOperationException($"Configuration defines a duplicate MCP server '{property.Name}': {path}");
             }
