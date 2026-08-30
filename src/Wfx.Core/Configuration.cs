@@ -176,19 +176,41 @@ public static class WfxConfiguration
     /// <summary>
     /// Reads the user-layer MCP server map without resolving endpoint settings. Used by
     /// <c>wfx mcp auth</c>, which needs no model endpoint. Project configuration is not
-    /// consulted: MCP servers are a user-layer-only trust boundary (ADR 0007).
+    /// consulted: MCP servers are a user-layer-only trust boundary (ADR 0007). When
+    /// <paramref name="profile"/> is given, the profile's map replaces the base map wholesale,
+    /// mirroring how profile expansion merges <c>mcp_servers</c> in a full load.
     /// </summary>
-    public static IReadOnlyDictionary<string, McpServerSettings> LoadUserMcpServers(string? userProfile = null)
+    public static IReadOnlyDictionary<string, McpServerSettings> LoadUserMcpServers(
+        string? userProfile = null,
+        string? profile = null)
     {
         userProfile ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var userConfig = Path.GetFullPath(Path.Combine(userProfile, ".wfx", "config.json"));
+        var empty = new Dictionary<string, McpServerSettings>(StringComparer.OrdinalIgnoreCase);
         if (!File.Exists(userConfig))
         {
-            return new Dictionary<string, McpServerSettings>(StringComparer.OrdinalIgnoreCase);
+            if (profile is not null)
+            {
+                throw new InvalidOperationException(
+                    $"Configuration profile '{profile}' is not defined: {userConfig}");
+            }
+
+            return empty;
         }
 
-        return ReadFile(userConfig).McpServers ??
-            new Dictionary<string, McpServerSettings>(StringComparer.OrdinalIgnoreCase);
+        var layer = ReadFile(userConfig);
+        if (profile is null)
+        {
+            return layer.McpServers ?? empty;
+        }
+
+        if (layer.Profiles is null || !layer.Profiles.TryGetValue(profile, out var profileLayer))
+        {
+            throw new InvalidOperationException(
+                $"Configuration profile '{profile}' is not defined in the user configuration: {userConfig}");
+        }
+
+        return profileLayer.McpServers ?? layer.McpServers ?? empty;
     }
 
     /// <summary>

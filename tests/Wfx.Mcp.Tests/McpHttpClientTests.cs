@@ -2,6 +2,8 @@ using System.Text.Json;
 using Wfx.Core;
 using Wfx.Mcp;
 
+using Wfx.Testing;
+
 namespace Wfx.Mcp.Tests;
 
 public sealed class McpHttpClientTests
@@ -310,6 +312,28 @@ public sealed class McpHttpClientTests
 
         Assert.Contains("wfx mcp auth remote", exception.Message);
         Assert.Null(store.Get("remote"));
+    }
+
+    [Fact]
+    public async Task StoredToken_TakesPrecedenceOverConfiguredAuthorizationHeader()
+    {
+        using var server = new LoopbackHttpServer(Handler((method, request) =>
+            method == "initialize" ? InitializeResult(request) : Result(request, "{\"tools\":[]}")));
+        using var directory = new TemporaryDirectory();
+        var store = new McpTokenStore(Path.Combine(directory.Path, "mcp-tokens.json"));
+        store.Save("remote", new McpTokenRecord(
+            "https://mcp.example.com/mcp", "oauth-token", null,
+            DateTimeOffset.UtcNow.AddHours(1), "https://auth.example.com/token", "wfx"));
+        var settings = McpServerSettings.ForHttp(
+            new Uri(server.BaseUri, "/mcp").ToString(),
+            new Dictionary<string, string> { ["Authorization"] = "Bearer static-config-token" });
+
+        await using var client = McpHttpClient.Start(
+            settings, "remote", tokenStore: store, cancellationToken: TestContext.Current.CancellationToken);
+        await client.InitializeAsync(TestContext.Current.CancellationToken);
+
+        // Exactly one Authorization header: the OAuth credential wins over the static config.
+        Assert.Equal("Bearer oauth-token", server.Requests[0].Headers["Authorization"]);
     }
 
     [Fact]

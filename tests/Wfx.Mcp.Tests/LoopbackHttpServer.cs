@@ -2,7 +2,8 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-namespace Wfx.Mcp.Tests;
+// Shared across test assemblies via a linked Compile item (Wfx.Cli.Tests includes this file).
+namespace Wfx.Testing;
 
 /// <summary>One HTTP request observed by <see cref="LoopbackHttpServer"/>.</summary>
 internal sealed record LoopbackRequest(

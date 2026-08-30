@@ -110,6 +110,8 @@ internal sealed class McpHttpTransport : IAsyncDisposable
             request.Headers.TryAddWithoutValidation("MCP-Protocol-Version", protocolVersion);
         }
 
+        // A stored OAuth credential takes precedence over a configured Authorization header:
+        // assigning the property replaces any value TryAddWithoutValidation attached above.
         string? accessToken = null;
         if (_credential is not null)
         {

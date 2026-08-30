@@ -230,7 +230,7 @@ internal static class Program
             "wfx: session ",
             sessionStore);
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
-        await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, httpClient, userProfile, cancellationToken).ConfigureAwait(false);
+        await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, userProfile, cancellationToken).ConfigureAwait(false);
         var skills = DiscoverSkills(userProfile, workspace, cancellationToken);
         var agent = CreateAgent(settings, workspace, arguments, provider, settings.MaxIterations, [], session, console, timeProvider, mcp.Tools, skills);
         return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
@@ -256,7 +256,7 @@ internal static class Program
         }
 
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
-        await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, httpClient, userProfile, cancellationToken).ConfigureAwait(false);
+        await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, userProfile, cancellationToken).ConfigureAwait(false);
         var skills = DiscoverSkills(userProfile, workspace, cancellationToken);
         var agent = CreateAgent(
             settings,
@@ -347,7 +347,7 @@ internal static class Program
         Console.WriteLine();
 
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
-        await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, httpClient, userProfile, cancellationToken).ConfigureAwait(false);
+        await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, userProfile, cancellationToken).ConfigureAwait(false);
         var skills = DiscoverSkills(userProfile, workspace, cancellationToken);
         IReadOnlyList<ModelMessage> conversation = transcript?.Messages ?? [];
         while (!cancellationToken.IsCancellationRequested)
@@ -689,11 +689,12 @@ internal static class Program
         WfxSettings settings,
         WorkspaceInfo workspace,
         CliArguments arguments,
-        HttpClient httpClient,
         string? userProfile,
         CancellationToken cancellationToken)
     {
         var reportWarnings = !arguments.Json || !arguments.Quiet;
+        // MCP servers get their own HttpClient: the shared one is the model-provider test
+        // seam and must not carry MCP traffic.
         return await McpHost.ConnectAsync(
             settings.McpServers,
             workspace.Root,
@@ -705,7 +706,6 @@ internal static class Program
                 }
             },
             cancellationToken,
-            httpClient: httpClient,
             tokenStore: McpTokenStore.ForUserProfile(userProfile)).ConfigureAwait(false);
     }
 
@@ -736,7 +736,7 @@ internal static class Program
         IReadOnlyDictionary<string, McpServerSettings> servers;
         try
         {
-            servers = WfxConfiguration.LoadUserMcpServers(userProfile);
+            servers = WfxConfiguration.LoadUserMcpServers(userProfile, arguments.Settings.Profile);
         }
         catch (InvalidOperationException exception)
         {

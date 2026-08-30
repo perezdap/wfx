@@ -316,6 +316,41 @@ public sealed class McpConfigurationTests
     }
 
     [Fact]
+    public void LoadUserMcpServers_WithProfile_PrefersProfileMap()
+    {
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(profile.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(profile.Path, ".wfx", "config.json"), """
+            {
+              "mcp_servers": { "base": { "command": "node" } },
+              "profiles": {
+                "dev": { "mcp_servers": { "remote": { "url": "https://mcp.example.com/mcp" } } }
+              }
+            }
+            """);
+
+        var servers = WfxConfiguration.LoadUserMcpServers(profile.Path, "dev");
+
+        var server = Assert.Single(servers);
+        Assert.Equal("remote", server.Key);
+    }
+
+    [Fact]
+    public void LoadUserMcpServers_UnknownProfile_Throws()
+    {
+        using var profile = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(profile.Path, ".wfx"));
+        File.WriteAllText(Path.Combine(profile.Path, ".wfx", "config.json"), """
+            { "mcp_servers": { "base": { "command": "node" } } }
+            """);
+
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => WfxConfiguration.LoadUserMcpServers(profile.Path, "ghost"));
+
+        Assert.Contains("'ghost'", exception.Message);
+    }
+
+    [Fact]
     public void Load_RejectsNonStringMcpEnvironmentValues()
     {
         using var workspace = new TemporaryDirectory();

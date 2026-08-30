@@ -2,6 +2,8 @@ using System.Text.Json;
 using Wfx.Core;
 using Wfx.Mcp;
 
+using Wfx.Testing;
+
 namespace Wfx.Mcp.Tests;
 
 public sealed class McpHostTests
