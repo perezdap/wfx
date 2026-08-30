@@ -5,6 +5,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Wfx.Cli/Wfx.Cli.csproj" AdditionalProperties="SelfContained=false" />
+    <Compile Include="../Wfx.Mcp.Tests/LoopbackHttpServer.cs" Link="LoopbackHttpServer.cs" />
     <None Include="../../docs/schemas/wfx-events.v1.json" Link="docs/schemas/wfx-events.v1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>

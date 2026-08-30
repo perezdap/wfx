@@ -30,7 +30,8 @@ internal static class CliRunner
         string? userProfile = null,
         IConsoleEnvironment? consoleEnvironment = null,
         Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory = null,
-        TimeProvider? timeProvider = null) =>
+        TimeProvider? timeProvider = null,
+        Action<Uri>? openBrowser = null) =>
         Program.RunAsync(
             args,
             httpClient,
@@ -39,7 +40,8 @@ internal static class CliRunner
             userProfile,
             consoleEnvironment ?? FakeConsoleEnvironment.Terminal,
             modelProviderFactory,
-            timeProvider);
+            timeProvider,
+            openBrowser);
 
     private sealed class UnexpectedRequestHandler(string message) : HttpMessageHandler
     {

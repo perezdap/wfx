@@ -250,7 +250,7 @@ public sealed class McpStdioClientTests
     public async Task Cancellation_KillsARealServerProcess()
     {
         using var workspace = new TemporaryDirectory();
-        var settings = new McpServerSettings(
+        var settings = McpServerSettings.ForStdio(
             "cmd.exe",
             ["/d", "/c", "ping 127.0.0.1 -n 120 > nul"],
             new Dictionary<string, string>());
