@@ -138,7 +138,8 @@ internal static class Program
                     console,
                     modelProviderFactory,
                     cancellationToken,
-                    timeProvider).ConfigureAwait(false),
+                    timeProvider,
+                    userProfile).ConfigureAwait(false),
                 CliCommand.Resume when arguments.Json => await RunJsonResumeAsync(
                     settings,
                     workspace,
@@ -148,7 +149,8 @@ internal static class Program
                     console,
                     modelProviderFactory,
                     cancellationToken,
-                    timeProvider).ConfigureAwait(false),
+                    timeProvider,
+                    userProfile).ConfigureAwait(false),
                 CliCommand.Resume => await RunInteractiveAsync(
                     settings,
                     workspace,
@@ -159,7 +161,8 @@ internal static class Program
                     console,
                     modelProviderFactory,
                     cancellationToken,
-                    timeProvider).ConfigureAwait(false),
+                    timeProvider,
+                    userProfile).ConfigureAwait(false),
                 _ => await RunInteractiveAsync(
                     settings,
                     workspace,
@@ -170,7 +173,8 @@ internal static class Program
                     console,
                     modelProviderFactory,
                     cancellationToken,
-                    timeProvider).ConfigureAwait(false)
+                    timeProvider,
+                    userProfile).ConfigureAwait(false)
             };
         }
         catch (OperationCanceledException)
@@ -195,7 +199,8 @@ internal static class Program
         IConsoleEnvironment console,
         Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory,
         CancellationToken cancellationToken,
-        TimeProvider? timeProvider)
+        TimeProvider? timeProvider,
+        string? userProfile = null)
     {
         EnsureRunnable(settings);
         if (!arguments.Json)
@@ -218,7 +223,8 @@ internal static class Program
             sessionStore);
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
         await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, cancellationToken).ConfigureAwait(false);
-        var agent = CreateAgent(settings, workspace, arguments, provider, settings.MaxIterations, [], session, console, timeProvider, mcp.Tools);
+        var skills = DiscoverSkills(userProfile, workspace, cancellationToken);
+        var agent = CreateAgent(settings, workspace, arguments, provider, settings.MaxIterations, [], session, console, timeProvider, mcp.Tools, skills);
         return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
     }
 
@@ -231,7 +237,8 @@ internal static class Program
         IConsoleEnvironment console,
         Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory,
         CancellationToken cancellationToken,
-        TimeProvider? timeProvider)
+        TimeProvider? timeProvider,
+        string? userProfile = null)
     {
         EnsureRunnable(settings);
         var prompt = await ReadConsoleLineAsync(cancellationToken).ConfigureAwait(false);
@@ -242,6 +249,7 @@ internal static class Program
 
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
         await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, cancellationToken).ConfigureAwait(false);
+        var skills = DiscoverSkills(userProfile, workspace, cancellationToken);
         var agent = CreateAgent(
             settings,
             workspace,
@@ -252,7 +260,8 @@ internal static class Program
             resumedSession.Log,
             console,
             timeProvider,
-            mcp.Tools);
+            mcp.Tools,
+            skills);
         return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
     }
 
@@ -304,7 +313,8 @@ internal static class Program
         IConsoleEnvironment console,
         Func<WfxSettings, HttpClient, IModelProvider>? modelProviderFactory,
         CancellationToken cancellationToken,
-        TimeProvider? timeProvider)
+        TimeProvider? timeProvider,
+        string? userProfile = null)
     {
         if (string.IsNullOrWhiteSpace(settings.Model) && settings.ConfiguredModels.Count == 0)
         {
@@ -330,6 +340,7 @@ internal static class Program
 
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
         await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, cancellationToken).ConfigureAwait(false);
+        var skills = DiscoverSkills(userProfile, workspace, cancellationToken);
         IReadOnlyList<ModelMessage> conversation = transcript?.Messages ?? [];
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -388,7 +399,7 @@ internal static class Program
             try
             {
                 EnsureRunnable(settings);
-                var agent = CreateAgent(settings, workspace, arguments, provider, null, conversation, session, console, timeProvider, mcp.Tools);
+                var agent = CreateAgent(settings, workspace, arguments, provider, null, conversation, session, console, timeProvider, mcp.Tools, skills);
                 var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
                 conversation = result.Messages;
                 PrintTrailingNewline(result);
@@ -578,6 +589,21 @@ internal static class Program
         }
     }
 
+    private static ISkillLocator DiscoverSkills(
+        string? userProfile,
+        WorkspaceInfo workspace,
+        CancellationToken cancellationToken = default)
+    {
+        userProfile ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var skills = SkillLocator.Discover(userProfile, workspace.Root, cancellationToken);
+        foreach (var warning in skills.Warnings)
+        {
+            Console.Error.WriteLine($"wfx: warning: {warning}");
+        }
+
+        return skills;
+    }
+
     private static Agent CreateAgent(
         WfxSettings settings,
         WorkspaceInfo workspace,
@@ -588,15 +614,23 @@ internal static class Program
         SessionLog? session,
         IConsoleEnvironment console,
         TimeProvider? timeProvider,
-        IReadOnlyList<ITool> mcpTools)
+        IReadOnlyList<ITool> mcpTools,
+        ISkillLocator skills)
     {
         var tools = mcpTools.Count == 0
-            ? BuiltInTools.Create(workspace.Root)
-            : new ToolRegistry([.. BuiltInTools.CreateTools(workspace.Root), .. mcpTools]);
-        var context = new CompositeContextProvider([
+            ? BuiltInTools.Create(workspace.Root, skills)
+            : new ToolRegistry([.. BuiltInTools.CreateTools(workspace.Root, skills), .. mcpTools]);
+        var contextProviders = new List<IContextProvider>
+        {
             new StaticContextProvider($"Workspace root: {workspace.Root}\nWorking directory: {workspace.WorkingDirectory}\nGit repository: {workspace.IsGitRepository}"),
             new AgentInstructionsContextProvider(workspace.Root, workspace.WorkingDirectory)
-        ]);
+        };
+        if (skills.Skills.Count > 0)
+        {
+            contextProviders.Add(new SkillContextProvider(skills));
+        }
+
+        var context = new CompositeContextProvider(contextProviders);
         var secrets = ProviderSecrets(settings);
         var approval = new PolicyApprovalService(
             settings.Approval,

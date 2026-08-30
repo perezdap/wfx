@@ -247,6 +247,57 @@ public sealed class JsonEventStreamTests
     }
 
     [Fact]
+    public async Task JsonQuietStillEmitsSkillWarnings()
+    {
+        using var workspace = new TemporaryDirectory();
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient("The injected provider must be used.");
+        using var console = new ConsoleCapture();
+        var originalDirectory = Environment.CurrentDirectory;
+        var userProfile = Path.Combine(workspace.Path, "profile");
+        Directory.CreateDirectory(Path.Combine(workspace.Path, ".wfx"));
+        Directory.CreateDirectory(Path.Combine(userProfile, ".wfx"));
+        File.WriteAllText(
+            Path.Combine(workspace.Path, ".wfx", "config.json"),
+            """{ "provider": "local", "base_url": "https://example.test/v1", "model": "fake-model", "approval": "never" }""");
+
+        var skillDir = Path.Combine(userProfile, ".wfx", "skills", "bad");
+        Directory.CreateDirectory(skillDir);
+        File.WriteAllText(
+            Path.Combine(skillDir, "SKILL.md"),
+            """
+            ---
+            not a valid frontmatter line without colon value
+            ---
+
+            Body.
+            """);
+
+        Environment.CurrentDirectory = workspace.Path;
+        try
+        {
+            var exitCode = await CliRunner.RunAsync(
+                ["run", "--json", "--quiet", "inspect"],
+                httpClient,
+                new SessionStore(Path.Combine(workspace.Path, "sessions")),
+                TestContext.Current.CancellationToken,
+                userProfile,
+                modelProviderFactory: (_, _) => new SequenceModelProvider([
+                    new ModelCompleted(new ModelMessage(ModelRole.Assistant, "done"))
+                ]));
+
+            Assert.Equal(0, exitCode);
+            Assert.Contains("wfx: warning:", console.ErrorText);
+            var events = ParseLines(console.Output.ToString());
+            Assert.Equal("turn_started", events[0].GetProperty("event").GetString());
+            Assert.Equal("turn_completed", events[^1].GetProperty("event").GetString());
+        }
+        finally
+        {
+            Environment.CurrentDirectory = originalDirectory;
+        }
+    }
+
+    [Fact]
     public async Task JsonAlonePreservesPreStreamWarningsWithoutTurnProgress()
     {
         using var workspace = new TemporaryDirectory();
@@ -724,6 +775,85 @@ public sealed class JsonEventStreamTests
         if (schema.TryGetProperty("items", out var items))
         {
             AssertVisibility(items, $"{path}/items");
+        }
+    }
+
+    [Fact]
+    public async Task SkillIsListedInContextAndSkillToolReturnsBody()
+    {
+        using var sessions = new TemporaryDirectory();
+        using var httpClient = CliRunner.CreateUnexpectedHttpClient("The injected provider must be used.");
+        using var console = new ConsoleCapture();
+        using var workspace = new TemporaryDirectory();
+        var originalDirectory = Environment.CurrentDirectory;
+        var userProfile = Path.Combine(workspace.Path, "profile");
+        Directory.CreateDirectory(Path.Combine(workspace.Path, ".wfx"));
+        Directory.CreateDirectory(Path.Combine(userProfile, ".wfx"));
+        File.WriteAllText(
+            Path.Combine(workspace.Path, ".wfx", "config.json"),
+            """{ "provider": "local", "base_url": "https://example.test/v1", "model": "fake-model", "approval": "never" }""");
+
+        var skillDir = Path.Combine(workspace.Path, ".wfx", "skills", "my-skill");
+        Directory.CreateDirectory(skillDir);
+        File.WriteAllText(
+            Path.Combine(skillDir, "SKILL.md"),
+            """
+            ---
+            name: my-skill
+            description: Test skill for integration.
+            ---
+
+            # My Skill
+
+            These are the full instructions.
+            """);
+
+        Environment.CurrentDirectory = workspace.Path;
+        try
+        {
+            var provider = new QueuedModelProvider([
+                new ModelCompleted(new ModelMessage(
+                    ModelRole.Assistant,
+                    null,
+                    [new ModelToolCall("call-1", "skill", "{\"name\":\"my-skill\"}")])),
+                new ModelCompleted(new ModelMessage(ModelRole.Assistant, "done"))
+            ]);
+            var exitCode = await CliRunner.RunAsync(
+                ["run", "--json", "--quiet", "use the test skill"],
+                httpClient,
+                new SessionStore(sessions.Path),
+                TestContext.Current.CancellationToken,
+                userProfile,
+                modelProviderFactory: (_, _) => provider);
+
+            Assert.Equal(0, exitCode);
+            Assert.Empty(console.ErrorText);
+            var events = ParseLines(console.Output.ToString());
+            Assert.Equal("turn_started", events[0].GetProperty("event").GetString());
+            Assert.Equal("turn_completed", events[^1].GetProperty("event").GetString());
+
+            var systemMessage = events.First(e =>
+                e.GetProperty("event").GetString() == "message" &&
+                e.GetProperty("role").GetString() == "system");
+            var systemContent = systemMessage.GetProperty("content").GetString();
+            Assert.NotNull(systemContent);
+            Assert.Contains("Available skills:", systemContent);
+            Assert.Contains("my-skill", systemContent);
+            Assert.Contains("Test skill for integration.", systemContent);
+            Assert.DoesNotContain("These are the full instructions.", systemContent);
+
+            var skillTool = events.First(e =>
+                e.GetProperty("event").GetString() == "tool_completed" &&
+                e.GetProperty("name").GetString() == "skill");
+            var resultContent = skillTool.GetProperty("result").GetProperty("content").GetString();
+            Assert.Contains("# My Skill", resultContent);
+            Assert.Contains("These are the full instructions.", resultContent);
+            Assert.DoesNotContain("name: my-skill", resultContent);
+            Assert.DoesNotContain("description: Test skill for integration.", resultContent);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = originalDirectory;
         }
     }
 

@@ -5,13 +5,13 @@ namespace Wfx.Tools;
 
 public static class BuiltInTools
 {
-    public static IReadOnlyList<ITool> CreateTools(string workspaceRoot)
+    public static IReadOnlyList<ITool> CreateTools(string workspaceRoot, ISkillLocator? skills = null)
     {
         var paths = new WorkspacePathPolicy(workspaceRoot);
         var processExecutor = new ProcessExecutor();
         var powerShellRunner = new PowerShellRunner(processExecutor);
-        ITool[] tools =
-        [
+        var tools = new List<ITool>
+        {
             new ReadFileTool(paths),
             new WriteFileTool(paths),
             new ApplyPatchTool(paths),
@@ -20,9 +20,17 @@ public static class BuiltInTools
             new SearchTextTool(paths),
             new PowerShellTool(paths, powerShellRunner),
             new GitTool(paths, processExecutor)
-        ];
+        };
+
+        var skillLocator = skills ?? SkillLocator.Empty;
+        if (skillLocator.Skills.Count > 0)
+        {
+            tools.Add(new SkillTool(skillLocator));
+        }
+
         return tools;
     }
 
-    public static ToolRegistry Create(string workspaceRoot) => new(CreateTools(workspaceRoot));
+    public static ToolRegistry Create(string workspaceRoot, ISkillLocator? skills = null) =>
+        new(CreateTools(workspaceRoot, skills));
 }
