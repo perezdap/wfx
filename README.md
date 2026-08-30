@@ -14,6 +14,10 @@ WFX is a small, embeddable, Windows-first AI coding-agent runtime. It is designe
 - Link-aware workspace boundary checks and conservative approvals
 - Root-to-working-directory `AGENTS.md` discovery
 - Layered JSON and environment configuration with named profiles
+- Session listing and resumption with `wfx sessions` and `wfx resume` (see [Use](#use))
+- User-configured MCP servers over stdio and Streamable HTTP with OAuth 2.1 sign-in (see [MCP servers](#mcp-servers))
+- Machine-readable `--json` event streams and result objects (see [Machine-readable output](#machine-readable-output))
+- One ordered stderr stream for human output with markdown rendering, plus a `--quiet` flag (see [Human output and stdout](#human-output-and-stdout))
 - Native AOT publish configuration for `win-x64` and `win-arm64`
 
 ## Build
@@ -223,6 +227,36 @@ wfx resume --id <session-id>
 
 A session remains bound to its recorded workspace. Resuming it elsewhere refuses and prints that path. To deliberately rebind a moved or renamed workspace, select the session explicitly with `wfx resume --id <session-id> --force`. Only one process can hold a session lease at a time, while `wfx sessions` remains available for inspection.
 
+## MCP servers
+
+WFX acts as an MCP host. Servers are declared **in the user configuration file only** (`%USERPROFILE%\.wfx\config.json`), never in a project config - a `mcp_servers` key in project config is a configuration error, so a cloned repository cannot launch executables or redirect credentials. Each entry defines exactly one transport, discriminated by key presence:
+
+```json
+{
+  "mcp_servers": {
+    "local-tool": { "command": "node", "args": ["server.js"] },
+    "remote-tool": { "url": "https://agent.example.com/mcp" }
+  }
+}
+```
+
+`command` selects stdio (optional `args`/`env`); `url` selects Streamable HTTP (optional `headers`). Both or neither is a configuration error naming the rule. To the model, a remote server is indistinguishable from a local one: tools appear namespaced as `mcp_<server>_<tool>`.
+
+Every MCP call is classified `SystemChange` unconditionally and approved per call through the ordinary approval service - even under `--yolo`, which skips prompts but not workspace policy.
+
+### OAuth sign-in
+
+Remote servers that require OAuth 2.1 are authorized with an explicit command, never mid-turn:
+
+```powershell
+wfx mcp auth <server>          # authorization-code + PKCE, loopback browser redirect
+wfx mcp auth --revoke <server> # drop the stored credential
+```
+
+Tokens are stored at `%USERPROFILE%\.wfx\mcp-tokens.json` and refreshed inline. A 401 with no usable credential surfaces a sign-in remediation on stderr (never suppressed by `--quiet`); a 403 is a structured non-2xx failure, not an auth challenge.
+
+See [ADR 0007](docs/adr/0007-mcp-servers-are-user-configured-never-workspace-supplied.md) for the trust boundary and [ADR 0008](docs/adr/0008-mcp-http-transport-and-oauth-sign-in.md) for the transport and sign-in design.
+
 ## Approval modes
 
 | Mode | Read-only | Workspace write | System change | Dangerous |
@@ -253,6 +287,16 @@ WFX takes inspiration from the small, native, model-agnostic philosophy of [Verc
 - `--approval yolo` (or `--yolo`) bypasses tool approval prompts. Workspace path checks still apply. Use it only in a workspace you are willing to lose. Do not put `yolo` in a shared project config.
 
 See [risks.md](docs/risks.md) for remaining limitations.
+
+## Human output and stdout
+
+Human-facing output - model text and tool-call lines - goes to **stderr** as one ordered stream. Stdout receives the final response once, at turn end, and only when redirected, so `wfx run ... > notes.md` captures the answer alone. Blocks are separated by blank lines, tool calls indent by two, and decoration draws from the basic eight ANSI colours so the terminal theme resolves the hues. Markdown (bold, inline code, ATX headings, bullets, fences) renders through a hold-back scanner that keeps token-by-token streaming intact; with decoration suppressed the writer is a pass-through. See ADRs [0009](docs/adr/0009-decoration-uses-the-basic-eight-ansi-colours.md)-[0011](docs/adr/0011-human-output-is-a-stderr-stream.md).
+
+`--quiet` suppresses human decoration on stderr in interactive mode and on the `run`, `resume`, `sessions`, `config`, and `models` commands. Warnings, errors, and the MCP sign-in remediation still use stderr.
+
+## Machine-readable output
+
+`wfx run --json` and `wfx resume --json` stream one newline-delimited JSON (NDJSON) event per line to stdout; `wfx sessions --json`, `wfx config --json`, and `wfx models --json` each write a single JSON result object. Shapes carry `schema_version` 1 and are published under [docs/schemas/](docs/schemas/). The stream is credential-adjacent - review it before sending it to shared logs.
 
 ## License
 

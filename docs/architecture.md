@@ -11,6 +11,8 @@ flowchart TD
     CLI["Wfx.Cli\ncomposition + console"] --> Core["Wfx.Core\nagent + contracts + policy"]
     CLI --> Providers["Wfx.Providers\nchat_completions + responses SSE"]
     CLI --> Tools["Wfx.Tools\nbuilt-in tools"]
+    CLI --> Mcp["Wfx.Mcp\nuser-configured MCP servers"]
+    Mcp --> Core
     Tools --> Core
     Tools --> PS["Wfx.PowerShell\nprocess execution"]
     Providers --> Core
@@ -70,7 +72,7 @@ A session is an append-only JSONL event log owned by `Wfx.Core.SessionStore`, st
 
 ## Future seams
 
-- MCP tools implement `ITool` through the `Wfx.Mcp` adapter: user-configured stdio servers, every call classified `SystemChange` and approved like any built-in tool.
+- MCP tools implement `ITool` through the `Wfx.Mcp` adapter: user-configured stdio and Streamable HTTP servers, every call classified `SystemChange` and approved like any built-in tool. See [ADR 0007](adr/0007-mcp-servers-are-user-configured-never-workspace-supplied.md) and [ADR 0008](adr/0008-mcp-http-transport-and-oauth-sign-in.md).
 - Skills can contribute context providers and tool bundles.
 - Subagents can own isolated message lists while sharing a constrained tool registry and workspace policy.
 - ACP can host `IAgent` and translate observer events.
