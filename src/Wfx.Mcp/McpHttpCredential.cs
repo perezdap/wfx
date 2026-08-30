@@ -3,20 +3,22 @@ namespace Wfx.Mcp;
 /// <summary>
 /// The bridge between the HTTP transport and the per-user token store: hands the transport a
 /// valid access token for each request, refreshing preemptively on expiry, and retries a
-/// refresh once after a 401. Token material never appears in messages or logs; an
-/// unrecoverable grant is dropped so the next failure carries the sign-in remediation.
+/// refresh once after a 401. Every token it touches joins the host's <see cref="McpSecretSet"/>
+/// so redaction covers credentials minted mid-run; an unrecoverable grant is dropped so the
+/// next failure carries the sign-in remediation.
 /// </summary>
-internal sealed class McpHttpCredential(McpTokenStore store, string serverName)
+internal sealed class McpHttpCredential(McpTokenStore store, string serverName, McpSecretSet? secrets = null)
 {
     private static readonly TimeSpan ExpirySkew = TimeSpan.FromSeconds(60);
 
     private readonly McpTokenStore _store = store;
     private readonly string _serverName = serverName;
+    private readonly McpSecretSet _secrets = secrets ?? new McpSecretSet();
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
 
     public async Task<string?> AcquireAccessTokenAsync(HttpClient http, CancellationToken cancellationToken)
     {
-        var record = _store.Get(_serverName);
+        var record = ReadRegistering();
         if (record is null)
         {
             return null;
@@ -28,7 +30,7 @@ internal sealed class McpHttpCredential(McpTokenStore store, string serverName)
             try
             {
                 // Re-read under the lock: a concurrent request may already have refreshed.
-                record = _store.Get(_serverName);
+                record = ReadRegistering();
                 if (record is not null &&
                     record.ExpiresAtUtc is { } currentExpiry &&
                     currentExpiry - ExpirySkew <= DateTimeOffset.UtcNow)
@@ -38,7 +40,7 @@ internal sealed class McpHttpCredential(McpTokenStore store, string serverName)
                         return null;
                     }
 
-                    record = _store.Get(_serverName);
+                    record = ReadRegistering();
                 }
             }
             finally
@@ -63,7 +65,7 @@ internal sealed class McpHttpCredential(McpTokenStore store, string serverName)
         await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var record = _store.Get(_serverName);
+            var record = ReadRegistering();
             if (record is null || record.RefreshToken is null)
             {
                 return false;
@@ -75,12 +77,27 @@ internal sealed class McpHttpCredential(McpTokenStore store, string serverName)
                 return true;
             }
 
-            return await new McpOAuthFlow(http, _store).RefreshAsync(_serverName, cancellationToken)
+            var refreshed = await new McpOAuthFlow(http, _store).RefreshAsync(_serverName, cancellationToken)
                 .ConfigureAwait(false);
+            if (refreshed)
+            {
+                ReadRegistering();
+            }
+
+            return refreshed;
         }
         finally
         {
             _refreshLock.Release();
         }
+    }
+
+    /// <summary>Reads the stored credential and registers its token material for redaction.</summary>
+    private McpTokenRecord? ReadRegistering()
+    {
+        var record = _store.Get(_serverName);
+        _secrets.Add(record?.AccessToken);
+        _secrets.Add(record?.RefreshToken);
+        return record;
     }
 }

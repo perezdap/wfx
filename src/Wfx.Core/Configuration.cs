@@ -134,7 +134,7 @@ public static class WfxConfiguration
         {
             // Rejection runs on the raw file before parsing: a malformed mcp_servers value
             // must still report the trust-boundary rule, not a shape error.
-            if (!sameConfigFile && ProjectConfigDeclaresMcpServers(projectConfig))
+            if (!sameConfigFile && McpServerConfigParser.ProjectFileDeclaresMcpServers(projectConfig))
             {
                 throw new InvalidOperationException(
                     $"Configuration 'mcp_servers' is only allowed in the user configuration; remove 'mcp_servers' from the project configuration: {projectConfig}");
@@ -176,9 +176,9 @@ public static class WfxConfiguration
     /// <summary>
     /// Reads the user-layer MCP server map without resolving endpoint settings. Used by
     /// <c>wfx mcp auth</c>, which needs no model endpoint. Project configuration is not
-    /// consulted: MCP servers are a user-layer-only trust boundary (ADR 0007). When
-    /// <paramref name="profile"/> is given, the profile's map replaces the base map wholesale,
-    /// mirroring how profile expansion merges <c>mcp_servers</c> in a full load.
+    /// consulted: MCP servers are a user-layer-only trust boundary (ADR 0007). Profile
+    /// expansion runs through the same machinery a full <see cref="Load"/> uses, so the two
+    /// can never disagree on what a profile's <c>mcp_servers</c> map is.
     /// </summary>
     public static IReadOnlyDictionary<string, McpServerSettings> LoadUserMcpServers(
         string? userProfile = null,
@@ -186,31 +186,14 @@ public static class WfxConfiguration
     {
         userProfile ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var userConfig = Path.GetFullPath(Path.Combine(userProfile, ".wfx", "config.json"));
-        var empty = new Dictionary<string, McpServerSettings>(StringComparer.OrdinalIgnoreCase);
-        if (!File.Exists(userConfig))
+        var userLayer = File.Exists(userConfig) ? ReadFile(userConfig) : null;
+        if (profile is not null)
         {
-            if (profile is not null)
-            {
-                throw new InvalidOperationException(
-                    $"Configuration profile '{profile}' is not defined: {userConfig}");
-            }
-
-            return empty;
+            userLayer = ExpandProfile(profile, userLayer, projectLayer: null).User;
         }
 
-        var layer = ReadFile(userConfig);
-        if (profile is null)
-        {
-            return layer.McpServers ?? empty;
-        }
-
-        if (layer.Profiles is null || !layer.Profiles.TryGetValue(profile, out var profileLayer))
-        {
-            throw new InvalidOperationException(
-                $"Configuration profile '{profile}' is not defined in the user configuration: {userConfig}");
-        }
-
-        return profileLayer.McpServers ?? layer.McpServers ?? empty;
+        return userLayer?.McpServers ??
+            new Dictionary<string, McpServerSettings>(StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -615,7 +598,7 @@ public static class WfxConfiguration
         IReadOnlyDictionary<string, McpServerSettings>? mcpServers = null;
         if (root.TryGetProperty("mcp_servers", out var mcpElement))
         {
-            mcpServers = ParseMcpServers(mcpElement, path);
+            mcpServers = McpServerConfigParser.Parse(mcpElement, path);
         }
 
         return new WfxSettingsLayer
@@ -631,176 +614,6 @@ public static class WfxConfiguration
             Approval = GetApproval(root, "approval"),
             McpServers = mcpServers
         };
-    }
-
-    private static IReadOnlyDictionary<string, McpServerSettings> ParseMcpServers(JsonElement element, string path)
-    {
-        if (element.ValueKind != JsonValueKind.Object)
-        {
-            throw new InvalidOperationException($"Configuration mcp_servers must be an object: {path}");
-        }
-
-        var servers = new Dictionary<string, McpServerSettings>(StringComparer.OrdinalIgnoreCase);
-        foreach (var property in element.EnumerateObject())
-        {
-            if (property.Value.ValueKind != JsonValueKind.Object)
-            {
-                throw new InvalidOperationException($"MCP server '{property.Name}' must be an object: {path}");
-            }
-
-            var command = GetString(property.Value, "command");
-            var url = GetString(property.Value, "url");
-            var hasCommand = !string.IsNullOrWhiteSpace(command);
-            var hasUrl = !string.IsNullOrWhiteSpace(url);
-            if (hasCommand == hasUrl)
-            {
-                throw new InvalidOperationException(
-                    $"MCP server '{property.Name}' must define exactly one transport: " +
-                    $"'command' for stdio or 'url' for HTTP (it defines {(hasCommand ? "both" : "neither")}): {path}");
-            }
-
-            if (hasUrl &&
-                (!Uri.TryCreate(url, UriKind.Absolute, out var endpoint) ||
-                 (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps)))
-            {
-                throw new InvalidOperationException(
-                    $"MCP server '{property.Name}' 'url' must be an absolute http or https URL: {path}");
-            }
-
-            var arguments = new List<string>();
-            if (property.Value.TryGetProperty("args", out var argsElement))
-            {
-                if (argsElement.ValueKind != JsonValueKind.Array)
-                {
-                    throw new InvalidOperationException($"MCP server '{property.Name}' 'args' must be an array of strings: {path}");
-                }
-
-                foreach (var item in argsElement.EnumerateArray())
-                {
-                    if (item.ValueKind != JsonValueKind.String)
-                    {
-                        throw new InvalidOperationException($"MCP server '{property.Name}' 'args' must be an array of strings: {path}");
-                    }
-
-                    arguments.Add(item.GetString()!);
-                }
-            }
-
-            var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            if (property.Value.TryGetProperty("env", out var envElement))
-            {
-                if (envElement.ValueKind != JsonValueKind.Object)
-                {
-                    throw new InvalidOperationException($"MCP server '{property.Name}' 'env' must be an object with string values: {path}");
-                }
-
-                foreach (var variable in envElement.EnumerateObject())
-                {
-                    if (variable.Value.ValueKind != JsonValueKind.String)
-                    {
-                        throw new InvalidOperationException($"MCP server '{property.Name}' environment variable '{variable.Name}' must be a string: {path}");
-                    }
-
-                    environment[variable.Name] = variable.Value.GetString()!;
-                }
-            }
-
-            Dictionary<string, string>? headers = null;
-            if (property.Value.TryGetProperty("headers", out var headersElement))
-            {
-                if (headersElement.ValueKind != JsonValueKind.Object)
-                {
-                    throw new InvalidOperationException($"MCP server '{property.Name}' 'headers' must be an object with string values: {path}");
-                }
-
-                headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var header in headersElement.EnumerateObject())
-                {
-                    if (header.Value.ValueKind != JsonValueKind.String)
-                    {
-                        throw new InvalidOperationException($"MCP server '{property.Name}' header '{header.Name}' must be a string: {path}");
-                    }
-
-                    headers[header.Name] = header.Value.GetString()!;
-                }
-            }
-
-            McpServerSettings server;
-            if (hasUrl)
-            {
-                if (arguments.Count > 0 || property.Value.TryGetProperty("args", out _) ||
-                    environment.Count > 0 || property.Value.TryGetProperty("env", out _))
-                {
-                    throw new InvalidOperationException(
-                        $"MCP server '{property.Name}' is an HTTP server ('url') and cannot define 'args' or 'env': {path}");
-                }
-
-                server = McpServerSettings.ForHttp(url!, headers);
-            }
-            else
-            {
-                if (headers is not null)
-                {
-                    throw new InvalidOperationException(
-                        $"MCP server '{property.Name}' is a stdio server ('command') and cannot define 'headers': {path}");
-                }
-
-                server = McpServerSettings.ForStdio(command!, arguments, environment);
-            }
-
-            if (!servers.TryAdd(property.Name, server))
-            {
-                throw new InvalidOperationException($"Configuration defines a duplicate MCP server '{property.Name}': {path}");
-            }
-        }
-
-        return servers;
-    }
-
-    private static bool ProjectConfigDeclaresMcpServers(string path)
-    {
-        JsonDocument document;
-        try
-        {
-            document = JsonDocument.Parse(File.ReadAllText(path), new JsonDocumentOptions
-            {
-                AllowTrailingCommas = true,
-                CommentHandling = JsonCommentHandling.Skip
-            });
-        }
-        catch (JsonException)
-        {
-            // An unreadable file surfaces as the ordinary configuration parse error.
-            return false;
-        }
-
-        using (document)
-        {
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-            {
-                return false;
-            }
-
-            if (root.TryGetProperty("mcp_servers", out _))
-            {
-                return true;
-            }
-
-            if (root.TryGetProperty("profiles", out var profiles) && profiles.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var profile in profiles.EnumerateObject())
-                {
-                    if (profile.Value.ValueKind == JsonValueKind.Object &&
-                        profile.Value.TryGetProperty("mcp_servers", out _))
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            return false;
-        }
     }
 
     private static WfxSettingsLayer Defaults => new()

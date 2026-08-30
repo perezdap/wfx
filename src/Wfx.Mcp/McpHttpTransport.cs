@@ -2,57 +2,57 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Wfx.Core;
 
 namespace Wfx.Mcp;
 
 /// <summary>
-/// The byte-mover behind a Streamable HTTP MCP connection, shaped as the TextWriter/TextReader
-/// pair <see cref="McpJsonRpcSession"/> already speaks: every written line is one HTTP POST of a
-/// JSON-RPC message, and every response payload (a JSON body or the data frames of an SSE
-/// stream) is fed back as incoming lines. Per the spec, a notification POST is answered 202
-/// with no body; a request POST is answered with either a single JSON body or an SSE stream
-/// that carries the matching response and then ends. A 401/403 surfaces as
-/// <see cref="McpAuthorizationException"/> with the sign-in remediation; other non-2xx statuses
-/// and network failures surface as <see cref="McpConnectionException"/> and never abort the CLI.
+/// One MCP Streamable HTTP server connection: the byte-mover and the session lifetime in one
+/// type. Shaped as the TextWriter/TextReader pair <see cref="McpJsonRpcSession"/> already
+/// speaks: every written line is one HTTP POST of a JSON-RPC message, and every response
+/// payload (a JSON body or the data frames of an SSE stream) is fed back as incoming lines.
+/// Per the spec, a notification POST is answered 202 with no body; a request POST is answered
+/// with either a single JSON body or an SSE stream that carries the matching response and
+/// then ends. A 401 surfaces as <see cref="McpAuthorizationException"/> with the sign-in
+/// remediation; other non-2xx statuses and network failures surface as
+/// <see cref="McpConnectionException"/> and never abort the CLI. The
+/// <see cref="HttpClient"/> is always supplied by the caller (the host owns one for all MCP
+/// traffic); this type never creates or disposes one.
 /// </summary>
-internal sealed class McpHttpTransport : IAsyncDisposable
+internal sealed class McpHttpTransport : IMcpServerConnection
 {
     /// <summary>Caps one incoming message, mirroring <see cref="McpJsonRpcSession.MaxLineCharacters"/>.</summary>
     private const int MaxMessageCharacters = McpJsonRpcSession.MaxLineCharacters;
 
     private readonly HttpClient _http;
-    private readonly bool _ownsHttp;
     private readonly Uri _endpoint;
     private readonly string _serverName;
     private readonly IReadOnlyDictionary<string, string> _headers;
     private readonly Channel<string> _incoming = Channel.CreateUnbounded<string>();
     private readonly McpHttpCredential? _credential;
+    private readonly McpJsonRpcSession _session;
+    private readonly McpProtocolClient _protocol;
     private volatile string? _sessionId;
     private volatile string? _protocolVersion;
+    private bool _disposed;
 
-    public McpHttpTransport(
+    private McpHttpTransport(
         Uri endpoint,
         string serverName,
         IReadOnlyDictionary<string, string> headers,
-        HttpClient? httpClient = null,
-        McpHttpCredential? credential = null)
+        HttpClient httpClient,
+        McpHttpCredential? credential)
     {
         _endpoint = endpoint;
         _serverName = serverName;
         _headers = headers;
+        _http = httpClient;
         _credential = credential;
-        if (httpClient is null)
-        {
-            _http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-            _ownsHttp = true;
-        }
-        else
-        {
-            _http = httpClient;
-        }
-
         Output = new HttpPostTextWriter(this);
         Input = new ChannelTextReader(_incoming.Reader);
+        _session = new McpJsonRpcSession(Output, Input);
+        _protocol = new McpProtocolClient(_session);
+        _session.StartReadLoop();
     }
 
     /// <summary>The session's outgoing side: one POST per line.</summary>
@@ -61,17 +61,50 @@ internal sealed class McpHttpTransport : IAsyncDisposable
     /// <summary>The session's incoming side: response payloads, one message per line.</summary>
     public TextReader Input { get; }
 
-    /// <summary>Advertised on every request after the handshake, per the protocol header rule.</summary>
-    public void SetProtocolVersion(string negotiatedVersion) => _protocolVersion = negotiatedVersion;
+    public static McpHttpTransport Start(
+        McpServerSettings server,
+        string serverName,
+        HttpClient httpClient,
+        McpTokenStore? tokenStore = null,
+        McpSecretSet? secrets = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (server.Url is not { Length: > 0 } url || !Uri.TryCreate(url, UriKind.Absolute, out var endpoint))
+        {
+            throw new McpConnectionException($"MCP server '{serverName}' does not define an absolute HTTP url.");
+        }
+
+        var credential = tokenStore is null ? null : new McpHttpCredential(tokenStore, serverName, secrets);
+        return new McpHttpTransport(endpoint, serverName, server.Headers, httpClient, credential);
+    }
+
+    public async Task InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        var negotiated = await _protocol.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        // Advertised on every request after the handshake, per the protocol header rule.
+        _protocolVersion = negotiated;
+    }
+
+    public async Task<IReadOnlyList<McpToolInfo>> ListToolsAsync(CancellationToken cancellationToken = default) =>
+        await _protocol.ListToolsAsync(cancellationToken).ConfigureAwait(false);
+
+    public async Task<McpToolCallResult> CallToolAsync(
+        string toolName,
+        JsonElement arguments,
+        CancellationToken cancellationToken = default) =>
+        await _protocol.CallToolAsync(toolName, arguments, cancellationToken).ConfigureAwait(false);
 
     public async ValueTask DisposeAsync()
     {
-        _incoming.Writer.TryComplete();
-        if (_ownsHttp)
+        if (_disposed)
         {
-            _http.Dispose();
+            return;
         }
 
+        _disposed = true;
+        _session.Fault("The MCP connection was closed.");
+        _incoming.Writer.TryComplete();
         await ValueTask.CompletedTask.ConfigureAwait(false);
     }
 
@@ -140,7 +173,7 @@ internal sealed class McpHttpTransport : IAsyncDisposable
 
         using (response)
         {
-            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            if (response.StatusCode is HttpStatusCode.Unauthorized)
             {
                 if (allowAuthRetry &&
                     _credential is not null &&
@@ -151,8 +184,7 @@ internal sealed class McpHttpTransport : IAsyncDisposable
                     return;
                 }
 
-                throw new McpAuthorizationException(
-                    $"MCP server '{_serverName}' requires authorization. Run 'wfx mcp auth {_serverName}' to sign in.");
+                throw new McpAuthorizationException(McpSignInRemediation.Message(_serverName));
             }
 
             if (!response.IsSuccessStatusCode)

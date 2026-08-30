@@ -1,5 +1,4 @@
 using Wfx.Core;
-using Wfx.Mcp;
 
 namespace Wfx.Cli.Tests;
 
@@ -16,10 +15,10 @@ public sealed class McpAuthCommandTests
         try
         {
             Directory.CreateDirectory(Path.Combine(directory.FullName, ".wfx"));
-            var store = new McpTokenStore(Path.Combine(directory.FullName, ".wfx", "mcp-tokens.json"));
-            store.Save("remote", new McpTokenRecord(
-                "https://mcp.example.com/mcp", "access-1", "refresh-1", null,
-                "https://auth.example.com/token", "wfx"));
+            var storePath = Path.Combine(directory.FullName, ".wfx", "mcp-tokens.json");
+            File.WriteAllText(storePath, """
+                {"servers":{"remote":{"server_url":"https://mcp.example.com/mcp","access_token":"access-1","refresh_token":"refresh-1","token_endpoint":"https://auth.example.com/token","client_id":"wfx"}}}
+                """);
 
             var exitCode = await CliRunner.RunAsync(
                 ["mcp", "auth", "--revoke", "remote"],
@@ -29,7 +28,7 @@ public sealed class McpAuthCommandTests
                 userProfile: directory.FullName);
 
             Assert.Equal(0, exitCode);
-            Assert.Null(store.Get("remote"));
+            Assert.DoesNotContain("access-1", File.ReadAllText(storePath));
             Assert.Contains("removed the stored credential", console.Output.ToString());
             Assert.DoesNotContain("access-1", console.Output.ToString());
         }

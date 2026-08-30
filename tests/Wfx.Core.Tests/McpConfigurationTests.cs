@@ -344,7 +344,8 @@ public sealed class McpConfigurationTests
             { "mcp_servers": { "base": { "command": "node" } } }
             """);
 
-        var exception = Assert.Throws<InvalidOperationException>(
+        // The same undefined-profile failure a full configuration load reports.
+        var exception = Assert.Throws<UndefinedProfileException>(
             () => WfxConfiguration.LoadUserMcpServers(profile.Path, "ghost"));
 
         Assert.Contains("'ghost'", exception.Message);

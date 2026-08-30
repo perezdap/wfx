@@ -8,7 +8,7 @@ namespace Wfx.Mcp;
 /// re-running discovery. Tokens are secrets: they are never logged and never written to the
 /// event stream.
 /// </summary>
-public sealed record McpTokenRecord(
+internal sealed record McpTokenRecord(
     string ServerUrl,
     string AccessToken,
     string? RefreshToken,
@@ -22,7 +22,7 @@ public sealed record McpTokenRecord(
 /// or corrupt file reads as empty rather than failing the CLI. Serialization is
 /// <see cref="Utf8JsonWriter"/>/<see cref="JsonDocument"/> only, keeping Native AOT clean.
 /// </summary>
-public sealed class McpTokenStore
+internal sealed class McpTokenStore
 {
     private static readonly JsonDocumentOptions ReadOptions = new()
     {
@@ -45,6 +45,9 @@ public sealed class McpTokenStore
     {
         return Load().TryGetValue(serverName, out var record) ? record : null;
     }
+
+    /// <summary>Every stored credential, e.g. for seeding the host's redaction set.</summary>
+    public IReadOnlyDictionary<string, McpTokenRecord> LoadAll() => Load();
 
     public void Save(string serverName, McpTokenRecord record)
     {

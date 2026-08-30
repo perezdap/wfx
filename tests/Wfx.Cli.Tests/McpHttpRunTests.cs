@@ -102,10 +102,10 @@ public sealed class McpHttpRunTests
         Environment.CurrentDirectory = workspace.FullName;
         try
         {
-            // No --quiet: the remediation warning must reach stderr. No browser is launched:
-            // the run completes without prompting.
+            // --quiet suppresses chatter, never the remediation: it reaches stderr as one
+            // structured JSON object. No browser is launched; the run completes unattended.
             var exitCode = await CliRunner.RunAsync(
-                ["run", "--json", "inspect"],
+                ["run", "--json", "--quiet", "inspect"],
                 CliRunner.CreateUnexpectedHttpClient("The injected provider must be used for the model."),
                 new SessionStore(Path.Combine(workspace.FullName, "sessions")),
                 TestContext.Current.CancellationToken,
@@ -115,11 +115,180 @@ public sealed class McpHttpRunTests
                 ]));
 
             Assert.Equal(0, exitCode);
-            Assert.Contains("wfx mcp auth remote", console.ErrorText);
+            var warning = Assert.Single(ParseLines(console.ErrorText));
+            Assert.Equal("warning", warning.GetProperty("event").GetString());
+            Assert.Equal("mcp_authorization_required", warning.GetProperty("kind").GetString());
+            Assert.Equal("remote", warning.GetProperty("server").GetString());
+            Assert.Equal("wfx mcp auth remote", warning.GetProperty("remediation").GetString());
+            Assert.Contains("wfx mcp auth remote", warning.GetProperty("message").GetString());
             var events = ParseLines(console.Output.ToString());
             Assert.Equal("turn_started", events[0].GetProperty("event").GetString());
             Assert.Equal("turn_completed", events[^1].GetProperty("event").GetString());
             Assert.DoesNotContain(events, e => e.GetProperty("event").GetString() == "tool_started");
+        }
+        finally
+        {
+            Environment.CurrentDirectory = originalDirectory;
+        }
+    }
+
+    [Fact]
+    public async Task JsonRun_WithStoredToken_ConnectsWithoutPrompting()
+    {
+        var workspace = Directory.CreateTempSubdirectory("wfx-cli-tests-");
+        using var console = new ConsoleCapture();
+        var originalDirectory = Environment.CurrentDirectory;
+        var userProfile = Path.Combine(workspace.FullName, "profile");
+        using var mcpServer = new LoopbackHttpServer(request =>
+        {
+            // The endpoint demands the stored bearer token on every call.
+            if (!request.Headers.TryGetValue("Authorization", out var authorization) ||
+                authorization != "Bearer stored-token")
+            {
+                return LoopbackResponse.Json("{\"error\":\"invalid_token\"}", status: 401);
+            }
+
+            using var document = JsonDocument.Parse(request.Body);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("id", out var id))
+            {
+                return LoopbackResponse.Accepted();
+            }
+
+            var result = root.GetProperty("method").GetString() switch
+            {
+                "initialize" => "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake\",\"version\":\"1.0\"}}",
+                "tools/list" => "{\"tools\":[{\"name\":\"echo\",\"inputSchema\":{\"type\":\"object\"}}]}",
+                _ => "{\"content\":[{\"type\":\"text\",\"text\":\"authorized-pong\"}]}"
+            };
+            return LoopbackResponse.Json(
+                $"{{\"jsonrpc\":\"2.0\",\"id\":{id.GetRawText()},\"result\":{result}}}");
+        });
+        Directory.CreateDirectory(Path.Combine(workspace.FullName, ".wfx"));
+        Directory.CreateDirectory(Path.Combine(userProfile, ".wfx"));
+        File.WriteAllText(
+            Path.Combine(workspace.FullName, ".wfx", "config.json"),
+            """{ "provider": "local", "base_url": "https://example.test/v1", "model": "fake-model", "approval": "yolo" }""");
+        File.WriteAllText(
+            Path.Combine(userProfile, ".wfx", "config.json"),
+            $$"""{ "mcp_servers": { "remote": { "url": "{{new Uri(mcpServer.BaseUri, "/mcp")}}" } } }""");
+        File.WriteAllText(
+            Path.Combine(userProfile, ".wfx", "mcp-tokens.json"),
+            $$"""{"servers":{"remote":{"server_url":"{{new Uri(mcpServer.BaseUri, "/mcp")}}","access_token":"stored-token","refresh_token":"refresh-1","expires_at_utc":"{{DateTimeOffset.UtcNow.AddHours(1):O}}","token_endpoint":"{{new Uri(mcpServer.BaseUri, "/token")}}","client_id":"wfx"} } }""");
+        Environment.CurrentDirectory = workspace.FullName;
+        try
+        {
+            var exitCode = await CliRunner.RunAsync(
+                ["run", "--json", "--quiet", "inspect"],
+                CliRunner.CreateUnexpectedHttpClient("The injected provider must be used for the model."),
+                new SessionStore(Path.Combine(workspace.FullName, "sessions")),
+                TestContext.Current.CancellationToken,
+                userProfile,
+                modelProviderFactory: (_, _) => new ScriptedProvider([
+                    new ModelCompleted(new ModelMessage(
+                        ModelRole.Assistant,
+                        null,
+                        [new ModelToolCall("call-1", "mcp_remote_echo", "{}")])),
+                    new ModelCompleted(new ModelMessage(ModelRole.Assistant, "done"))
+                ]));
+
+            Assert.Equal(0, exitCode);
+            Assert.Empty(console.ErrorText);
+            var events = ParseLines(console.Output.ToString());
+            var completed = Assert.Single(events, e => e.GetProperty("event").GetString() == "tool_completed");
+            Assert.Equal("mcp_remote_echo", completed.GetProperty("name").GetString());
+            Assert.Equal("completed", completed.GetProperty("outcome").GetString());
+            Assert.Contains("authorized-pong", completed.GetProperty("result").GetProperty("content").GetString());
+            // The token never appears in the event stream or on stderr.
+            Assert.DoesNotContain("stored-token", console.Output.ToString());
+            Assert.DoesNotContain("stored-token", console.ErrorText);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = originalDirectory;
+        }
+    }
+
+    [Fact]
+    public async Task JsonRun_UnauthorizedWithLiveRefreshToken_RefreshesAndConnects()
+    {
+        var workspace = Directory.CreateTempSubdirectory("wfx-cli-tests-");
+        using var console = new ConsoleCapture();
+        var originalDirectory = Environment.CurrentDirectory;
+        var userProfile = Path.Combine(workspace.FullName, "profile");
+        using var mcpServer = new LoopbackHttpServer(request =>
+        {
+            if (request.Path == "/token")
+            {
+                Assert.Contains("refresh_token=refresh-1", request.Body);
+                return LoopbackResponse.Json(
+                    """{"access_token":"fresh-token","refresh_token":"refresh-2","expires_in":3600,"token_type":"Bearer"}""");
+            }
+
+            // The stale access token is rejected with 401; the refreshed token connects.
+            var authorized = request.Headers.TryGetValue("Authorization", out var authorization) &&
+                authorization == "Bearer fresh-token";
+            if (!authorized)
+            {
+                return LoopbackResponse.Json("{\"error\":\"invalid_token\"}", status: 401);
+            }
+
+            using var document = JsonDocument.Parse(request.Body);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("id", out var id))
+            {
+                return LoopbackResponse.Accepted();
+            }
+
+            var result = root.GetProperty("method").GetString() switch
+            {
+                "initialize" => "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake\",\"version\":\"1.0\"}}",
+                "tools/list" => "{\"tools\":[{\"name\":\"echo\",\"inputSchema\":{\"type\":\"object\"}}]}",
+                _ => "{\"content\":[{\"type\":\"text\",\"text\":\"refreshed-pong\"}]}"
+            };
+            return LoopbackResponse.Json(
+                $"{{\"jsonrpc\":\"2.0\",\"id\":{id.GetRawText()},\"result\":{result}}}");
+        });
+        Directory.CreateDirectory(Path.Combine(workspace.FullName, ".wfx"));
+        Directory.CreateDirectory(Path.Combine(userProfile, ".wfx"));
+        File.WriteAllText(
+            Path.Combine(workspace.FullName, ".wfx", "config.json"),
+            """{ "provider": "local", "base_url": "https://example.test/v1", "model": "fake-model", "approval": "yolo" }""");
+        File.WriteAllText(
+            Path.Combine(userProfile, ".wfx", "config.json"),
+            $$"""{ "mcp_servers": { "remote": { "url": "{{new Uri(mcpServer.BaseUri, "/mcp")}}" } } }""");
+        File.WriteAllText(
+            Path.Combine(userProfile, ".wfx", "mcp-tokens.json"),
+            $$"""{"servers":{"remote":{"server_url":"{{new Uri(mcpServer.BaseUri, "/mcp")}}","access_token":"stale-token","refresh_token":"refresh-1","expires_at_utc":"{{DateTimeOffset.UtcNow.AddHours(1):O}}","token_endpoint":"{{new Uri(mcpServer.BaseUri, "/token")}}","client_id":"wfx"} } }""");
+        Environment.CurrentDirectory = workspace.FullName;
+        try
+        {
+            var exitCode = await CliRunner.RunAsync(
+                ["run", "--json", "--quiet", "inspect"],
+                CliRunner.CreateUnexpectedHttpClient("The injected provider must be used for the model."),
+                new SessionStore(Path.Combine(workspace.FullName, "sessions")),
+                TestContext.Current.CancellationToken,
+                userProfile,
+                modelProviderFactory: (_, _) => new ScriptedProvider([
+                    new ModelCompleted(new ModelMessage(
+                        ModelRole.Assistant,
+                        null,
+                        [new ModelToolCall("call-1", "mcp_remote_echo", "{}")])),
+                    new ModelCompleted(new ModelMessage(ModelRole.Assistant, "done"))
+                ]));
+
+            Assert.Equal(0, exitCode);
+            Assert.Empty(console.ErrorText);
+            var events = ParseLines(console.Output.ToString());
+            var completed = Assert.Single(events, e => e.GetProperty("event").GetString() == "tool_completed");
+            Assert.Equal("completed", completed.GetProperty("outcome").GetString());
+            Assert.Contains("refreshed-pong", completed.GetProperty("result").GetProperty("content").GetString());
+            var storeText = File.ReadAllText(Path.Combine(userProfile, ".wfx", "mcp-tokens.json"));
+            Assert.Contains("fresh-token", storeText);
+            // Neither the stale nor the refreshed token ever appears in the output.
+            Assert.DoesNotContain("stale-token", console.Output.ToString());
+            Assert.DoesNotContain("fresh-token", console.Output.ToString());
+            Assert.DoesNotContain("fresh-token", console.ErrorText);
         }
         finally
         {

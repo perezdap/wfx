@@ -71,7 +71,7 @@ internal static class Program
             // configured model endpoint.
             if (arguments.Command == CliCommand.McpAuth)
             {
-                return await RunMcpAuthAsync(arguments, httpClient, userProfile, cancellationToken)
+                return await RunMcpAuthAsync(arguments, userProfile, cancellationToken)
                     .ConfigureAwait(false);
             }
 
@@ -232,7 +232,7 @@ internal static class Program
         var provider = CreateModelProvider(settings, httpClient, modelProviderFactory);
         await using var mcp = await ConnectMcpAsync(settings, workspace, arguments, userProfile, cancellationToken).ConfigureAwait(false);
         var skills = DiscoverSkills(userProfile, workspace, cancellationToken);
-        var agent = CreateAgent(settings, workspace, arguments, provider, settings.MaxIterations, [], session, console, timeProvider, mcp.Tools, skills);
+        var agent = CreateAgent(settings, workspace, arguments, provider, settings.MaxIterations, [], session, console, timeProvider, mcp, skills);
         return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
     }
 
@@ -268,7 +268,7 @@ internal static class Program
             resumedSession.Log,
             console,
             timeProvider,
-            mcp.Tools,
+            mcp,
             skills);
         return await RunTurnCommandAsync(agent, prompt, arguments, cancellationToken).ConfigureAwait(false);
     }
@@ -407,7 +407,7 @@ internal static class Program
             try
             {
                 EnsureRunnable(settings);
-                var agent = CreateAgent(settings, workspace, arguments, provider, null, conversation, session, console, timeProvider, mcp.Tools, skills);
+                var agent = CreateAgent(settings, workspace, arguments, provider, null, conversation, session, console, timeProvider, mcp, skills);
                 var result = await agent.RunAsync(prompt, cancellationToken).ConfigureAwait(false);
                 conversation = result.Messages;
                 PrintTrailingNewline(result);
@@ -622,9 +622,10 @@ internal static class Program
         SessionLog? session,
         IConsoleEnvironment console,
         TimeProvider? timeProvider,
-        IReadOnlyList<ITool> mcpTools,
+        McpHost mcp,
         ISkillLocator skills)
     {
+        var mcpTools = mcp.Tools;
         var tools = mcpTools.Count == 0
             ? BuiltInTools.Create(workspace.Root, skills)
             : new ToolRegistry([.. BuiltInTools.CreateTools(workspace.Root, skills), .. mcpTools]);
@@ -639,7 +640,9 @@ internal static class Program
         }
 
         var context = new CompositeContextProvider(contextProviders);
-        var secrets = ProviderSecrets(settings);
+        // Provider secrets are fixed at startup; the host's MCP secret set is live, so a token
+        // minted by a mid-run refresh is redacted too.
+        var secrets = new RedactionSecretList(ProviderSecrets(settings), mcp.Secrets);
         var approval = new PolicyApprovalService(
             settings.Approval,
             (request, token) => PromptForApprovalAsync(request, secrets, console, token));
@@ -684,6 +687,7 @@ internal static class Program
     /// <summary>
     /// Connects every user-configured MCP server eagerly, stdio and HTTP alike. Unavailable
     /// servers warn and contribute no tools; a failed server never aborts the invocation.
+    /// Authorization reminders are reported separately and are never suppressed by --quiet.
     /// </summary>
     private static async ValueTask<McpHost> ConnectMcpAsync(
         WfxSettings settings,
@@ -693,9 +697,7 @@ internal static class Program
         CancellationToken cancellationToken)
     {
         var reportWarnings = !arguments.Json || !arguments.Quiet;
-        // MCP servers get their own HttpClient: the shared one is the model-provider test
-        // seam and must not carry MCP traffic.
-        return await McpHost.ConnectAsync(
+        var host = await McpHost.ConnectAsync(
             settings.McpServers,
             workspace.Root,
             message =>
@@ -706,30 +708,29 @@ internal static class Program
                 }
             },
             cancellationToken,
-            tokenStore: McpTokenStore.ForUserProfile(userProfile)).ConfigureAwait(false);
+            userProfile: userProfile).ConfigureAwait(false);
+        McpAuthorizationReminderWriter.Report(host.AuthorizationReminders, arguments.Json);
+        return host;
     }
 
     /// <summary>
     /// The explicit, interactive OAuth sign-in for a remote MCP server. Never runs mid-turn:
     /// a noninteractive run hitting an unauthorized endpoint gets the remediation naming this
-    /// command instead. Exit codes: 0 signed in / credential removed, 1 sign-in failed,
+    /// command instead. The host owns the store, redirect, and flow; the CLI parses, calls,
+    /// prints, exits. Exit codes: 0 signed in / credential removed, 1 sign-in failed,
     /// 2 usage or configuration error.
     /// </summary>
     private static async Task<int> RunMcpAuthAsync(
         CliArguments arguments,
-        HttpClient httpClient,
         string? userProfile,
         CancellationToken cancellationToken)
     {
         var serverName = arguments.McpServerName!;
-        var store = McpTokenStore.ForUserProfile(userProfile);
+        await using var authorizer = McpHost.CreateAuthorizer(userProfile);
         if (arguments.McpRevoke)
         {
-            // Revocation works even for a server that is no longer configured, so stale
-            // credentials are never stranded.
-            Console.WriteLine(store.Remove(serverName)
-                ? $"wfx: removed the stored credential for MCP server '{serverName}'."
-                : $"wfx: no stored credential for MCP server '{serverName}'.");
+            var revocation = authorizer.Revoke(serverName);
+            Console.WriteLine($"wfx: {revocation.Message}");
             return 0;
         }
 
@@ -744,37 +745,23 @@ internal static class Program
             return 2;
         }
 
-        if (!servers.TryGetValue(serverName, out var server))
+        var result = await authorizer.AuthorizeAsync(
+            serverName,
+            servers,
+            message => Console.Error.WriteLine($"wfx: {message}"),
+            cancellationToken).ConfigureAwait(false);
+        switch (result.Outcome)
         {
-            Console.Error.WriteLine($"wfx: MCP server '{serverName}' is not configured in the user configuration.");
-            return 2;
+            case McpAuthorizationOutcome.SignedIn:
+                Console.WriteLine($"wfx: {result.Message}");
+                return 0;
+            case McpAuthorizationOutcome.Failed:
+                Console.Error.WriteLine($"wfx: {result.Message}");
+                return 1;
+            default:
+                Console.Error.WriteLine($"wfx: {result.Message}");
+                return 2;
         }
-
-        if (!server.IsHttp)
-        {
-            Console.Error.WriteLine($"wfx: MCP server '{serverName}' is a stdio server; sign-in applies to HTTP servers only.");
-            return 2;
-        }
-
-        using var redirect = new McpLoopbackBrowserRedirect();
-        var flow = new McpOAuthFlow(httpClient, store);
-        try
-        {
-            await flow.AuthorizeAsync(
-                serverName,
-                server,
-                redirect,
-                message => Console.Error.WriteLine($"wfx: {message}"),
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (InvalidOperationException exception)
-        {
-            Console.Error.WriteLine($"wfx: sign-in to MCP server '{serverName}' failed: {exception.Message}");
-            return 1;
-        }
-
-        Console.WriteLine($"wfx: signed in to MCP server '{serverName}'. The credential is stored in {store.Path}.");
-        return 0;
     }
 
     private static IModelProvider CreateModelProvider(
@@ -807,19 +794,6 @@ internal static class Program
             if (!string.IsNullOrEmpty(value))
             {
                 secrets.Add(value);
-            }
-        }
-
-        // MCP HTTP headers can carry credentials (API keys, static bearer tokens); they get
-        // the same redaction as provider credentials.
-        foreach (var server in settings.McpServers.Values)
-        {
-            foreach (var value in server.Headers.Values)
-            {
-                if (!string.IsNullOrEmpty(value))
-                {
-                    secrets.Add(value);
-                }
             }
         }
 

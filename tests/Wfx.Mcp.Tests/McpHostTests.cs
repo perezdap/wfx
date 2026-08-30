@@ -101,8 +101,7 @@ public sealed class McpHostTests
         };
 
         await using var host = await McpHost.ConnectAsync(
-                servers, workspace.Path, warnings.Add, TestContext.Current.CancellationToken,
-                httpClient: new HttpClient())
+                servers, workspace.Path, warnings.Add, TestContext.Current.CancellationToken)
             .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
         Assert.Empty(warnings);
@@ -117,6 +116,69 @@ public sealed class McpHostTests
             TestContext.Current.CancellationToken);
         Assert.True(result.Success);
         Assert.Equal("pong", result.Output);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_UnauthorizedServer_RecordsReminderInsteadOfWarning()
+    {
+        using var server = new LoopbackHttpServer(_ => LoopbackResponse.Json("{}", status: 401));
+        using var workspace = new TemporaryDirectory();
+        var warnings = new List<string>();
+        var servers = new Dictionary<string, McpServerSettings>
+        {
+            ["remote"] = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString())
+        };
+
+        await using var host = await McpHost.ConnectAsync(
+                servers, workspace.Path, warnings.Add, TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+        Assert.Empty(host.Tools);
+        Assert.Empty(warnings);
+        var reminder = Assert.Single(host.AuthorizationReminders);
+        Assert.Equal("remote", reminder.ServerName);
+        Assert.Equal("wfx mcp auth remote", reminder.Command);
+        Assert.Contains("wfx mcp auth remote", reminder.Message);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_SecretsContainHeaderValuesAndStoredTokens()
+    {
+        using var server = new LoopbackHttpServer(request =>
+        {
+            using var document = JsonDocument.Parse(request.Body);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("id", out var id))
+            {
+                return LoopbackResponse.Accepted();
+            }
+
+            var result = root.GetProperty("method").GetString() == "initialize"
+                ? "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake\",\"version\":\"1.0\"}}"
+                : "{\"tools\":[]}";
+            return LoopbackResponse.Json(
+                $"{{\"jsonrpc\":\"2.0\",\"id\":{id.GetRawText()},\"result\":{result}}}");
+        });
+        using var workspace = new TemporaryDirectory();
+        var store = new McpTokenStore(Path.Combine(workspace.Path, "mcp-tokens.json"));
+        store.Save("remote", new McpTokenRecord(
+            new Uri(server.BaseUri, "/mcp").ToString(), "stored-access", "stored-refresh",
+            DateTimeOffset.UtcNow.AddHours(1), "https://auth.example.com/token", "wfx"));
+        var servers = new Dictionary<string, McpServerSettings>
+        {
+            ["remote"] = McpServerSettings.ForHttp(
+                new Uri(server.BaseUri, "/mcp").ToString(),
+                new Dictionary<string, string> { ["X-Api-Key"] = "header-secret" })
+        };
+
+        await using var host = await McpHost.ConnectAsync(
+                servers, workspace.Path, _ => { }, store, TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+        Assert.Empty(host.Tools);
+        Assert.Contains("header-secret", host.Secrets);
+        Assert.Contains("stored-access", host.Secrets);
+        Assert.Contains("stored-refresh", host.Secrets);
     }
 
     private static McpStdioClient CreateIdleClient()

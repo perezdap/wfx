@@ -43,9 +43,10 @@ internal interface IMcpServerConnection : IAsyncDisposable
 }
 
 /// <summary>
-/// An MCP authorization failure: the HTTP endpoint rejected the request with 401/403 and no
-/// valid credential is stored. The message carries the remediation (run
-/// <c>wfx mcp auth &lt;server&gt;</c>); it never carries a token.
+/// An MCP authorization failure: the HTTP endpoint rejected the request with 401 and no valid
+/// credential is stored. The message carries the remediation (run
+/// <c>wfx mcp auth &lt;server&gt;</c>); it never carries a token. A 403 is not an auth
+/// challenge — it surfaces as an ordinary <see cref="McpConnectionException"/>.
 /// </summary>
 internal sealed class McpAuthorizationException : McpConnectionException
 {
@@ -53,4 +54,38 @@ internal sealed class McpAuthorizationException : McpConnectionException
         : base(message, innerException)
     {
     }
+}
+
+/// <summary>
+/// One server that refused the handshake with a 401 and holds no usable credential. The
+/// remediation is part of the CLI's contract with the user: it must always be surfaced, even
+/// when ordinary warnings are suppressed.
+/// </summary>
+public sealed record McpAuthorizationReminder(string ServerName, string Command, string Message);
+
+/// <summary>How an explicit <c>wfx mcp auth</c> sign-in or revocation ended.</summary>
+public enum McpAuthorizationOutcome
+{
+    SignedIn,
+    CredentialRemoved,
+    NoStoredCredential,
+    ServerNotConfigured,
+    ServerNotHttp,
+    Failed
+}
+
+/// <summary>
+/// The outcome of <see cref="McpHost.AuthorizeAsync"/> or <see cref="McpHost.Revoke"/>: what
+/// happened, plus the user-facing message. The caller maps the outcome to its own
+/// presentation and exit code. Messages never carry token material.
+/// </summary>
+public sealed record McpAuthorizationResult(McpAuthorizationOutcome Outcome, string Message);
+
+/// <summary>The single composer of the sign-in remediation text, so transport and host never drift.</summary>
+internal static class McpSignInRemediation
+{
+    public static string Command(string serverName) => $"wfx mcp auth {serverName}";
+
+    public static string Message(string serverName) =>
+        $"MCP server '{serverName}' requires authorization. Run '{Command(serverName)}' to sign in.";
 }

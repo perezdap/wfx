@@ -1,13 +1,16 @@
 using System.Text.Json;
 using Wfx.Core;
 using Wfx.Mcp;
-
 using Wfx.Testing;
 
 namespace Wfx.Mcp.Tests;
 
-public sealed class McpHttpClientTests
+public sealed class McpHttpTransportTests : IDisposable
 {
+    private readonly HttpClient _http = new();
+
+    public void Dispose() => _http.Dispose();
+
     /// <summary>Routes a JSON-RPC POST to a per-method responder; notifications get 202.</summary>
     private static Func<LoopbackRequest, LoopbackResponse> Handler(
         Func<string, JsonElement, LoopbackResponse> respond) => request =>
@@ -29,6 +32,11 @@ public sealed class McpHttpClientTests
     private static LoopbackResponse InitializeResult(JsonElement request) =>
         Result(request, "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake\",\"version\":\"1.0\"}}");
 
+    private McpHttpTransport Start(
+        McpServerSettings settings,
+        string serverName = "remote",
+        McpTokenStore? store = null) =>
+        McpHttpTransport.Start(settings, serverName, _http, store, cancellationToken: TestContext.Current.CancellationToken);
 
     [Fact]
     public async Task InitializeAsync_PostsJsonRpcAndReadsJsonResponse()
@@ -47,7 +55,7 @@ public sealed class McpHttpClientTests
         });
         var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
 
-        await using var client = McpHttpClient.Start(settings, "remote", cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings);
         await client.InitializeAsync(TestContext.Current.CancellationToken);
 
         Assert.Null(server.LastError);
@@ -77,7 +85,7 @@ public sealed class McpHttpClientTests
         });
         var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
 
-        await using var client = McpHttpClient.Start(settings, "remote", cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings);
         await client.InitializeAsync(TestContext.Current.CancellationToken);
     }
 
@@ -99,7 +107,7 @@ public sealed class McpHttpClientTests
         }));
         var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
 
-        await using var client = McpHttpClient.Start(settings, "remote", cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings);
         await client.InitializeAsync(TestContext.Current.CancellationToken);
         await client.ListToolsAsync(TestContext.Current.CancellationToken);
 
@@ -128,7 +136,7 @@ public sealed class McpHttpClientTests
         }));
         var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
 
-        await using var client = McpHttpClient.Start(settings, "remote", cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings);
         await client.InitializeAsync(TestContext.Current.CancellationToken);
         var tools = await client.ListToolsAsync(TestContext.Current.CancellationToken);
 
@@ -151,7 +159,7 @@ public sealed class McpHttpClientTests
         }));
         var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
 
-        await using var client = McpHttpClient.Start(settings, "remote", cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings);
         await client.InitializeAsync(TestContext.Current.CancellationToken);
         using var arguments = JsonDocument.Parse("{\"text\":\"hello\"}");
         var result = await client.CallToolAsync("echo", arguments.RootElement, TestContext.Current.CancellationToken);
@@ -169,7 +177,7 @@ public sealed class McpHttpClientTests
                 : LoopbackResponse.Json("this is not json")));
         var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
 
-        await using var client = McpHttpClient.Start(settings, "remote", cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings);
         await client.InitializeAsync(TestContext.Current.CancellationToken);
         var exception = await Assert.ThrowsAsync<McpConnectionException>(
             () => client.ListToolsAsync(TestContext.Current.CancellationToken));
@@ -193,7 +201,7 @@ public sealed class McpHttpClientTests
         }));
         var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
 
-        await using var client = McpHttpClient.Start(settings, "remote", cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings);
         await client.InitializeAsync(TestContext.Current.CancellationToken);
         var exception = await Assert.ThrowsAsync<McpConnectionException>(
             () => client.ListToolsAsync(TestContext.Current.CancellationToken));
@@ -203,12 +211,39 @@ public sealed class McpHttpClientTests
     }
 
     [Fact]
+    public async Task Forbidden_FailsAsAnOrdinaryError_NotAnAuthChallenge()
+    {
+        var calls = 0;
+        using var server = new LoopbackHttpServer(_ =>
+        {
+            calls++;
+            return LoopbackResponse.Json("{\"detail\":\"no\"}", status: 403);
+        });
+        using var directory = new TemporaryDirectory();
+        var store = new McpTokenStore(Path.Combine(directory.Path, "mcp-tokens.json"));
+        store.Save("remote", new McpTokenRecord(
+            "https://mcp.example.com/mcp", "stored-access-token", "refresh-1",
+            DateTimeOffset.UtcNow.AddHours(1), "https://auth.example.com/token", "wfx"));
+        var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
+
+        await using var client = Start(settings, store: store);
+        var exception = await Assert.ThrowsAsync<McpConnectionException>(
+            () => client.InitializeAsync(TestContext.Current.CancellationToken));
+
+        // A 403 is a structured non-2xx failure: no refresh attempt, no sign-in remediation.
+        Assert.IsNotType<McpAuthorizationException>(exception);
+        Assert.Contains("HTTP 403", exception.Message);
+        Assert.Equal(1, calls);
+        Assert.NotNull(store.Get("remote"));
+    }
+
+    [Fact]
     public async Task Unauthorized_ThrowsSignInRemediation()
     {
         using var server = new LoopbackHttpServer(_ => LoopbackResponse.Json("{}", status: 401));
         var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
 
-        await using var client = McpHttpClient.Start(settings, "remote", cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings);
         var exception = await Assert.ThrowsAsync<McpAuthorizationException>(
             () => client.InitializeAsync(TestContext.Current.CancellationToken));
 
@@ -237,7 +272,7 @@ public sealed class McpHttpClientTests
         });
         var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
 
-        await using var client = McpHttpClient.Start(settings, "remote", cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings);
         await client.InitializeAsync(TestContext.Current.CancellationToken);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
         using var arguments = JsonDocument.Parse("{}");
@@ -257,8 +292,7 @@ public sealed class McpHttpClientTests
             DateTimeOffset.UtcNow.AddHours(1), "https://auth.example.com/token", "wfx"));
         var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
 
-        await using var client = McpHttpClient.Start(
-            settings, "remote", tokenStore: store, cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings, store: store);
         await client.InitializeAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal("Bearer stored-access-token", server.Requests[0].Headers["Authorization"]);
@@ -283,11 +317,61 @@ public sealed class McpHttpClientTests
             new Uri(authorizationServer.BaseUri, "/token").ToString(), "wfx"));
         var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
 
-        await using var client = McpHttpClient.Start(
-            settings, "remote", tokenStore: store, cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings, store: store);
         await client.InitializeAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal("Bearer fresh-access-token", server.Requests[0].Headers["Authorization"]);
+        Assert.Equal("fresh-access-token", store.Get("remote")!.AccessToken);
+    }
+
+    [Fact]
+    public async Task Unauthorized_WithLiveRefreshToken_RefreshesAndRetries()
+    {
+        using var authorizationServer = new LoopbackHttpServer(request =>
+        {
+            Assert.Equal("/token", request.Path);
+            Assert.Contains("refresh_token=refresh-1", request.Body);
+            return LoopbackResponse.Json(
+                """{"access_token":"fresh-access-token","refresh_token":"refresh-2","expires_in":3600,"token_type":"Bearer"}""");
+        });
+        using var server = new LoopbackHttpServer(request =>
+        {
+            using var document = JsonDocument.Parse(request.Body);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("id", out _))
+            {
+                return LoopbackResponse.Accepted();
+            }
+
+            // The stored access token is rejected once; the refreshed token connects.
+            var authorized = request.Headers.TryGetValue("Authorization", out var authorization) &&
+                authorization == "Bearer fresh-access-token";
+            if (!authorized)
+            {
+                return LoopbackResponse.Json("{\"error\":\"invalid_token\"}", status: 401);
+            }
+
+            return root.GetProperty("method").GetString() == "initialize"
+                ? InitializeResult(root)
+                : Result(root, "{\"tools\":[]}");
+        });
+        using var directory = new TemporaryDirectory();
+        var store = new McpTokenStore(Path.Combine(directory.Path, "mcp-tokens.json"));
+        store.Save("remote", new McpTokenRecord(
+            new Uri(server.BaseUri, "/mcp").ToString(), "stale-access-token", "refresh-1",
+            DateTimeOffset.UtcNow.AddHours(1),
+            new Uri(authorizationServer.BaseUri, "/token").ToString(), "wfx"));
+        var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
+
+        await using var client = Start(settings, store: store);
+        await client.InitializeAsync(TestContext.Current.CancellationToken);
+
+        var initializes = server.Requests
+            .Where(request => request.Body.Contains("\"initialize\"", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(2, initializes.Length);
+        Assert.Equal("Bearer stale-access-token", initializes[0].Headers["Authorization"]);
+        Assert.Equal("Bearer fresh-access-token", initializes[1].Headers["Authorization"]);
         Assert.Equal("fresh-access-token", store.Get("remote")!.AccessToken);
     }
 
@@ -305,13 +389,38 @@ public sealed class McpHttpClientTests
             new Uri(authorizationServer.BaseUri, "/token").ToString(), "wfx"));
         var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
 
-        await using var client = McpHttpClient.Start(
-            settings, "remote", tokenStore: store, cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings, store: store);
         var exception = await Assert.ThrowsAsync<McpAuthorizationException>(
             () => client.InitializeAsync(TestContext.Current.CancellationToken));
 
         Assert.Contains("wfx mcp auth remote", exception.Message);
         Assert.Null(store.Get("remote"));
+    }
+
+    [Fact]
+    public async Task RefreshedToken_JoinsTheSecretSet()
+    {
+        using var authorizationServer = new LoopbackHttpServer(_ => LoopbackResponse.Json(
+            """{"access_token":"fresh-access-token","refresh_token":"refresh-2","expires_in":3600,"token_type":"Bearer"}"""));
+        using var server = new LoopbackHttpServer(Handler((method, request) =>
+            method == "initialize" ? InitializeResult(request) : Result(request, "{\"tools\":[]}")));
+        using var directory = new TemporaryDirectory();
+        var store = new McpTokenStore(Path.Combine(directory.Path, "mcp-tokens.json"));
+        store.Save("remote", new McpTokenRecord(
+            new Uri(server.BaseUri, "/mcp").ToString(), "stale-access-token", "refresh-1",
+            DateTimeOffset.UtcNow.AddMinutes(-5),
+            new Uri(authorizationServer.BaseUri, "/token").ToString(), "wfx"));
+        var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
+        var secrets = new McpSecretSet();
+
+        await using var client = McpHttpTransport.Start(
+            settings, "remote", _http, store, secrets, TestContext.Current.CancellationToken);
+        await client.InitializeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Contains("stale-access-token", secrets);
+        Assert.Contains("refresh-1", secrets);
+        Assert.Contains("fresh-access-token", secrets);
+        Assert.Contains("refresh-2", secrets);
     }
 
     [Fact]
@@ -328,8 +437,7 @@ public sealed class McpHttpClientTests
             new Uri(server.BaseUri, "/mcp").ToString(),
             new Dictionary<string, string> { ["Authorization"] = "Bearer static-config-token" });
 
-        await using var client = McpHttpClient.Start(
-            settings, "remote", tokenStore: store, cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings, store: store);
         await client.InitializeAsync(TestContext.Current.CancellationToken);
 
         // Exactly one Authorization header: the OAuth credential wins over the static config.
@@ -345,7 +453,7 @@ public sealed class McpHttpClientTests
             new Uri(server.BaseUri, "/mcp").ToString(),
             new Dictionary<string, string> { ["X-Api-Key"] = "super-secret-value" });
 
-        await using var client = McpHttpClient.Start(settings, "remote", cancellationToken: TestContext.Current.CancellationToken);
+        await using var client = Start(settings);
         var exception = await Assert.ThrowsAsync<McpConnectionException>(
             () => client.InitializeAsync(TestContext.Current.CancellationToken));
 
