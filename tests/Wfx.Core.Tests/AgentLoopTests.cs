@@ -549,6 +549,57 @@ public sealed class AgentLoopTests
     }
 
     [Fact]
+    public async Task ExplicitSecretsAreRedactedFromToolEventsAndTheModelView()
+    {
+        using var workspace = new TemporaryDirectory();
+        const string token = "opaque-mcp-token-12345";
+        var model = new SequenceModelProvider([
+            new ModelMessage(ModelRole.Assistant, null,
+            [new ModelToolCall("call-1", "echo", $"{{\"value\":\"{token}\"}}")]),
+            new ModelMessage(ModelRole.Assistant, "finished")
+        ]);
+        var observer = new TypedRecordingObserver();
+        var echo = new EchoTool();
+        var agent = new Agent(
+            model,
+            new ToolRegistry([echo]),
+            new PolicyApprovalService(ApprovalMode.Workspace, static (_, _) => ValueTask.FromResult(false)),
+            new StaticContextProvider("test context"),
+            observer,
+            new AgentOptions("fake-model"),
+            workspace.Path,
+            secrets: [token]);
+
+        await agent.RunAsync("do it", TestContext.Current.CancellationToken);
+
+        // arguments_json in the event stream vocabulary
+        var started = Assert.Single(observer.Events.OfType<ToolStartedEvent>());
+        Assert.DoesNotContain(token, started.ArgumentsJson);
+        Assert.Contains("[REDACTED]", started.ArgumentsJson);
+
+        // tool result content in the event stream
+        var completed = Assert.Single(observer.Events.OfType<ToolCompletedEvent>());
+        Assert.DoesNotContain(token, completed.Result.Output);
+
+        // the assistant message event — what the transcript persists
+        var assistantEvent = observer.Events.OfType<MessageEvent>()
+            .Select(e => e.Message)
+            .First(m => m.Role == ModelRole.Assistant && m.ToolCalls is { Count: > 0 });
+        Assert.DoesNotContain(token, Assert.Single(assistantEvent.ToolCalls!).ArgumentsJson);
+
+        // the tool result fed back to the model
+        var toolMessage = Assert.Single(model.Requests[1].Messages, m => m.Role == ModelRole.Tool);
+        Assert.DoesNotContain(token, toolMessage.Content);
+
+        // Execution integrity: the tool ran with the arguments the model wrote, and the
+        // in-memory assistant turn is replayed to the model verbatim. Only the observed
+        // events and the tool result are redacted.
+        Assert.Equal(1, echo.ExecutionCount);
+        var assistantReplay = model.Requests[1].Messages.First(m => m.Role == ModelRole.Assistant);
+        Assert.Contains(token, Assert.Single(assistantReplay.ToolCalls!).ArgumentsJson);
+    }
+
+    [Fact]
     public async Task NewAgentContinuesAnExistingConversation()
     {
         using var workspace = new TemporaryDirectory();

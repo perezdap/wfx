@@ -154,7 +154,14 @@ public sealed class Agent : IAgent
     private readonly IReadOnlyList<ModelMessage> _conversation;
     private readonly AgentTurnMetadata _turnMetadata;
     private readonly TimeProvider _time;
+    private readonly IReadOnlyList<string>? _secrets;
 
+    /// <param name="secrets">
+    /// Explicit secret values (provider credentials, MCP header values, stored OAuth tokens)
+    /// redacted from observed events and tool results at ingestion, in addition to the
+    /// shape-based pass. The list may be live: it is enumerated at each redaction, so a
+    /// secret added mid-turn is covered from then on.
+    /// </param>
     public Agent(
         IModelProvider modelProvider,
         IToolRegistry tools,
@@ -165,7 +172,8 @@ public sealed class Agent : IAgent
         string workspaceRoot,
         IReadOnlyList<ModelMessage>? conversation = null,
         AgentTurnMetadata? turnMetadata = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IReadOnlyList<string>? secrets = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Model);
         _modelProvider = modelProvider;
@@ -178,6 +186,7 @@ public sealed class Agent : IAgent
         _conversation = conversation?.ToArray() ?? [];
         _turnMetadata = turnMetadata ?? new AgentTurnMetadata(string.Empty, ApprovalMode.Always);
         _time = timeProvider ?? TimeProvider.System;
+        _secrets = secrets;
     }
 
     public async Task<AgentRunResult> RunAsync(string prompt, CancellationToken cancellationToken = default)
@@ -292,8 +301,10 @@ public sealed class Agent : IAgent
             }
 
             messages.Add(assistant);
+            // The observed event carries redacted tool-call arguments; the in-memory message
+            // stays verbatim so execution and the replayed model view are unaffected.
             await _observer.OnEventAsync(
-                new MessageEvent(assistant, _time.GetUtcNow()),
+                new MessageEvent(RedactToolCallArguments(assistant), _time.GetUtcNow()),
                 cancellationToken).ConfigureAwait(false);
             if (completed.Usage is not null)
             {
@@ -371,7 +382,7 @@ public sealed class Agent : IAgent
             new ToolRejectedEvent(
                 call.Id,
                 call.Name,
-                call.ArgumentsJson,
+                SecretRedactor.Redact(call.ArgumentsJson, _secrets),
                 reason,
                 _time.GetUtcNow()),
             cancellationToken).ConfigureAwait(false);
@@ -422,7 +433,7 @@ public sealed class Agent : IAgent
                 new ToolStartedEvent(
                     call.Id,
                     call.Name,
-                    call.ArgumentsJson,
+                    SecretRedactor.Redact(call.ArgumentsJson, _secrets),
                     level,
                     _time.GetUtcNow()),
                 cancellationToken).ConfigureAwait(false);
@@ -453,21 +464,36 @@ public sealed class Agent : IAgent
         }
     }
 
-    private static ToolResult Redact(ToolResult result)
+    private ModelMessage RedactToolCallArguments(ModelMessage message)
+    {
+        if (message.ToolCalls is not { Count: > 0 } calls)
+        {
+            return message;
+        }
+
+        return message with
+        {
+            ToolCalls = calls
+                .Select(call => call with { ArgumentsJson = SecretRedactor.Redact(call.ArgumentsJson, _secrets) })
+                .ToArray()
+        };
+    }
+
+    private ToolResult Redact(ToolResult result)
     {
         IReadOnlyDictionary<string, string>? metadata = null;
         if (result.Metadata is not null)
         {
             metadata = result.Metadata.ToDictionary(
                 static pair => pair.Key,
-                static pair => SecretRedactor.Redact(pair.Value),
+                pair => SecretRedactor.Redact(pair.Value, _secrets),
                 StringComparer.Ordinal);
         }
 
         return new ToolResult(
             result.Success,
-            SecretRedactor.Redact(result.Output),
-            result.Error is null ? null : SecretRedactor.Redact(result.Error),
+            SecretRedactor.Redact(result.Output, _secrets),
+            result.Error is null ? null : SecretRedactor.Redact(result.Error, _secrets),
             metadata);
     }
 

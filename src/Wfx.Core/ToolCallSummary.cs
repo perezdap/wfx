@@ -12,7 +12,7 @@ public static class ToolCallSummary
 {
     public const int DefaultMaxArgumentLength = 160;
 
-    public const int MinSecretLength = 8;
+    public const int MinSecretLength = SecretRedactor.MinSecretLength;
 
     private const string Redacted = "[REDACTED]";
 
@@ -150,26 +150,12 @@ public static class ToolCallSummary
 
     private static string? NonEmpty(string value) => value.Length == 0 ? null : value;
 
-    private static IReadOnlyList<string> NormalizeSecrets(IReadOnlyList<string>? secrets)
-    {
-        if (secrets is null || secrets.Count == 0)
-        {
-            return [];
-        }
-
-        var needles = new List<string>(secrets.Count);
-        foreach (var secret in secrets)
-        {
-            AddNeedles(needles, secret);
-        }
-
-        SortLongestFirst(needles);
-        return needles;
-    }
+    private static IReadOnlyList<string> NormalizeSecrets(IReadOnlyList<string>? secrets) =>
+        SecretRedactor.PrepareNeedles(secrets);
 
     private static IReadOnlyList<string> CollectJsonSecrets(JsonElement root, IReadOnlyList<string> secrets)
     {
-        List<string>? merged = null;
+        List<string>? extra = null;
         foreach (var property in root.EnumerateObject())
         {
             if (!IsSecretPropertyName(property.Name) || property.Value.ValueKind != JsonValueKind.String)
@@ -178,63 +164,14 @@ public static class ToolCallSummary
             }
 
             var value = property.Value.GetString();
-            if (string.IsNullOrEmpty(value) || ContainsIgnoreCase(secrets, value) ||
-                (merged is not null && ContainsIgnoreCase(merged, value)))
+            if (!string.IsNullOrEmpty(value))
             {
-                continue;
-            }
-
-            merged ??= [.. secrets];
-            AddNeedles(merged, value);
-        }
-
-        if (merged is null)
-        {
-            return secrets;
-        }
-
-        SortLongestFirst(merged);
-        return merged;
-    }
-
-    private static void AddNeedles(List<string> needles, string? secret)
-    {
-        if (string.IsNullOrEmpty(secret) || secret.Length < MinSecretLength)
-        {
-            return;
-        }
-
-        AddUnique(needles, secret);
-        var encoded = JsonEncodedText.Encode(secret).ToString();
-        if (!encoded.Equals(secret, StringComparison.Ordinal))
-        {
-            AddUnique(needles, encoded);
-        }
-    }
-
-    private static void AddUnique(List<string> needles, string value)
-    {
-        if (!ContainsIgnoreCase(needles, value))
-        {
-            needles.Add(value);
-        }
-    }
-
-    private static bool ContainsIgnoreCase(IReadOnlyList<string> values, string candidate)
-    {
-        for (var index = 0; index < values.Count; index++)
-        {
-            if (values[index].Equals(candidate, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
+                (extra ??= []).Add(value);
             }
         }
 
-        return false;
+        return extra is null ? secrets : SecretRedactor.PrepareNeedles([.. secrets, .. extra]);
     }
-
-    private static void SortLongestFirst(List<string> values) =>
-        values.Sort(static (left, right) => right.Length.CompareTo(left.Length));
 
     private static string Redact(string? value, IReadOnlyList<string> secrets)
     {

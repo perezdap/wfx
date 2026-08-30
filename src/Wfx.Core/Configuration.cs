@@ -134,7 +134,7 @@ public static class WfxConfiguration
         {
             // Rejection runs on the raw file before parsing: a malformed mcp_servers value
             // must still report the trust-boundary rule, not a shape error.
-            if (!sameConfigFile && ProjectConfigDeclaresMcpServers(projectConfig))
+            if (!sameConfigFile && McpServerConfigParser.ProjectFileDeclaresMcpServers(projectConfig))
             {
                 throw new InvalidOperationException(
                     $"Configuration 'mcp_servers' is only allowed in the user configuration; remove 'mcp_servers' from the project configuration: {projectConfig}");
@@ -171,6 +171,29 @@ public static class WfxConfiguration
                 resolution.Error)).ToArray(),
             Sources = sources
         };
+    }
+
+    /// <summary>
+    /// Reads the user-layer MCP server map without resolving endpoint settings. Used by
+    /// <c>wfx mcp auth</c>, which needs no model endpoint. Project configuration is not
+    /// consulted: MCP servers are a user-layer-only trust boundary (ADR 0007). Profile
+    /// expansion runs through the same machinery a full <see cref="Load"/> uses, so the two
+    /// can never disagree on what a profile's <c>mcp_servers</c> map is.
+    /// </summary>
+    public static IReadOnlyDictionary<string, McpServerSettings> LoadUserMcpServers(
+        string? userProfile = null,
+        string? profile = null)
+    {
+        userProfile ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var userConfig = Path.GetFullPath(Path.Combine(userProfile, ".wfx", "config.json"));
+        var userLayer = File.Exists(userConfig) ? ReadFile(userConfig) : null;
+        if (profile is not null)
+        {
+            userLayer = ExpandProfile(profile, userLayer, projectLayer: null).User;
+        }
+
+        return userLayer?.McpServers ??
+            new Dictionary<string, McpServerSettings>(StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -575,7 +598,7 @@ public static class WfxConfiguration
         IReadOnlyDictionary<string, McpServerSettings>? mcpServers = null;
         if (root.TryGetProperty("mcp_servers", out var mcpElement))
         {
-            mcpServers = ParseMcpServers(mcpElement, path);
+            mcpServers = McpServerConfigParser.Parse(mcpElement, path);
         }
 
         return new WfxSettingsLayer
@@ -591,120 +614,6 @@ public static class WfxConfiguration
             Approval = GetApproval(root, "approval"),
             McpServers = mcpServers
         };
-    }
-
-    private static IReadOnlyDictionary<string, McpServerSettings> ParseMcpServers(JsonElement element, string path)
-    {
-        if (element.ValueKind != JsonValueKind.Object)
-        {
-            throw new InvalidOperationException($"Configuration mcp_servers must be an object: {path}");
-        }
-
-        var servers = new Dictionary<string, McpServerSettings>(StringComparer.OrdinalIgnoreCase);
-        foreach (var property in element.EnumerateObject())
-        {
-            if (property.Value.ValueKind != JsonValueKind.Object)
-            {
-                throw new InvalidOperationException($"MCP server '{property.Name}' must be an object: {path}");
-            }
-
-            var command = GetString(property.Value, "command");
-            if (string.IsNullOrWhiteSpace(command))
-            {
-                throw new InvalidOperationException($"MCP server '{property.Name}' must define a non-empty 'command': {path}");
-            }
-
-            var arguments = new List<string>();
-            if (property.Value.TryGetProperty("args", out var argsElement))
-            {
-                if (argsElement.ValueKind != JsonValueKind.Array)
-                {
-                    throw new InvalidOperationException($"MCP server '{property.Name}' 'args' must be an array of strings: {path}");
-                }
-
-                foreach (var item in argsElement.EnumerateArray())
-                {
-                    if (item.ValueKind != JsonValueKind.String)
-                    {
-                        throw new InvalidOperationException($"MCP server '{property.Name}' 'args' must be an array of strings: {path}");
-                    }
-
-                    arguments.Add(item.GetString()!);
-                }
-            }
-
-            var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            if (property.Value.TryGetProperty("env", out var envElement))
-            {
-                if (envElement.ValueKind != JsonValueKind.Object)
-                {
-                    throw new InvalidOperationException($"MCP server '{property.Name}' 'env' must be an object with string values: {path}");
-                }
-
-                foreach (var variable in envElement.EnumerateObject())
-                {
-                    if (variable.Value.ValueKind != JsonValueKind.String)
-                    {
-                        throw new InvalidOperationException($"MCP server '{property.Name}' environment variable '{variable.Name}' must be a string: {path}");
-                    }
-
-                    environment[variable.Name] = variable.Value.GetString()!;
-                }
-            }
-
-            if (!servers.TryAdd(property.Name, new McpServerSettings(command, arguments, environment)))
-            {
-                throw new InvalidOperationException($"Configuration defines a duplicate MCP server '{property.Name}': {path}");
-            }
-        }
-
-        return servers;
-    }
-
-    private static bool ProjectConfigDeclaresMcpServers(string path)
-    {
-        JsonDocument document;
-        try
-        {
-            document = JsonDocument.Parse(File.ReadAllText(path), new JsonDocumentOptions
-            {
-                AllowTrailingCommas = true,
-                CommentHandling = JsonCommentHandling.Skip
-            });
-        }
-        catch (JsonException)
-        {
-            // An unreadable file surfaces as the ordinary configuration parse error.
-            return false;
-        }
-
-        using (document)
-        {
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-            {
-                return false;
-            }
-
-            if (root.TryGetProperty("mcp_servers", out _))
-            {
-                return true;
-            }
-
-            if (root.TryGetProperty("profiles", out var profiles) && profiles.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var profile in profiles.EnumerateObject())
-                {
-                    if (profile.Value.ValueKind == JsonValueKind.Object &&
-                        profile.Value.TryGetProperty("mcp_servers", out _))
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            return false;
-        }
     }
 
     private static WfxSettingsLayer Defaults => new()

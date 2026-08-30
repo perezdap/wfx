@@ -23,9 +23,9 @@ internal sealed class McpTool : ITool
 {
     private readonly string _serverName;
     private readonly McpToolInfo _info;
-    private readonly McpStdioClient _client;
+    private readonly IMcpServerConnection _client;
 
-    public McpTool(string serverName, McpToolInfo info, McpStdioClient client, string name)
+    public McpTool(string serverName, McpToolInfo info, IMcpServerConnection client, string name)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         _serverName = serverName;
