@@ -7,13 +7,13 @@ namespace Wfx.Mcp;
 /// so redaction covers credentials minted mid-run; an unrecoverable grant is dropped so the
 /// next failure carries the sign-in remediation.
 /// </summary>
-internal sealed class McpHttpCredential(McpTokenStore store, string serverName, McpSecretSet? secrets = null)
+internal sealed class McpHttpCredential(McpTokenStore store, string serverName, McpSecretSet secrets)
 {
     private static readonly TimeSpan ExpirySkew = TimeSpan.FromSeconds(60);
 
     private readonly McpTokenStore _store = store;
     private readonly string _serverName = serverName;
-    private readonly McpSecretSet _secrets = secrets ?? new McpSecretSet();
+    private readonly McpSecretSet _secrets = secrets;
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
 
     public async Task<string?> AcquireAccessTokenAsync(HttpClient http, CancellationToken cancellationToken)
@@ -35,7 +35,7 @@ internal sealed class McpHttpCredential(McpTokenStore store, string serverName, 
                     record.ExpiresAtUtc is { } currentExpiry &&
                     currentExpiry - ExpirySkew <= DateTimeOffset.UtcNow)
                 {
-                    if (!await new McpOAuthFlow(http, _store).RefreshAsync(_serverName, cancellationToken).ConfigureAwait(false))
+                    if (!await RefreshAsync(http, cancellationToken).ConfigureAwait(false))
                     {
                         return null;
                     }
@@ -77,8 +77,7 @@ internal sealed class McpHttpCredential(McpTokenStore store, string serverName, 
                 return true;
             }
 
-            var refreshed = await new McpOAuthFlow(http, _store).RefreshAsync(_serverName, cancellationToken)
-                .ConfigureAwait(false);
+            var refreshed = await RefreshAsync(http, cancellationToken).ConfigureAwait(false);
             if (refreshed)
             {
                 ReadRegistering();
@@ -91,6 +90,9 @@ internal sealed class McpHttpCredential(McpTokenStore store, string serverName, 
             _refreshLock.Release();
         }
     }
+
+    private Task<bool> RefreshAsync(HttpClient http, CancellationToken cancellationToken) =>
+        new McpOAuthFlow(http, _store).RefreshAsync(_serverName, cancellationToken);
 
     /// <summary>Reads the stored credential and registers its token material for redaction.</summary>
     private McpTokenRecord? ReadRegistering()

@@ -1,9 +1,6 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Wfx.Core;
 using Wfx.Mcp;
-
 using Wfx.Testing;
 
 namespace Wfx.Mcp.Tests;
@@ -19,15 +16,19 @@ public sealed class McpOAuthFlowTests
     private sealed class MockAuthorizationServer : IDisposable
     {
         private readonly LoopbackHttpServer _server;
+        private readonly bool _advertiseRegistration;
 
-        public MockAuthorizationServer()
+        public MockAuthorizationServer(bool advertiseRegistration = true)
         {
+            _advertiseRegistration = advertiseRegistration;
             _server = new LoopbackHttpServer(Handle);
         }
 
         public string? SeenCodeChallenge { get; private set; }
 
         public string? SeenState { get; private set; }
+
+        public string? SeenTokenClientId { get; private set; }
 
         public string? RegisteredClientId { get; private set; }
 
@@ -45,9 +46,13 @@ public sealed class McpOAuthFlowTests
 
         private LoopbackResponse Handle(LoopbackRequest request) => request.Path switch
         {
-            "/.well-known/oauth-authorization-server" => LoopbackResponse.Json($$"""
-                {"issuer":"{{BaseText}}","authorization_endpoint":"{{BaseText}}/authorize","token_endpoint":"{{BaseText}}/token","registration_endpoint":"{{BaseText}}/register"}
-                """),
+            "/.well-known/oauth-authorization-server" => LoopbackResponse.Json(_advertiseRegistration
+                ? $$"""
+                    {"issuer":"{{BaseText}}","authorization_endpoint":"{{BaseText}}/authorize","token_endpoint":"{{BaseText}}/token","registration_endpoint":"{{BaseText}}/register"}
+                    """
+                : $$"""
+                    {"issuer":"{{BaseText}}","authorization_endpoint":"{{BaseText}}/authorize","token_endpoint":"{{BaseText}}/token"}
+                    """),
             "/register" => Register(request),
             "/authorize" => Authorize(request),
             "/token" => Token(request),
@@ -62,7 +67,7 @@ public sealed class McpOAuthFlowTests
 
         private LoopbackResponse Authorize(LoopbackRequest request)
         {
-            var query = ParseQuery(request.Query);
+            var query = LoopbackOAuth.ParseQuery(request.Query);
             SeenCodeChallenge = query["code_challenge"];
             SeenState = query["state"];
             Assert.Equal("S256", query["code_challenge_method"]);
@@ -75,7 +80,8 @@ public sealed class McpOAuthFlowTests
         private LoopbackResponse Token(LoopbackRequest request)
         {
             TokenCalls++;
-            var form = ParseForm(request.Body);
+            var form = LoopbackOAuth.ParseForm(request.Body);
+            SeenTokenClientId = form["client_id"];
             if (form["grant_type"] == "refresh_token")
             {
                 if (form["refresh_token"] != "refresh-1")
@@ -89,7 +95,7 @@ public sealed class McpOAuthFlowTests
 
             Assert.Equal("authorization_code", form["grant_type"]);
             Assert.Equal("authcode-1", form["code"]);
-            Assert.Equal(S256(form["code_verifier"]), SeenCodeChallenge);
+            Assert.Equal(LoopbackOAuth.S256(form["code_verifier"]), SeenCodeChallenge);
             return LoopbackResponse.Json(
                 """{"access_token":"access-1","refresh_token":"refresh-1","expires_in":3600,"token_type":"Bearer"}""");
         }
@@ -142,6 +148,34 @@ public sealed class McpOAuthFlowTests
         Assert.Equal(new Uri(authorizationServer.BaseUri, "/token").ToString(), record.TokenEndpoint);
         Assert.Equal("dcr-client-1", record.ClientId);
         Assert.True(record.ExpiresAtUtc > DateTimeOffset.UtcNow);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_WithoutRegistrationEndpoint_UsesFixedPublicClientId()
+    {
+        using var authorizationServer = new MockAuthorizationServer(advertiseRegistration: false);
+        using var resource = new LoopbackHttpServer(request =>
+            request.Path == "/.well-known/oauth-protected-resource/mcp"
+                ? LoopbackResponse.Json($$"""
+                    {"resource":"mcp","authorization_servers":["{{authorizationServer.BaseUri}}"]}
+                    """)
+                : LoopbackResponse.Json("{}", status: 404));
+        using var directory = new TemporaryDirectory();
+        var store = new McpTokenStore(Path.Combine(directory.Path, "mcp-tokens.json"));
+        var flow = new McpOAuthFlow(new HttpClient(), store);
+        var redirect = new FakeRedirect();
+
+        await flow.AuthorizeAsync(
+            "remote",
+            McpServerSettings.ForHttp(new Uri(resource.BaseUri, "/mcp").ToString()),
+            redirect,
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        // No registration call happened; the fixed public client id was used at the token
+        // endpoint and is what the store records for refresh.
+        Assert.Null(authorizationServer.RegisteredClientId);
+        Assert.Equal("wfx", authorizationServer.SeenTokenClientId);
+        Assert.Equal("wfx", store.Get("remote")!.ClientId);
     }
 
     [Fact]
@@ -256,19 +290,4 @@ public sealed class McpOAuthFlowTests
         public Task<Uri> WaitForCallbackAsync(Uri authorizationUrl, CancellationToken cancellationToken) =>
             Task.FromResult(new Uri("http://127.0.0.1:9/callback?code=authcode-1&state=forged-state"));
     }
-
-    private static string S256(string verifier)
-    {
-        var hash = SHA256.HashData(Encoding.ASCII.GetBytes(verifier));
-        return Convert.ToBase64String(hash).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-    }
-
-    private static Dictionary<string, string> ParseForm(string body) =>
-        body.Split('&', StringSplitOptions.RemoveEmptyEntries)
-            .Select(part => part.Split('=', 2))
-            .ToDictionary(
-                parts => Uri.UnescapeDataString(parts[0].Replace('+', ' ')),
-                parts => parts.Length > 1 ? Uri.UnescapeDataString(parts[1].Replace('+', ' ')) : string.Empty);
-
-    private static Dictionary<string, string> ParseQuery(string query) => ParseForm(query.TrimStart('?'));
 }

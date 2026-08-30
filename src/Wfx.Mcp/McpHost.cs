@@ -21,6 +21,7 @@ public sealed class McpHost : IAsyncDisposable
     private readonly McpTokenStore? _store;
     private readonly McpSecretSet _secrets;
     private readonly HttpClient? _http;
+    private readonly Action<Uri>? _openBrowser;
 
     private McpHost(
         IReadOnlyList<ITool> tools,
@@ -28,7 +29,8 @@ public sealed class McpHost : IAsyncDisposable
         IReadOnlyList<McpAuthorizationReminder> reminders,
         McpTokenStore? store,
         McpSecretSet secrets,
-        HttpClient? httpClient)
+        HttpClient? httpClient,
+        Action<Uri>? openBrowser = null)
     {
         Tools = tools;
         AuthorizationReminders = reminders;
@@ -36,6 +38,7 @@ public sealed class McpHost : IAsyncDisposable
         _store = store;
         _secrets = secrets;
         _http = httpClient;
+        _openBrowser = openBrowser;
     }
 
     public IReadOnlyList<ITool> Tools { get; }
@@ -148,8 +151,10 @@ public sealed class McpHost : IAsyncDisposable
     /// no servers are connected, but the credential store and HTTP client are the same ones a
     /// connected host uses.
     /// </summary>
-    public static McpHost CreateAuthorizer(string? userProfile = null) =>
-        new([], [], [], McpTokenStore.ForUserProfile(userProfile), new McpSecretSet(), new HttpClient { Timeout = Timeout.InfiniteTimeSpan });
+    /// <param name="openBrowser">Overrides the system-browser launch for the sign-in redirect;
+    /// primarily a test seam — headless callers capture the authorization URL instead.</param>
+    public static McpHost CreateAuthorizer(string? userProfile = null, Action<Uri>? openBrowser = null) =>
+        new([], [], [], McpTokenStore.ForUserProfile(userProfile), new McpSecretSet(), new HttpClient { Timeout = Timeout.InfiniteTimeSpan }, openBrowser);
 
     /// <summary>
     /// Runs the interactive OAuth 2.1 (authorization code + PKCE) sign-in for one configured
@@ -185,7 +190,7 @@ public sealed class McpHost : IAsyncDisposable
                 $"MCP server '{serverName}' is a stdio server; sign-in applies to HTTP servers only.");
         }
 
-        using var owned = redirect is null ? new McpLoopbackBrowserRedirect() : null;
+        using var owned = redirect is null ? new McpLoopbackBrowserRedirect(_openBrowser) : null;
         try
         {
             await new McpOAuthFlow(Http, _store!).AuthorizeAsync(
@@ -273,7 +278,8 @@ public sealed class McpHost : IAsyncDisposable
         using var handshake = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         handshake.CancelAfter(timeout);
         var client = server.IsHttp
-            ? (IMcpServerConnection)McpHttpTransport.Start(server, serverName, http!, tokenStore, secrets, cancellationToken)
+            ? (IMcpServerConnection)McpHttpTransport.Start(
+                server, serverName, http!, secrets, tokenStore, cancellationToken: cancellationToken)
             : McpStdioClient.Start(server, workspaceRoot, cancellationToken);
         try
         {

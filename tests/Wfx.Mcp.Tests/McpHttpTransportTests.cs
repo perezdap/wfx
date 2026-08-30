@@ -35,8 +35,11 @@ public sealed class McpHttpTransportTests : IDisposable
     private McpHttpTransport Start(
         McpServerSettings settings,
         string serverName = "remote",
-        McpTokenStore? store = null) =>
-        McpHttpTransport.Start(settings, serverName, _http, store, cancellationToken: TestContext.Current.CancellationToken);
+        McpTokenStore? store = null,
+        TimeSpan? requestTimeout = null) =>
+        McpHttpTransport.Start(
+            settings, serverName, _http, new McpSecretSet(), store, requestTimeout,
+            TestContext.Current.CancellationToken);
 
     [Fact]
     public async Task InitializeAsync_PostsJsonRpcAndReadsJsonResponse()
@@ -251,6 +254,37 @@ public sealed class McpHttpTransportTests : IDisposable
     }
 
     [Fact]
+    public async Task RequestTimeout_FailsTheCallStructurally()
+    {
+        using var server = new LoopbackHttpServer(async (request, cancellationToken) =>
+        {
+            using var document = JsonDocument.Parse(request.Body);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("id", out _))
+            {
+                return LoopbackResponse.Accepted();
+            }
+
+            if (root.GetProperty("method").GetString() == "initialize")
+            {
+                return InitializeResult(root);
+            }
+
+            // A hung server: never answers the request.
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            return LoopbackResponse.Accepted();
+        });
+        var settings = McpServerSettings.ForHttp(new Uri(server.BaseUri, "/mcp").ToString());
+
+        await using var client = Start(settings, requestTimeout: TimeSpan.FromMilliseconds(250));
+        await client.InitializeAsync(TestContext.Current.CancellationToken);
+        var exception = await Assert.ThrowsAsync<McpConnectionException>(
+            () => client.ListToolsAsync(TestContext.Current.CancellationToken));
+
+        Assert.Contains("timed out", exception.Message);
+    }
+
+    [Fact]
     public async Task Cancellation_CancelsTheInFlightRequest()
     {
         using var server = new LoopbackHttpServer(async (request, cancellationToken) =>
@@ -414,7 +448,7 @@ public sealed class McpHttpTransportTests : IDisposable
         var secrets = new McpSecretSet();
 
         await using var client = McpHttpTransport.Start(
-            settings, "remote", _http, store, secrets, TestContext.Current.CancellationToken);
+            settings, "remote", _http, secrets, store, cancellationToken: TestContext.Current.CancellationToken);
         await client.InitializeAsync(TestContext.Current.CancellationToken);
 
         Assert.Contains("stale-access-token", secrets);

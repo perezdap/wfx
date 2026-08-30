@@ -26,8 +26,8 @@ internal static class McpServerConfigParser
                 throw new InvalidOperationException($"MCP server '{property.Name}' must be an object: {path}");
             }
 
-            var command = GetString(property.Value, "command");
-            var url = GetString(property.Value, "url");
+            var command = GetString(property.Value, property.Name, "command", path);
+            var url = GetString(property.Value, property.Name, "url", path);
             var hasCommand = !string.IsNullOrWhiteSpace(command);
             var hasUrl = !string.IsNullOrWhiteSpace(url);
             if (hasCommand == hasUrl)
@@ -186,16 +186,16 @@ internal static class McpServerConfigParser
         }
     }
 
-    private static string? GetString(JsonElement root, string name)
+    private static string? GetString(JsonElement serverElement, string serverName, string name, string path)
     {
-        if (!root.TryGetProperty(name, out var value))
+        if (!serverElement.TryGetProperty(name, out var value))
         {
             return null;
         }
 
         if (value.ValueKind != JsonValueKind.String)
         {
-            throw new InvalidOperationException($"Configuration value '{name}' must be a string.");
+            throw new InvalidOperationException($"MCP server '{serverName}' '{name}' must be a string: {path}");
         }
 
         return value.GetString();

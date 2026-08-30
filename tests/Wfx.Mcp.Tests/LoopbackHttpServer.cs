@@ -1,9 +1,29 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 
 // Shared across test assemblies via a linked Compile item (Wfx.Cli.Tests includes this file).
 namespace Wfx.Testing;
+
+/// <summary>PKCE and form-decoding helpers for OAuth test doubles.</summary>
+internal static class LoopbackOAuth
+{
+    public static string S256(string verifier)
+    {
+        var hash = SHA256.HashData(Encoding.ASCII.GetBytes(verifier));
+        return Convert.ToBase64String(hash).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
+    public static Dictionary<string, string> ParseForm(string body) =>
+        body.Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => part.Split('=', 2))
+            .ToDictionary(
+                parts => Uri.UnescapeDataString(parts[0].Replace('+', ' ')),
+                parts => parts.Length > 1 ? Uri.UnescapeDataString(parts[1].Replace('+', ' ')) : string.Empty);
+
+    public static Dictionary<string, string> ParseQuery(string query) => ParseForm(query.TrimStart('?'));
+}
 
 /// <summary>One HTTP request observed by <see cref="LoopbackHttpServer"/>.</summary>
 internal sealed record LoopbackRequest(

@@ -24,6 +24,13 @@ internal sealed class McpHttpTransport : IMcpServerConnection
     /// <summary>Caps one incoming message, mirroring <see cref="McpJsonRpcSession.MaxLineCharacters"/>.</summary>
     private const int MaxMessageCharacters = McpJsonRpcSession.MaxLineCharacters;
 
+    /// <summary>
+    /// One POST's total budget — send, headers, body or SSE stream until the matching
+    /// response. A server that stops answering fails the call structurally instead of
+    /// hanging the turn.
+    /// </summary>
+    internal static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(30);
+
     private readonly HttpClient _http;
     private readonly Uri _endpoint;
     private readonly string _serverName;
@@ -32,6 +39,7 @@ internal sealed class McpHttpTransport : IMcpServerConnection
     private readonly McpHttpCredential? _credential;
     private readonly McpJsonRpcSession _session;
     private readonly McpProtocolClient _protocol;
+    private readonly TimeSpan _requestTimeout;
     private volatile string? _sessionId;
     private volatile string? _protocolVersion;
     private bool _disposed;
@@ -41,13 +49,15 @@ internal sealed class McpHttpTransport : IMcpServerConnection
         string serverName,
         IReadOnlyDictionary<string, string> headers,
         HttpClient httpClient,
-        McpHttpCredential? credential)
+        McpHttpCredential? credential,
+        TimeSpan requestTimeout)
     {
         _endpoint = endpoint;
         _serverName = serverName;
         _headers = headers;
         _http = httpClient;
         _credential = credential;
+        _requestTimeout = requestTimeout;
         Output = new HttpPostTextWriter(this);
         Input = new ChannelTextReader(_incoming.Reader);
         _session = new McpJsonRpcSession(Output, Input);
@@ -65,8 +75,9 @@ internal sealed class McpHttpTransport : IMcpServerConnection
         McpServerSettings server,
         string serverName,
         HttpClient httpClient,
+        McpSecretSet secrets,
         McpTokenStore? tokenStore = null,
-        McpSecretSet? secrets = null,
+        TimeSpan? requestTimeout = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -76,7 +87,8 @@ internal sealed class McpHttpTransport : IMcpServerConnection
         }
 
         var credential = tokenStore is null ? null : new McpHttpCredential(tokenStore, serverName, secrets);
-        return new McpHttpTransport(endpoint, serverName, server.Headers, httpClient, credential);
+        return new McpHttpTransport(
+            endpoint, serverName, server.Headers, httpClient, credential, requestTimeout ?? DefaultRequestTimeout);
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -122,6 +134,9 @@ internal sealed class McpHttpTransport : IMcpServerConnection
         bool allowAuthRetry,
         CancellationToken cancellationToken)
     {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(_requestTimeout);
+        var token = budget.Token;
         using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint)
         {
             Content = new StringContent(line, Encoding.UTF8, "application/json")
@@ -143,41 +158,28 @@ internal sealed class McpHttpTransport : IMcpServerConnection
             request.Headers.TryAddWithoutValidation("MCP-Protocol-Version", protocolVersion);
         }
 
-        // A stored OAuth credential takes precedence over a configured Authorization header:
-        // assigning the property replaces any value TryAddWithoutValidation attached above.
-        string? accessToken = null;
-        if (_credential is not null)
-        {
-            accessToken = await _credential.AcquireAccessTokenAsync(_http, cancellationToken).ConfigureAwait(false);
-            if (!string.IsNullOrEmpty(accessToken))
-            {
-                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
-            }
-        }
-
-        HttpResponseMessage response;
         try
         {
-            response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (HttpRequestException exception)
-        {
-            throw new McpConnectionException(
-                $"Could not reach MCP server '{_serverName}': {exception.Message}", exception);
-        }
-        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new McpConnectionException($"MCP server '{_serverName}' timed out.", exception);
-        }
+            // A stored OAuth credential takes precedence over a configured Authorization
+            // header: assigning the property replaces any value TryAddWithoutValidation
+            // attached above.
+            string? accessToken = null;
+            if (_credential is not null)
+            {
+                accessToken = await _credential.AcquireAccessTokenAsync(_http, token).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(accessToken))
+                {
+                    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+                }
+            }
 
-        using (response)
-        {
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token)
+                .ConfigureAwait(false);
             if (response.StatusCode is HttpStatusCode.Unauthorized)
             {
                 if (allowAuthRetry &&
                     _credential is not null &&
-                    await _credential.RefreshAccessTokenAsync(_http, accessToken, cancellationToken).ConfigureAwait(false))
+                    await _credential.RefreshAccessTokenAsync(_http, accessToken, token).ConfigureAwait(false))
                 {
                     await PostOnceAsync(line, requestId, allowAuthRetry: false, cancellationToken)
                         .ConfigureAwait(false);
@@ -213,15 +215,24 @@ internal sealed class McpHttpTransport : IMcpServerConnection
             var contentType = response.Content.Headers.ContentType?.MediaType;
             if (string.Equals(contentType, "text/event-stream", StringComparison.OrdinalIgnoreCase))
             {
-                await ReadEventStreamAsync(response, requestId, cancellationToken).ConfigureAwait(false);
+                await ReadEventStreamAsync(response, requestId, token).ConfigureAwait(false);
                 return;
             }
 
-            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var body = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(body))
             {
                 Feed(body);
             }
+        }
+        catch (HttpRequestException exception)
+        {
+            throw new McpConnectionException(
+                $"Could not reach MCP server '{_serverName}': {exception.Message}", exception);
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new McpConnectionException($"MCP server '{_serverName}' timed out.", exception);
         }
     }
 
@@ -295,40 +306,30 @@ internal sealed class McpHttpTransport : IMcpServerConnection
         _incoming.Writer.TryWrite(payload);
     }
 
-    private static long? TryReadRequestId(string line)
+    private static long? TryReadRequestId(string line) =>
+        TryParseMessageId(line, out var id) ? id : null;
+
+    private static bool PayloadMatchesId(string payload, long expected) =>
+        TryParseMessageId(payload, out var id) && id == expected;
+
+    /// <summary>Reads the JSON-RPC id from a framed message; malformed input simply has none.</summary>
+    private static bool TryParseMessageId(string json, out long id)
     {
+        id = default;
         try
         {
-            using var document = JsonDocument.Parse(line);
-            if (document.RootElement.TryGetProperty("id", out var id) &&
-                id.ValueKind == JsonValueKind.Number &&
-                id.TryGetInt64(out var value))
-            {
-                return value;
-            }
-        }
-        catch (JsonException)
-        {
-            // The session framed this line; treat an unparseable id as a notification.
-        }
-
-        return null;
-    }
-
-    private static bool PayloadMatchesId(string payload, long expected)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(payload);
+            using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
-            return root.ValueKind == JsonValueKind.Object &&
-                root.TryGetProperty("id", out var id) &&
-                ((id.ValueKind == JsonValueKind.Number && id.TryGetInt64(out var value) && value == expected) ||
-                 (id.ValueKind == JsonValueKind.String && long.TryParse(id.GetString(), out value) && value == expected));
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("id", out var element))
+            {
+                return false;
+            }
+
+            return (element.ValueKind == JsonValueKind.Number && element.TryGetInt64(out id)) ||
+                (element.ValueKind == JsonValueKind.String && long.TryParse(element.GetString(), out id));
         }
         catch (JsonException)
         {
-            // Malformed payloads still reach the session, which faults them structurally.
             return false;
         }
     }

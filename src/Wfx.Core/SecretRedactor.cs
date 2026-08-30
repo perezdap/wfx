@@ -1,16 +1,19 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace Wfx.Core;
 
 /// <summary>
-/// Masks known secret shapes in text using a fixed table of prefix-anchored matchers:
+/// Masks secrets in text. The shape pass uses a fixed table of prefix-anchored matchers:
 /// environment-style assignments (<c>API_KEY=</c>, <c>PASSWORD=</c>, <c>DATABASE_URL=</c>, and
 /// kin), inline token prefixes (<c>sk-</c>, <c>github_pat_</c>, <c>ghp_</c>, <c>AKIA</c>,
 /// <c>Bearer </c>), and basic-auth URLs. Matching is prefix-anchored only; there are no
 /// entropy or length heuristics, so a filename like <c>ask-turn-default-auto.txt</c> is never
-/// mangled.
+/// mangled. The explicit pass (<see cref="Redact(string?, IReadOnlyList{string}?)"/>) covers
+/// opaque values that match no shape — OAuth tokens and configured header values — prepared
+/// through <see cref="PrepareNeedles"/>.
 /// <para>
-/// The agent loop applies this exactly once, at tool-result ingestion, so the model's view,
+/// The agent loop applies this exactly once, at ingestion, so observers, the model's view,
 /// in-memory messages, and any persisted transcript hold identical text. This mechanism is
 /// deliberately separate from display-time redaction and from child-process environment
 /// scrubbing.
@@ -20,6 +23,9 @@ internal static class SecretRedactor
 {
     /// <summary>The marker that replaces a matched secret value.</summary>
     internal const string Redacted = "[REDACTED]";
+
+    /// <summary>Values shorter than this are never treated as secrets, so common words survive.</summary>
+    internal const int MinSecretLength = 8;
 
     private static readonly HashSet<string> SecretEnvKeys = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -106,6 +112,74 @@ internal static class SecretRedactor
         result = InlineTokenRegex.Replace(result, Redacted);
         result = BasicAuthUrlRegex.Replace(result, BasicAuthUrlEvaluator);
         return result;
+    }
+
+    /// <summary>
+    /// Returns <paramref name="input"/> with known secret shapes and every explicit secret in
+    /// <paramref name="secrets"/> replaced by <see cref="Redacted"/>. The explicit pass is
+    /// what covers opaque values — OAuth tokens, configured header values — that match no
+    /// known shape.
+    /// </summary>
+    internal static string Redact(string? input, IReadOnlyList<string>? secrets)
+    {
+        var result = Redact(input);
+        if (result.Length == 0)
+        {
+            return result;
+        }
+
+        foreach (var needle in PrepareNeedles(secrets))
+        {
+            result = result.Replace(needle, Redacted, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Normalizes explicit secret values into match needles: drops null/short values, adds
+    /// the JSON-encoded variant (a secret containing quotes or escapes appears encoded inside
+    /// arguments_json), dedups case-insensitively, and sorts longest first so a shorter value
+    /// that prefixes a longer one never masks the longer match.
+    /// </summary>
+    internal static IReadOnlyList<string> PrepareNeedles(IReadOnlyList<string>? secrets)
+    {
+        if (secrets is null || secrets.Count == 0)
+        {
+            return [];
+        }
+
+        var needles = new List<string>(secrets.Count);
+        foreach (var secret in secrets)
+        {
+            if (string.IsNullOrEmpty(secret) || secret.Length < MinSecretLength)
+            {
+                continue;
+            }
+
+            AddUnique(needles, secret);
+            var encoded = JsonEncodedText.Encode(secret).ToString();
+            if (!encoded.Equals(secret, StringComparison.Ordinal))
+            {
+                AddUnique(needles, encoded);
+            }
+        }
+
+        needles.Sort(static (left, right) => right.Length.CompareTo(left.Length));
+        return needles;
+    }
+
+    private static void AddUnique(List<string> needles, string value)
+    {
+        for (var index = 0; index < needles.Count; index++)
+        {
+            if (needles[index].Equals(value, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+        }
+
+        needles.Add(value);
     }
 
     private static string EnvAssignmentEvaluator(Match match)
