@@ -1,4 +1,6 @@
-# Milestone 1 implementation phases
+# Milestone 1 implementation phases (historical)
+
+> Milestone 1 is complete (tag `v0.1.0`). The phases below are retained as the historical record of how it was built; they are not a forward-looking roadmap. Features shipped since are recorded in the ADRs under [adr/](adr/).
 
 1. **Contracts and state** — model messages/events, tool registry, approval service, context providers, and explicit agent loop.
 2. **Windows execution and security** — workspace discovery/path policy, cancellable process runner, and dedicated PowerShell subsystem.
