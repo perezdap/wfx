@@ -15,6 +15,7 @@ flowchart TD
     Mcp --> Core
     Tools --> Core
     Tools --> PS["Wfx.PowerShell\nprocess execution"]
+    Mcp --> PS
     Providers --> Core
 ```
 
@@ -70,9 +71,12 @@ Named profiles are settings layers stored under `profiles` in the user/project c
 
 A session is an append-only JSONL event log owned by `Wfx.Core.SessionStore`, stored per user at `%USERPROFILE%\.wfx\sessions\<session-id>.jsonl`. The workspace is a field on the `header` event, not a path segment; a forced resume appends `workspace_rebound` so the binding changes without rewriting history. `SessionResume` coordinates session selection, workspace validation, endpoint restoration, and the lifetime of a session lease. `SessionStore` acquires that lease, persists the log, and repairs interrupted replay state while reading it. The agent loop does not know about persistence: `SessionRecorder` implements `IAgentObserver` and writes `turn_started`, `message`, `usage`, `interrupted`, and `error` events as they occur. `--no-session` skips creating a log. See [ADR 0002](adr/0002-sessions-are-append-only-event-logs.md), [ADR 0003](adr/0003-secrets-are-redacted-at-ingestion-not-at-persist.md), and [ADR 0004](adr/0004-provider-items-are-persisted-and-downgraded-on-rejection.md).
 
+## MCP
+
+MCP tools implement `ITool` through the `Wfx.Mcp` adapter: user-configured stdio and Streamable HTTP servers, every call classified `SystemChange` and approved like any built-in tool. The stdio transport starts servers through `Wfx.PowerShell`'s process discipline. See [ADR 0007](adr/0007-mcp-servers-are-user-configured-never-workspace-supplied.md) and [ADR 0008](adr/0008-mcp-http-transport-and-oauth-sign-in.md).
+
 ## Future seams
 
-- MCP tools implement `ITool` through the `Wfx.Mcp` adapter: user-configured stdio and Streamable HTTP servers, every call classified `SystemChange` and approved like any built-in tool. See [ADR 0007](adr/0007-mcp-servers-are-user-configured-never-workspace-supplied.md) and [ADR 0008](adr/0008-mcp-http-transport-and-oauth-sign-in.md).
 - Skills can contribute context providers and tool bundles.
 - Subagents can own isolated message lists while sharing a constrained tool registry and workspace policy.
 - ACP can host `IAgent` and translate observer events.

@@ -292,7 +292,7 @@ See [risks.md](docs/risks.md) for remaining limitations.
 
 Human-facing output - model text and tool-call lines - goes to **stderr** as one ordered stream. Stdout receives the final response once, at turn end, and only when redirected, so `wfx run ... > notes.md` captures the answer alone. Blocks are separated by blank lines, tool calls indent by two, and decoration draws from the basic eight ANSI colours so the terminal theme resolves the hues. Markdown (bold, inline code, ATX headings, bullets, fences) renders through a hold-back scanner that keeps token-by-token streaming intact; with decoration suppressed the writer is a pass-through. See ADRs [0009](docs/adr/0009-decoration-uses-the-basic-eight-ansi-colours.md)-[0011](docs/adr/0011-human-output-is-a-stderr-stream.md).
 
-`--quiet` suppresses human decoration on stderr in interactive mode and on the `run`, `resume`, `sessions`, `config`, and `models` commands. Warnings, errors, and the MCP sign-in remediation still use stderr.
+`--quiet` suppresses human decoration on stderr in interactive mode and on the `run`, `resume`, `sessions`, `config`, and `models` commands. Warnings, errors, and the MCP sign-in remediation still use stderr; combining `--json` with `--quiet` additionally suppresses warnings.
 
 ## Machine-readable output
 
