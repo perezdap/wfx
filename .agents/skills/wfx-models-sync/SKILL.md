@@ -39,6 +39,7 @@ pwsh tools/Sync-WfxProfiles.ps1 -ListProviders
 
 | Provider | Catalog endpoint | Key env var |
 | --- | --- | --- |
+| `abliteration` | api.abliteration.ai/v1 | `ABLITERATION_API_KEY` |
 | `atlas-cloud` | api.atlascloud.ai/v1 | `ATLAS_CLOUD_API_KEY` |
 | `cursor` | 127.0.0.1:8080/v1 (local proxy) | none |
 | `deepseek` | api.deepseek.com | `DEEPSEEK_API_KEY` |
@@ -59,7 +60,11 @@ Not yet ported from the pi collection: the Cloudflare-AI-Gateway-routed
 providers (`asterlab`, `nube`, `cloudflare-vertex`), Chatbox AI, and Cline.
 Add them to the hashtable in `tools/Sync-WfxProfiles.ps1` when needed.
 Registry entries are ported from the pi skills; only `venice`, `deepseek`,
-`gemini`, `cursor`, and `ollama` have been verified live so far.
+`gemini`, `cursor`, and `ollama` have been verified live so far. The one
+exception is `abliteration`, which is sourced from its own docs
+(https://docs.abliteration.ai) and verified live as far as an unauthenticated
+401 probe plus a keyed sync against a local fake catalog — the real API has
+not been synced (no key available).
 
 ## Behavior to know before running
 
