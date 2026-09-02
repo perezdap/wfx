@@ -25,6 +25,27 @@ public sealed class SyncWfxProfilesScriptTests
         Assert.Contains("(none)", ollamaRow);
     }
 
+    [Fact]
+    public async Task ListsAbliterationProvider()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var scriptPath = Path.Combine(repositoryRoot, "tools", "Sync-WfxProfiles.ps1");
+        var executor = new ProcessExecutor();
+
+        var result = await executor.ExecuteAsync(new ProcessCommand(
+            "pwsh.exe",
+            ["-NoLogo", "-NoProfile", "-File", scriptPath, "-ListProviders"],
+            repositoryRoot,
+            Timeout: TimeSpan.FromSeconds(15)), TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, result.ExitCode);
+        var abliterationRow = result.StandardOutput
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.TrimStart().StartsWith("abliteration ", StringComparison.Ordinal));
+        Assert.Contains("https://api.abliteration.ai/v1", abliterationRow);
+        Assert.Contains("ABLITERATION_API_KEY", abliterationRow);
+    }
+
     private static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory);

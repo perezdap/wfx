@@ -58,7 +58,12 @@ $ErrorActionPreference = 'Stop'
 # Endpoints are ported from the pi *-models-sync skills; verified live so far:
 # venice, deepseek, gemini (x-goog-api-key listing + v1beta/openai shim),
 # cursor against a local fake endpoint, and ollama against a local daemon.
+# abliteration is the exception: sourced from its own docs
+# (https://docs.abliteration.ai; standard Authorization-header auth) and
+# verified live via an unauthenticated 401 probe; its sync path was exercised
+# against a local fake catalog, not the real API (no key available).
 $script:ProviderRegistry = [ordered]@{
+    'abliteration'   = @{ BaseUrl = 'https://api.abliteration.ai/v1';        EnvVar = 'ABLITERATION_API_KEY' }
     'atlas-cloud'     = @{ BaseUrl = 'https://api.atlascloud.ai/v1';          EnvVar = 'ATLAS_CLOUD_API_KEY' }
     'cursor'          = @{ BaseUrl = 'http://127.0.0.1:8080/v1';              EnvVar = $null } # local proxy from cursor-openai-api-sync
     'deepseek'        = @{ BaseUrl = 'https://api.deepseek.com';              EnvVar = 'DEEPSEEK_API_KEY' }
